@@ -7,7 +7,7 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     # MongoDB Configuration
-    MONGODB_URI: str = Field(default="mongodb+srv://sudharsan2618_db_user:ZdMsUJRvEqeaUsZj@tatti.gjcwmg8.mongodb.net/?appName=Tatti", description="MongoDB connection string")
+    MONGODB_URI: str = Field(description="MongoDB connection string")
     DATABASE_NAME: str = Field(default="Job-Hunt", description="Database name")
     
     # API Configuration
