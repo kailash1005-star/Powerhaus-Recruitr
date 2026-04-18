@@ -14,7 +14,7 @@ async def get_db():
 
 
 # ── GET / (list all jobs, paginated + sortable) ────────────────────────
-@router.get("/")
+@router.get("")
 async def list_jobs(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),

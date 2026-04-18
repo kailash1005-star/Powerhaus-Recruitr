@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://job-hunt-204519078454.asia-south1.run.app"
 
 export interface RunStats {
   totalJobsScraped: number

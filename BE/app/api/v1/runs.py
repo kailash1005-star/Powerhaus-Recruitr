@@ -63,7 +63,7 @@ async def start_run(
 
 # ── GET / (list, paginated) ─────────────────────────────────────────────
 
-@router.get("/", response_model=list[RunResponseSchema])
+@router.get("", response_model=list[RunResponseSchema])
 async def list_runs(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
