@@ -15,7 +15,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Agamx LeadGen',
+  title: 'LeadGen Agent',
   description: 'AI-Powered Lead Generation Platform',
   generator: 'v0.app',
   icons: {

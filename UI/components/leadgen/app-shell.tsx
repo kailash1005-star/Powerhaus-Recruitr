@@ -74,8 +74,8 @@ export function AppShell({ children }: AppShellProps) {
       <header className="fixed top-0 left-0 right-0 h-14 bg-white border-b border-[#e0e3e5] flex items-center justify-between px-6 z-50">
         {/* Left - Logo */}
         <div className="flex items-center gap-2">
-          <img src="/image.png" alt="Agamx Logo" className="w-8 h-8 rounded-lg object-contain" />
-          <span className="font-semibold text-[#191c1e]">Agamx LeadGen</span>
+          {/* <img src="/image.png" alt="Agamx Logo" className="w-8 h-8 rounded-lg object-contain" /> */}
+          <span className="font-semibold text-[#191c1e]">LeadGen Agent</span>
         </div>
 
         {/* Right - Global User Profile */}
