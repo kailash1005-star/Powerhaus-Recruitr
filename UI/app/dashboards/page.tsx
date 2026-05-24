@@ -1,7 +1,7 @@
-"use client"
+'use client';
 
-import { DashboardsContent } from "@/components/leadgen/dashboards-content"
+import { DashboardsPage } from '@/components/pages/DashboardsPage';
 
-export default function DashboardsPage() {
-  return <DashboardsContent />
+export default function DashboardsRoute() {
+  return <DashboardsPage />;
 }

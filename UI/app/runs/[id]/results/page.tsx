@@ -1,10 +1,10 @@
-"use client"
+'use client';
 
-import { useParams } from "next/navigation"
-import { RunResultsContent } from "@/components/leadgen/run-results-content"
+import { useParams } from 'next/navigation';
+import { RunResultsPage } from '@/components/pages/RunResultsPage';
 
-export default function RunResultsPage() {
-  const params = useParams()
-  const id = params.id as string
-  return <RunResultsContent runId={id} />
+export default function RunResultsRoute() {
+  const params = useParams();
+  const id = params.id as string;
+  return <RunResultsPage runId={id} />;
 }

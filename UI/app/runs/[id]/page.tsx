@@ -1,10 +1,10 @@
-"use client"
+'use client';
 
-import { useParams } from "next/navigation"
-import { RunDetailContent } from "@/components/leadgen/run-detail-content"
+import { useParams } from 'next/navigation';
+import { RunDetailPage } from '@/components/pages/RunDetailPage';
 
-export default function RunDetailPage() {
-  const params = useParams()
-  const id = params.id as string
-  return <RunDetailContent runId={id} />
+export default function RunDetailRoute() {
+  const params = useParams();
+  const id = params.id as string;
+  return <RunDetailPage runId={id} />;
 }

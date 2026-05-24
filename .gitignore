@@ -10,6 +10,7 @@ dist/
 build/
 .turbo/
 .vercel/
+claud-design/
 
 # ── Python (BE) ─────────────────────────────────────────────────
 __pycache__/

@@ -1,7 +1,5 @@
-"use client"
+import { redirect } from 'next/navigation';
 
-import { HomeContent } from "@/components/leadgen/home-content"
-
-export default function HomePage() {
-  return <HomeContent />
+export default function Home() {
+  redirect('/runs');
 }
