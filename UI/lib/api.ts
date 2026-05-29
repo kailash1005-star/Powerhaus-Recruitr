@@ -32,6 +32,19 @@ async function del<T>(path: string): Promise<T> {
   return res.json();
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `PATCH ${path} → ${res.status}`);
+  }
+  return res.json();
+}
+
 // ── ICP Config ────────────────────────────────────────────────────────────────
 
 export interface ICPTitleConfig {
@@ -131,6 +144,10 @@ export function fetchRun(id: string): Promise<Run> {
 
 export function deleteRun(id: string): Promise<unknown> {
   return del(`/api/v1/runs/${id}`);
+}
+
+export function renameRun(id: string, title: string): Promise<Run> {
+  return patch(`/api/v1/runs/${id}`, { title });
 }
 
 export interface StartRunPayload {

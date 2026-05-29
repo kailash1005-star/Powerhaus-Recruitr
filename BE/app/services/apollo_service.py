@@ -2,6 +2,25 @@
 Apollo Service — prospect search (no enrichment in the default pipeline).
 Enrichment functions are kept for later on-demand use but the orchestrator
 calls find_prospects(..., enrich=False).
+
+Apollo API credit model (per https://docs.apollo.io/docs/api-pricing and
+https://docs.apollo.io/reference/people-api-search — verified May 2026):
+
+  FREE — no credits consumed:
+    * People Search  POST /mixed_people/api_search   (search_by_titles / search_by_seniority)
+      "This endpoint is optimized for API usage and does not consume credits."
+      It returns people WITHOUT email/phone (contact info is masked/locked).
+
+  CREDIT-CONSUMING (only when we explicitly enrich):
+    * People Match       POST /people/match        (_enrich_single)
+    * Bulk People Match  POST /people/bulk_match    (_enrich_bulk)
+    * Also credit-consuming but NOT used here: Person Details /people/{id},
+      Organization Search /mixed_companies/search, Organization Enrichment, etc.
+
+So the background orchestration (Phase 3 title + management/seniority search) is
+FREE — it only counts against Apollo's rate limit (HTTP 429), not credits.
+Credits are spent solely when enrichment (match/bulk_match) runs, which happens
+on-demand via enrich()/find_prospects(enrich=True), never in the background run.
 """
 import logging
 import time
@@ -29,6 +48,9 @@ class ApolloService:
 
     def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key or settings.APOLLO_API_KEY
+        # Set True when a search exhausts its retries against Apollo's 429 throttle.
+        # find_prospects checks this to avoid firing the fallback (which would 429 too).
+        self._rate_limited = False
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -41,80 +63,86 @@ class ApolloService:
     # Search
     # ------------------------------------------------------------------
 
-    def search_by_titles(self, domain: str, titles: list[str]) -> list[dict]:
-        """Primary search — query Apollo with specific job titles."""
-        all_people: list[dict] = []
-        page = 1
-        logger.info("Title search: %d title(s) at %s", len(titles), domain)
+    def _request_page(self, params: dict, domain: str, label: str) -> dict | None:
+        """POST one search page, retrying on HTTP 429 with backoff.
 
-        while True:
+        Returns the parsed JSON dict, or None on hard failure. Honors the
+        ``Retry-After`` header when present. Sets ``self._rate_limited`` when the
+        request is abandoned because of sustained 429s.
+        """
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
             try:
                 resp = requests.post(
                     f"{APOLLO_BASE_URL}/mixed_people/api_search",
                     headers=self._headers(),
-                    params={
-                        "per_page": APOLLO_PER_PAGE,
-                        "page": page,
-                        "person_titles[]": titles,
-                        "include_similar_titles": "true",
-                        "q_organization_domains_list[]": [domain],
-                    },
+                    params=params,
                     timeout=30,
                 )
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = float(retry_after) if retry_after else min(2 ** attempt, 30)
+                    logger.warning(
+                        "Apollo 429 (%s %s) — backoff %.1fs (attempt %d/%d)",
+                        label, domain, wait, attempt, max_attempts,
+                    )
+                    time.sleep(wait)
+                    continue
                 resp.raise_for_status()
+                return resp.json()
             except Exception as e:
-                logger.error("Apollo title search error at %s p%d: %s", domain, page, e)
-                break
+                logger.error("Apollo %s error at %s: %s", label, domain, e)
+                if attempt < max_attempts:
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
+                return None
+        # All attempts were 429 retries → throttled.
+        self._rate_limited = True
+        return None
 
-            data = resp.json()
+    def _paged_search(self, extra_params: dict, domain: str, label: str) -> list[dict]:
+        """Run a paginated people search with the given filter params."""
+        all_people: list[dict] = []
+        page = 1
+        while True:
+            params = {"per_page": APOLLO_PER_PAGE, "page": page, **extra_params}
+            data = self._request_page(params, domain, label)
+            if data is None:
+                break
             people = data.get("people", [])
             total = data.get("total_entries", 0)
             pages = max(1, -(-total // APOLLO_PER_PAGE))
-
             all_people.extend(people)
             if page >= pages or not people:
                 break
             page += 1
             time.sleep(0.5)
-
         return all_people
+
+    def search_by_titles(self, domain: str, titles: list[str]) -> list[dict]:
+        """Primary search — query Apollo with specific job titles."""
+        logger.info("Title search: %d title(s) at %s", len(titles), domain)
+        return self._paged_search(
+            {
+                "person_titles[]": titles,
+                "include_similar_titles": "true",
+                "q_organization_domains_list[]": [domain],
+            },
+            domain,
+            "title search",
+        )
 
     def search_by_seniority(self, domain: str) -> list[dict]:
         """Fallback search — fetch prospects by seniority level."""
-        all_people: list[dict] = []
-        page = 1
         logger.info("Seniority search at %s", domain)
-
-        while True:
-            try:
-                resp = requests.post(
-                    f"{APOLLO_BASE_URL}/mixed_people/api_search",
-                    headers=self._headers(),
-                    params={
-                        "per_page": APOLLO_PER_PAGE,
-                        "page": page,
-                        "person_seniorities[]": APOLLO_SENIORITIES,
-                        "q_organization_domains_list[]": [domain],
-                    },
-                    timeout=30,
-                )
-                resp.raise_for_status()
-            except Exception as e:
-                logger.error("Apollo seniority search error at %s p%d: %s", domain, page, e)
-                break
-
-            data = resp.json()
-            people = data.get("people", [])
-            total = data.get("total_entries", 0)
-            pages = max(1, -(-total // APOLLO_PER_PAGE))
-
-            all_people.extend(people)
-            if page >= pages or not people:
-                break
-            page += 1
-            time.sleep(0.5)
-
-        return all_people
+        return self._paged_search(
+            {
+                "person_seniorities[]": APOLLO_SENIORITIES,
+                "q_organization_domains_list[]": [domain],
+            },
+            domain,
+            "seniority search",
+        )
 
     # ------------------------------------------------------------------
     # Enrichment (kept for on-demand use; not invoked by orchestrator)
@@ -203,6 +231,8 @@ class ApolloService:
 
         key = normalize_industry_name(industry_name or "")
         titles = INDUSTRY_PERSONA_MAP.get(key, DEFAULT_PERSONA_TITLES)
+
+        self._rate_limited = False
 
         # Step 1 — title-based search
         title_hits = self.search_by_titles(domain, titles)

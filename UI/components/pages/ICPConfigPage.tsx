@@ -650,9 +650,9 @@ export function ICPConfigPage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10, fontSize: 13 }}>
                 {[
-                  { label: 'Industries', value: `${industries.filter((i) => i.selected).length} selected`, warn: industries.filter((i) => i.selected).length === 0 },
-                  { label: 'Titles', value: `${selectedTitleCount} selected` },
-                  { label: 'Locations', value: `${selectedLocCount} selected` },
+                  { label: 'Industries', value: `${industries.filter((i) => i.selected).length}`, warn: industries.filter((i) => i.selected).length === 0 },
+                  { label: 'Titles', value: `${selectedTitleCount}` },
+                  { label: 'Locations', value: `${selectedLocCount}` },
                   { label: 'Sources', value: 'linkedin' },
                   { label: 'Max age', value: `${maxPostingAge}h` },
                   { label: 'Batch size', value: resultsPerBatch },

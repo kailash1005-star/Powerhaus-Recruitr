@@ -22,6 +22,25 @@ class Settings(BaseSettings):
     # LinkedIn Credentials (for company info API)
     LINKEDIN_EMAIL: str = Field(default="", description="LinkedIn login email")
     LINKEDIN_PASSWORD: str = Field(default="", description="LinkedIn login password")
+    # Directory where the authenticated LinkedIn session cookies are cached.
+    # A valid cached session is reused across searches AND process restarts so we
+    # log in once instead of per-search (fewer logins → far fewer captcha hits).
+    # NOTE: linkedin_api treats this as a string prefix, so it MUST end with a separator.
+    LINKEDIN_COOKIE_DIR: str = Field(
+        default=".linkedin_cookies/",
+        description="Directory (with trailing slash) to persist the LinkedIn session cookie jar",
+    )
+    # Residential proxy for LinkedIn calls. LinkedIn challenges datacenter IPs with
+    # captchas, so production must route LinkedIn traffic through a residential IP.
+    # Format: http://user:pass@host:port  (leave blank to disable / use direct connection).
+    LINKEDIN_PROXY_URL: str = Field(default="", description="Residential proxy URL for LinkedIn requests")
+    # Browser session cookies — the RELIABLE way to authenticate. Username/password
+    # logins get CHALLENGE'd by LinkedIn (even on residential IPs). Instead, log into
+    # LinkedIn in a browser, open DevTools → Application → Cookies → linkedin.com, and
+    # copy the `li_at` and `JSESSIONID` values here. When both are set we inject the
+    # session and skip the password login (no challenge). Refresh them when expired.
+    LINKEDIN_LI_AT: str = Field(default="", description="LinkedIn li_at session cookie from a logged-in browser")
+    LINKEDIN_JSESSIONID: str = Field(default="", description="LinkedIn JSESSIONID cookie from a logged-in browser")
 
     # Firecrawl Configuration
     FIRECRAWL_API_KEY: str = Field(

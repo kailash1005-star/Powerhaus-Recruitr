@@ -5,11 +5,13 @@ Background task entry-point that coordinates:
   Phase 2: OpenAI company industry resolution on accepted jobs     (openai_company_service)
   Phase 3: Apollo prospect search (no enrichment) for targeted cos (apollo_service)
 """
+import asyncio
 from datetime import datetime
 from typing import Any, Dict, List
 import logging
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from app.database import get_collection
 from app.config import settings
@@ -17,6 +19,7 @@ from app.services.jobspy_service import scrape_and_store_jobs
 from app.services.naukri_service import scrape_and_store_naukri_jobs
 from app.services.openai_company_service import OpenAICompanyService
 from app.services.apollo_service import ApolloService
+from app.services.linkedin_service import LinkedInCompanyService, get_linkedin_service
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +117,7 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
         # ──────────────────────────────────────────────────────────────
         phase3_stats = await _run_phase3(
             run_oid=run_oid,
+            jobs_col=jobs_col,
             companies_col=companies_col,
             prospects_col=prospects_col,
             runs_col=runs_col,
@@ -176,6 +180,17 @@ async def _run_phase2(
         logger.error("[Phase2] Failed to init OpenAI client: %s", e)
         return stats
 
+    # Authenticate LinkedIn once (reuses cached session). LinkedIn is the source of
+    # truth for the company domain — Apollo's people search (Phase 3) filters by exact
+    # organization domain, so a GPT-guessed domain matched only ~10% of the time while
+    # the real LinkedIn domain matches ~90%. If LinkedIn is unavailable (captcha / no
+    # creds) we degrade gracefully to the OpenAI-guessed domain.
+    try:
+        linkedin_svc = get_linkedin_service()
+    except Exception as e:
+        logger.error("[Phase2] LinkedIn session unavailable (%s) — falling back to OpenAI domains", e)
+        linkedin_svc = None
+
     # Group accepted jobs by their LinkedIn companyUrl
     cursor = jobs_col.find(
         {"runId": run_oid, "qualityStatus": "good"},
@@ -194,21 +209,71 @@ async def _run_phase2(
     print(f"[Phase2] {len(url_to_job_ids)} unique company URLs to resolve")
 
     for url, job_ids in url_to_job_ids.items():
-        try:
-            info = svc.fetch_company_info(
-                url, target_industries=target_industries, max_staff_count=settings.MAX_STAFF_COUNT
-            )
-        except Exception as e:
-            logger.error("[Phase2] OpenAI failed for %s: %s", url, e)
-            info = None
+        slug = LinkedInCompanyService.get_slug(url)
 
-        if not info:
+        # ── Authoritative company data from LinkedIn (industry, domain, size, etc.) ──
+        # We rely entirely on LinkedIn's reported industry — no LLM company "recall"
+        # from the URL, and no hardcoded industry keyword lists.
+        li = None
+        if linkedin_svc is not None:
+            try:
+                li = linkedin_svc.fetch_company_info(url)
+            except Exception as e:
+                logger.warning("[Phase2] LinkedIn lookup failed for %s: %s", url, e)
+                li = None
+
+        if not li:
+            # Without LinkedIn data we can't determine the industry, so we can't judge
+            # the company. Skip it (leave its jobs untouched) rather than mass-rejecting
+            # on a transient LinkedIn hiccup.
+            logger.warning("[Phase2] No LinkedIn data for %s — skipping", url)
             stats["skippedCompanies"] += 1
             continue
 
-        slug = OpenAICompanyService.get_slug(url)
-        domain = info.get("companyDomain") or ""
-        targeted = bool(info.get("targeted"))
+        raw_domain = li.get("companyDomain") or ""
+        # MongoDB schema requires companyDomain to match ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$.
+        # Some companies on LinkedIn have no website set → domain is empty → schema fails.
+        # Use a placeholder so the doc can be stored; Phase 3 already skips
+        # companies whose domain ends with .linkedin.local when searching Apollo.
+        fallback_slug = slug or (url.rstrip("/").split("/")[-1] or "unknown")
+        domain = raw_domain if raw_domain else f"{fallback_slug}.linkedin.local"
+        staff_count = li.get("staffCount") or 0
+        website = li.get("website") or ""
+        li_industries = li.get("companyIndustries") or []
+        li_description = li.get("description") or ""
+        staffing_company = bool(li.get("staffingCompany"))
+        company_name = li.get("companyName") or name_lookup.get(url) or ""
+        company_industry_text = ", ".join([c for c in li_industries if c])
+
+        # ── Semantic industry match (dynamic) ────────────────────────────────
+        # Ask the LLM whether LinkedIn's industry for this company belongs to the
+        # user's UI-selected target industries (from the run config — fully dynamic).
+        try:
+            matched_industry = svc.match_industry(li_industries, target_industries)
+        except Exception as e:
+            logger.error("[Phase2] Industry match failed for %s: %s", url, e)
+            matched_industry = None
+
+        targeted = (
+            bool(matched_industry)
+            and staff_count < settings.MAX_STAFF_COUNT
+            and not staffing_company
+        )
+
+        # Human-readable reason when the company is NOT targeted — used both on the
+        # company doc and to mark its jobs as rejected.
+        if targeted:
+            reject_reason = ""
+        elif not li_industries:
+            reject_reason = "No industry listed on LinkedIn"
+        elif not matched_industry:
+            reject_reason = f"Industry '{company_industry_text or 'unknown'}' not in target list"
+        elif staff_count >= settings.MAX_STAFF_COUNT:
+            reject_reason = f"Company size {staff_count} exceeds {settings.MAX_STAFF_COUNT}"
+        elif staffing_company:
+            reject_reason = "Company is a staffing/recruitment agency"
+        else:
+            reject_reason = "Company not targeted"
 
         # Choose upsert key: linkedinSlug if available, else domain
         upsert_query = {"linkedinSlug": slug} if slug else ({"companyDomain": domain} if domain else None)
@@ -217,32 +282,84 @@ async def _run_phase2(
             continue
 
         payload = {
-            "companyName": info.get("companyName") or name_lookup.get(url) or "",
+            "companyName": company_name or slug or "",
             "companyDomain": domain,
-            "linkedinSlug": slug,
-            "companyIndustry": info.get("companyIndustry") or "",
-            "industry": info.get("companyIndustry") or "",
-            "matchedIndustry": info.get("matchedIndustry"),
+            "companyIndustry": company_industry_text,
+            "industry": company_industry_text,
+            "matchedIndustry": matched_industry,
             "targeted": targeted,
-            "staffCount": info.get("staffCount") or 0,
-            "employeeCount": info.get("staffCount") or 0,
-            "website": info.get("website") or "",
+            "staffCount": staff_count,
+            "employeeCount": staff_count,
+            "website": website,
             "isEligible": targeted,
+            "notes": reject_reason,
+            "companyDetails": {
+                "description": li_description,
+                "website": website,
+                "industries": li_industries,
+                "staffCount": staff_count,
+                "staffingCompany": staffing_company,
+            },
         }
+        # Only write linkedinSlug when we actually extracted one — the Companies
+        # schema requires it to be a string, so a None would fail validation.
+        if slug:
+            payload["linkedinSlug"] = slug
         now = datetime.utcnow()
-        await companies_col.update_one(
-            upsert_query,
-            {"$set": {**payload, "updatedAt": now}, "$setOnInsert": {"createdAt": now}},
-            upsert=True,
-        )
-        company_doc = await companies_col.find_one(upsert_query, {"_id": 1})
-        company_oid = company_doc["_id"] if company_doc else None
 
-        # Link all matching jobs
+        # Match an existing company by slug OR domain. companyDomain has a UNIQUE
+        # index, and two different LinkedIn slugs can map to the same domain (vanity
+        # slugs, or a domain already stored from a previous run). Keying the upsert
+        # only on linkedinSlug would then try to insert a duplicate domain → E11000
+        # and abort the whole run. So we look up both, reuse when found, and guard
+        # the insert against races.
+        or_clauses = []
+        if slug:
+            or_clauses.append({"linkedinSlug": slug})
+        if domain:
+            or_clauses.append({"companyDomain": domain})
+        existing = await companies_col.find_one({"$or": or_clauses}) if or_clauses else None
+
+        company_oid = None
+        if existing:
+            company_oid = existing["_id"]
+            # Don't rewrite the unique identity fields on an existing doc — updating
+            # companyDomain to a value owned by another company would collide.
+            update_fields = {
+                k: v for k, v in payload.items()
+                if k not in ("companyDomain", "linkedinSlug")
+            }
+            await companies_col.update_one(
+                {"_id": company_oid},
+                {"$set": {**update_fields, "updatedAt": now}},
+            )
+        else:
+            try:
+                res = await companies_col.insert_one(
+                    {**payload, "createdAt": now, "updatedAt": now}
+                )
+                company_oid = res.inserted_id
+            except DuplicateKeyError:
+                # Domain was inserted concurrently / exists under another slug — reuse it.
+                dup = await companies_col.find_one({"companyDomain": domain}, {"_id": 1})
+                company_oid = dup["_id"] if dup else None
+
+        # Link jobs to the company. If the company was NOT targeted, also flip its
+        # jobs to rejected ("poor") with the company-level reason — otherwise jobs of
+        # rejected companies stay in the Accepted list even though no prospects are
+        # sourced for them.
         if company_oid:
+            job_update = {
+                "companyId": company_oid,
+                "industry": company_industry_text,
+                "updatedAt": datetime.utcnow(),
+            }
+            if not targeted:
+                job_update["qualityStatus"] = "poor"
+                job_update["rejectionReason"] = f"Company rejected: {reject_reason}"
             await jobs_col.update_many(
                 {"_id": {"$in": job_ids}},
-                {"$set": {"companyId": company_oid, "industry": info.get("companyIndustry") or ""}},
+                {"$set": job_update},
             )
 
         if targeted:
@@ -270,6 +387,7 @@ async def _run_phase2(
 async def _run_phase3(
     *,
     run_oid: ObjectId,
+    jobs_col,
     companies_col,
     prospects_col,
     runs_col,
@@ -282,16 +400,25 @@ async def _run_phase3(
 
     apollo = ApolloService()
 
-    cursor = companies_col.find(
-        {"targeted": True},
-        {"_id": 1, "companyDomain": 1, "matchedIndustry": 1, "companyName": 1},
+    # Scope to companies linked to THIS run's accepted jobs (Phase 2 set companyId).
+    # Without this, every targeted company from ALL past runs is re-searched, which
+    # wastes Apollo credits and triggers 429 rate-limiting.
+    company_ids = await jobs_col.distinct(
+        "companyId", {"runId": run_oid, "qualityStatus": "good"}
     )
-    targeted = []
-    async for c in cursor:
-        if c.get("companyDomain"):
-            targeted.append(c)
+    company_ids = [cid for cid in company_ids if cid]
 
-    print(f"[Phase3] {len(targeted)} targeted companies for Apollo search")
+    targeted = []
+    if company_ids:
+        cursor = companies_col.find(
+            {"_id": {"$in": company_ids}, "targeted": True},
+            {"_id": 1, "companyDomain": 1, "matchedIndustry": 1, "companyName": 1},
+        )
+        async for c in cursor:
+            if c.get("companyDomain"):
+                targeted.append(c)
+
+    print(f"[Phase3] {len(targeted)} targeted companies for Apollo search (this run)")
 
     for c in targeted:
         domain = c["companyDomain"]
@@ -301,6 +428,8 @@ async def _run_phase3(
         except Exception as e:
             logger.error("[Phase3] Apollo failed for %s: %s", domain, e)
             continue
+        # Small spacing between companies to stay under Apollo's rate limit.
+        await asyncio.sleep(0.5)
 
         accepted = result.get("accepted", [])
         rejected = result.get("rejected", [])

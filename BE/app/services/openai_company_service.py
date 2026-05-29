@@ -31,6 +31,91 @@ class OpenAICompanyService:
         except (ValueError, IndexError):
             return None
 
+    def match_industry(
+        self,
+        company_industries: List[str],
+        target_industries: List[str],
+    ) -> Optional[str]:
+        """Semantically match a company's REAL industry (from LinkedIn) against the
+        user's selected target industries.
+
+        Both inputs are dynamic:
+          * company_industries — the industry/industries LinkedIn reports for the company
+          * target_industries  — the industries the user selected in the UI (run config)
+
+        No hardcoded keyword lists are involved. Returns the single best-matching
+        target industry NAME (verbatim from the user's list) or None if none fit.
+        """
+        company_text = ", ".join([c for c in (company_industries or []) if c]).strip()
+        if not company_text or not target_industries:
+            return None
+
+        target_list_text = "\n".join(f"- {name}" for name in target_industries)
+
+        prompt = (
+            f"A company's industry, as listed on LinkedIn, is: \"{company_text}\".\n\n"
+            "Decide whether that industry semantically belongs to ONE of the user's "
+            "target industries below. Use your understanding of synonyms and related "
+            "fields (e.g. \"Renewables\" ≈ \"Clean Energy\", \"Hospitals\" ≈ "
+            "\"Healthcare\", \"Staffing\" ≈ \"Recruitment\").\n\n"
+            f"Target industries:\n{target_list_text}\n\n"
+            "Pick the single best-matching target industry NAME (verbatim from the list "
+            "above) or null if none of them fit.\n\n"
+            "Return ONLY valid JSON, no markdown:\n"
+            "{\n"
+            '  "matched_industry": "one of the target names above, verbatim, or null"\n'
+            "}\n"
+        )
+
+        lower_targets = {t.lower(): t for t in target_industries}
+
+        raw = ""
+        for attempt in range(1, 3):
+            try:
+                completion = self._client.chat.completions.create(
+                    model=self._model,
+                    temperature=0,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an industry-classification assistant. "
+                                "You return only valid JSON, no commentary."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                raw = (completion.choices[0].message.content or "").strip()
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[-1]
+                if raw.endswith("```"):
+                    raw = raw.rsplit("```", 1)[0]
+                raw = raw.strip()
+
+                data = json.loads(raw)
+                matched = data.get("matched_industry")
+                if not matched:
+                    return None
+                # Map back to the exact target name (case-insensitive); reject hallucinations.
+                return lower_targets.get(str(matched).strip().lower())
+            except json.JSONDecodeError:
+                logger.warning(
+                    "[OpenAICompany] industry match JSON parse failed (attempt %d) — raw: %.200s",
+                    attempt, raw,
+                )
+                if attempt < 2:
+                    continue
+                return None
+            except Exception as e:
+                logger.error("[OpenAICompany] industry match call failed (attempt %d): %s", attempt, e)
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
+                return None
+
+        return None
+
     def fetch_company_info(
         self,
         linkedin_url: str,

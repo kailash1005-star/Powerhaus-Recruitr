@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
-import { fetchRuns, type Run } from '@/lib/api';
+import { fetchRuns, deleteRun, renameRun, type Run } from '@/lib/api';
 
 const STATUS_FILTERS = [
   { key: 'all',       label: 'All Runs' },
@@ -68,6 +68,54 @@ export function RunsPage() {
   const [hasMore, setHasMore] = useState(true);
   const [hover, setHover] = useState<string | null>(null);
   const LIMIT = 10;
+
+  // Rename + delete state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<Run | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const startEdit = (id: string, title: string) => {
+    setActionError(null);
+    setEditingId(id);
+    setEditTitle(title);
+  };
+
+  const saveEdit = async (id: string) => {
+    const next = editTitle.trim();
+    setEditingId(null);
+    const current = runs.find((r) => (r.id || r._id) === id);
+    if (!next || (current && current.title === next)) return;
+    setBusyId(id);
+    setActionError(null);
+    try {
+      await renameRun(id, next);
+      setRuns((prev) =>
+        prev.map((r) => ((r.id || r._id) === id ? { ...r, title: next } : r)),
+      );
+    } catch (e: any) {
+      setActionError(e.message || 'Failed to rename run');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const confirmDeleteRun = async () => {
+    if (!confirmDelete) return;
+    const id = (confirmDelete.id || confirmDelete._id) as string;
+    setBusyId(id);
+    setActionError(null);
+    try {
+      await deleteRun(id);
+      setRuns((prev) => prev.filter((r) => (r.id || r._id) !== id));
+      setConfirmDelete(null);
+    } catch (e: any) {
+      setActionError(e.message || 'Failed to delete run');
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const load = useCallback(async () => {
     setError(null);
@@ -170,10 +218,14 @@ export function RunsPage() {
                 const id = (run.id || run._id) as string;
                 const stats = run.stats;
                 const isHovered = hover === id;
+                const isEditing = editingId === id;
                 return (
-                  <button
+                  <div
                     key={id}
-                    onClick={() => router.push(`/runs/${id}`)}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => { if (!isEditing) router.push(`/runs/${id}`); }}
+                    onKeyDown={(e) => { if (!isEditing && e.key === 'Enter') router.push(`/runs/${id}`); }}
                     onMouseEnter={() => setHover(id)}
                     onMouseLeave={() => setHover(null)}
                     style={{
@@ -188,9 +240,30 @@ export function RunsPage() {
                       {/* Left */}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {run.title}
-                          </span>
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              value={editTitle}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setEditTitle(e.target.value)}
+                              onBlur={() => saveEdit(id)}
+                              onKeyDown={(e) => {
+                                e.stopPropagation();
+                                if (e.key === 'Enter') saveEdit(id);
+                                if (e.key === 'Escape') setEditingId(null);
+                              }}
+                              style={{
+                                fontSize: 15, fontWeight: 600, color: 'var(--fg-primary)',
+                                fontFamily: 'inherit', padding: '2px 8px', borderRadius: 6,
+                                border: '1px solid var(--fg-primary)', outline: 'none',
+                                background: '#FFF', minWidth: 240,
+                              }}
+                            />
+                          ) : (
+                            <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {run.title}
+                            </span>
+                          )}
                           <RunStatusDot status={run.status} />
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12, color: 'var(--fg-muted)' }}>
@@ -246,10 +319,45 @@ export function RunsPage() {
                             Rejected
                           </div>
                         </div>
+                        {/* Row actions — rename + delete */}
+                        <div
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 4,
+                            opacity: isHovered || isEditing ? 1 : 0,
+                            transition: 'opacity 120ms',
+                          }}
+                        >
+                          <button
+                            title="Rename run"
+                            disabled={busyId === id}
+                            onClick={(e) => { e.stopPropagation(); startEdit(id, run.title); }}
+                            style={{
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              width: 30, height: 30, borderRadius: 6, cursor: 'pointer',
+                              border: '1px solid var(--border-card)', background: '#FFF',
+                              color: 'var(--fg-secondary)',
+                            }}
+                          >
+                            <Icon name="pencil" size={14} />
+                          </button>
+                          <button
+                            title="Delete run"
+                            disabled={busyId === id}
+                            onClick={(e) => { e.stopPropagation(); setActionError(null); setConfirmDelete(run); }}
+                            style={{
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              width: 30, height: 30, borderRadius: 6, cursor: 'pointer',
+                              border: '1px solid var(--border-card)', background: '#FFF',
+                              color: 'var(--status-danger)',
+                            }}
+                          >
+                            <Icon name={busyId === id ? 'loader' : 'trash-2'} size={14} />
+                          </button>
+                        </div>
                         <Icon name="chevron-right" size={18} style={{ color: isHovered ? 'var(--fg-primary)' : 'var(--fg-muted)', transition: 'color 120ms' }} />
                       </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -279,6 +387,82 @@ export function RunsPage() {
           </>
         )}
       </div>
+
+      {/* Action error toast */}
+      {actionError && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 60,
+          padding: '12px 16px', background: '#FEF2F2', border: '1px solid #FECACA',
+          borderRadius: 8, fontSize: 13, color: '#B91C1C', maxWidth: 380,
+          boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
+        }}>
+          {actionError}
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <div
+          onClick={() => busyId ? null : setConfirmDelete(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 70,
+            background: 'rgba(0,0,0,0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%', maxWidth: 440, background: '#FFF', borderRadius: 12,
+              padding: 24, boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 36, height: 36, borderRadius: 9999,
+                background: 'var(--status-danger)1A', color: 'var(--status-danger)',
+              }}>
+                <Icon name="trash-2" size={18} />
+              </span>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--fg-primary)' }}>
+                Delete this run?
+              </div>
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--fg-secondary)', lineHeight: 1.5, marginBottom: 20 }}>
+              <strong>{confirmDelete.title}</strong> and all of its data — jobs, prospects,
+              outreach, and any companies unique to this run — will be permanently deleted.
+              This cannot be undone.
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                disabled={!!busyId}
+                onClick={() => setConfirmDelete(null)}
+                style={{
+                  height: 36, padding: '0 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                  cursor: busyId ? 'not-allowed' : 'pointer', border: '1px solid var(--border-card)',
+                  background: '#FFF', color: 'var(--fg-primary)', fontFamily: 'inherit',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={!!busyId}
+                onClick={confirmDeleteRun}
+                style={{
+                  height: 36, padding: '0 16px', borderRadius: 6, fontSize: 13, fontWeight: 600,
+                  cursor: busyId ? 'not-allowed' : 'pointer', border: 'none',
+                  background: 'var(--status-danger)', color: '#FFF', fontFamily: 'inherit',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                {busyId ? <Icon name="loader" size={14} /> : <Icon name="trash-2" size={14} />}
+                Delete run
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }`}</style>
     </>

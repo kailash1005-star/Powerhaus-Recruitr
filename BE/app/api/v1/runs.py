@@ -6,6 +6,7 @@ GET  /api/v1/runs/{id}   - Get run details
 GET  /api/v1/runs/{id}/jobs - Get jobs for a run (paginated)
 """
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
+from pydantic import BaseModel
 from app.database import get_database
 from app.schemas.runs import RunCreateSchema, RunResponseSchema
 from app.services.orchestrator import process_run_background
@@ -13,6 +14,10 @@ from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 
 router = APIRouter()
+
+
+class RunRenameSchema(BaseModel):
+    title: str
 
 
 async def get_db():
@@ -165,28 +170,83 @@ async def get_run_jobs(
         raise HTTPException(status_code=500, detail=f"Error fetching jobs: {str(e)}")
 
 
+# ── PATCH /{run_id} (rename) ──────────────────────────────────────────────
+
+@router.patch("/{run_id}", response_model=RunResponseSchema)
+async def rename_run(run_id: str, body: RunRenameSchema, db=Depends(get_db)):
+    """Rename a run (update its title)."""
+    try:
+        title = (body.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title must not be empty")
+
+        runs_col = db["runs"]
+        run_oid = ObjectId(run_id)
+        res = await runs_col.update_one(
+            {"_id": run_oid},
+            {"$set": {"title": title, "updatedAt": datetime.utcnow()}},
+        )
+        if res.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        doc = await runs_col.find_one({"_id": run_oid})
+        doc["_id"] = str(doc["_id"])
+        return RunResponseSchema(**doc)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error renaming run: {str(e)}")
+
+
 # ── DELETE /{run_id} ─────────────────────────────────────────────────────
 
 @router.delete("/{run_id}")
 async def delete_run(run_id: str, db=Depends(get_db)):
+    """Delete a run and ALL data associated with it: jobs, prospects, outreach,
+    and any companies that become orphaned (no other run references them).
+
+    Companies are shared/deduped across runs (keyed by domain/slug), so we only
+    remove a company when no remaining job points to it — otherwise we'd corrupt
+    other runs that reuse the same company.
+    """
     try:
+        run_oid = ObjectId(run_id)
         runs_col = db["runs"]
         jobs_col = db["jobs"]
-        run_oid = ObjectId(run_id)
+        prospects_col = db["prospects"]
+        companies_col = db["companies"]
+        outreach_col = db["outreach"]
 
-        # Delete associated jobs
+        # Capture the companies this run touched BEFORE deleting its jobs.
+        company_ids = [
+            cid for cid in await jobs_col.distinct("companyId", {"runId": run_oid}) if cid
+        ]
+
+        # Delete run-scoped data. outreach may not exist yet → delete_many is a no-op.
+        prospects_res = await prospects_col.delete_many({"runId": run_oid})
+        outreach_res = await outreach_col.delete_many({"runId": run_oid})
         jobs_res = await jobs_col.delete_many({"runId": run_oid})
 
-        # Delete the run itself
-        runs_res = await runs_col.delete_one({"_id": run_oid})
+        # Remove companies that are now orphaned (no remaining job references them).
+        deleted_companies = 0
+        for cid in company_ids:
+            if await jobs_col.count_documents({"companyId": cid}) == 0:
+                res = await companies_col.delete_one({"_id": cid})
+                deleted_companies += res.deleted_count
 
+        runs_res = await runs_col.delete_one({"_id": run_oid})
         if runs_res.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Run not found")
 
         return {
             "success": True,
-            "message": "Run and associated jobs deleted successfully",
-            "deleted_jobs_count": jobs_res.deleted_count
+            "message": "Run and associated data deleted successfully",
+            "deleted": {
+                "jobs": jobs_res.deleted_count,
+                "prospects": prospects_res.deleted_count,
+                "outreach": outreach_res.deleted_count,
+                "companies": deleted_companies,
+            },
         }
     except HTTPException:
         raise
