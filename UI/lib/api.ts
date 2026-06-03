@@ -199,6 +199,9 @@ export interface RunJob {
     description: string;
     [key: string]: unknown;
   };
+  inPipeline?: boolean;
+  inPipelineId?: string;
+  inPipelineCompany?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -308,4 +311,212 @@ export function fetchJobsAnalytics(days = 7): Promise<JobsAnalytics> {
 
 export function fetchCompaniesAnalytics(): Promise<CompaniesAnalytics> {
   return get('/api/v1/analytics/companies');
+}
+
+// ── Companies (minimal — used by AddToPipelineModal prefill) ────────────────
+
+export interface CompanyDoc {
+  _id: string;
+  companyName?: string;
+  companyDomain?: string;
+  companyIndustry?: string;
+  industry?: string;
+  matchedIndustry?: string | null;
+  location?: string;
+  linkedinSlug?: string | null;
+  website?: string;
+  [key: string]: unknown;
+}
+
+export function fetchCompany(id: string): Promise<CompanyDoc> {
+  return get(`/api/v1/companies/${id}`);
+}
+
+// ── Candidate Pipelines ───────────────────────────────────────────────────────
+
+export type PipelineJobSearchStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+export interface PipelineJob {
+  jobId: string;
+  jobTitle: string;
+  jobLocation?: string;
+  addedAt: string;
+  searchStatus: PipelineJobSearchStatus;
+  lastSearchedAt?: string | null;
+  candidateCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  appliedIndustryFallback?: boolean;
+  searchError?: string | null;
+}
+
+export interface Pipeline {
+  _id: string;
+  companyId: string | null;
+  companyName: string;
+  companyDomain: string;
+  companyIndustry?: string;
+  matchedIndustry?: string | null;
+  companyLocation?: string;
+  linkedinSlug?: string | null;
+  website?: string;
+  source: 'run' | 'manual';
+  jobs: PipelineJob[];
+  totalCandidates: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PipelineListResponse {
+  total: number; page: number; limit: number; pages: number;
+  pipelines: Pipeline[];
+}
+
+export interface CandidateEmploymentEntry {
+  title?: string | null;
+  organizationName?: string | null;
+  organizationId?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  current?: boolean;
+}
+
+export interface CandidateOrganizationSlim {
+  name?: string | null;
+  primaryDomain?: string | null;
+  industry?: string | null;
+  estimatedNumEmployees?: number | null;
+  foundedYear?: number | null;
+  hqCity?: string | null;
+  hqCountry?: string | null;
+  shortDescription?: string | null;
+  logoUrl?: string | null;
+  linkedinUrl?: string | null;
+  websiteUrl?: string | null;
+}
+
+export interface CandidateEnrichedData {
+  email?: string | null;
+  emailStatus?: string | null;
+  personalEmails?: string[];
+  linkedinUrl?: string | null;
+  photoUrl?: string | null;
+  title?: string | null;
+  headline?: string | null;
+  seniority?: string | null;
+  functions?: string[];
+  departments?: string[];
+  location?: string | null;
+  timeZone?: string | null;
+  employmentHistory?: CandidateEmploymentEntry[];
+  socials?: { twitter?: string | null; github?: string | null; facebook?: string | null };
+  organization?: CandidateOrganizationSlim;
+}
+
+export interface Candidate {
+  _id: string;
+  pipelineId: string;
+  sourceJobIds: string[];
+  apolloId: string;
+  externalLinkedinUrl?: string;
+  firstName: string;
+  lastName: string;
+  displayName?: string;
+  headline?: string;
+  currentTitle?: string;
+  currentCompany?: string;
+  currentCompanyDomain?: string;
+  location?: string;
+  matchScore: number;
+  matchReasons: string[];
+  isAccepted: boolean;
+  rejectionReason?: string | null;
+  decidedAt?: string | null;
+  isEnriched: boolean;
+  enrichedAt?: string | null;
+  enrichedData?: CandidateEnrichedData | null;
+  /** Full untouched Apollo /people/match envelope — audit-grade. */
+  enrichedRaw?: Record<string, unknown> | null;
+  enrichedSource?: string | null;
+  runHistory: Array<{
+    runAt: string; jobId: string; isRerun: boolean; appliedIndustryFallback: boolean;
+  }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CandidateListResponse {
+  total: number; page: number; limit: number; pages: number;
+  candidates: Candidate[];
+}
+
+export function fetchPipelines(
+  page = 1, limit = 20, q?: string,
+): Promise<PipelineListResponse> {
+  let url = `/api/v1/pipelines?page=${page}&limit=${limit}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  return get(url);
+}
+
+export function fetchPipeline(id: string): Promise<Pipeline> {
+  return get(`/api/v1/pipelines/${id}`);
+}
+
+export interface CreatePipelinePayload {
+  companyId?: string;
+  companyName?: string;
+  companyDomain?: string;
+  companyIndustry?: string;
+  matchedIndustry?: string | null;
+  companyLocation?: string;
+  linkedinSlug?: string | null;
+  website?: string;
+}
+
+export function createPipeline(payload: CreatePipelinePayload): Promise<Pipeline> {
+  return post('/api/v1/pipelines', payload);
+}
+
+export function deletePipeline(id: string): Promise<unknown> {
+  return del(`/api/v1/pipelines/${id}`);
+}
+
+export function addJobToPipeline(pipelineId: string, jobId: string): Promise<unknown> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs`, { jobId });
+}
+
+export function removeJobFromPipeline(pipelineId: string, jobId: string): Promise<unknown> {
+  return del(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}`);
+}
+
+export function rerunPipelineJob(pipelineId: string, jobId: string): Promise<unknown> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/rerun`, {});
+}
+
+export function fetchPipelineCandidates(
+  pipelineId: string,
+  jobId: string,
+  page = 1,
+  limit = 50,
+  quality: 'all' | 'accepted' | 'rejected' = 'all',
+  sortBy?: 'matchScore' | 'createdAt',
+  sortOrder: 'asc' | 'desc' = 'desc',
+): Promise<CandidateListResponse> {
+  let url = `/api/v1/pipelines/${pipelineId}/jobs/${jobId}/candidates?page=${page}&limit=${limit}`;
+  if (quality !== 'all') url += `&quality=${quality}`;
+  if (sortBy) url += `&sort_by=${sortBy}&sort_order=${sortOrder}`;
+  return get(url);
+}
+
+export function patchCandidate(
+  candidateId: string,
+  body: { isAccepted?: boolean; rejectionReason?: string | null },
+): Promise<Candidate> {
+  return patch(`/api/v1/pipelines/candidates/${candidateId}`, body);
+}
+
+export function enrichCandidate(candidateId: string): Promise<Candidate> {
+  return post(`/api/v1/pipelines/candidates/${candidateId}/enrich`, {});
 }

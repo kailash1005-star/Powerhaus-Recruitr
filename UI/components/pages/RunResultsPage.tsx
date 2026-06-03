@@ -5,15 +5,18 @@ import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { ProspectsSlideOut } from '../ProspectsSlideOut';
+import { AddToPipelineModal } from '../AddToPipelineModal';
 import {
   fetchRun,
   fetchRunJobs,
   fetchEnrichmentCredits,
+  fetchCompany,
   type Run,
   type RunJob,
   type RunJobsResponse,
   type EnrichmentCreditStatus,
 } from '@/lib/api';
+import { useRouter } from 'next/navigation';
 
 interface RunResultsPageProps {
   runId: string;
@@ -84,6 +87,39 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
 
   // Prospects slide-out
   const [slideOutJob, setSlideOutJob] = useState<{ id: string; title: string; company: string } | null>(null);
+
+  // Add-to-pipeline modal state
+  const router = useRouter();
+  const [addToPipelineJob, setAddToPipelineJob] = useState<RunJob | null>(null);
+  const [pipelineCompanyDefaults, setPipelineCompanyDefaults] = useState<{
+    companyName?: string; companyDomain?: string; companyIndustry?: string;
+    matchedIndustry?: string | null; companyLocation?: string;
+    linkedinSlug?: string | null; website?: string;
+  } | undefined>(undefined);
+
+  const openAddToPipeline = useCallback(async (job: RunJob) => {
+    // Prefill the modal from the Phase-2-resolved company doc when available
+    let defaults: typeof pipelineCompanyDefaults = {
+      companyName: job.company,
+      companyLocation: job.location,
+    };
+    if (job.companyId) {
+      try {
+        const co = await fetchCompany(job.companyId);
+        defaults = {
+          companyName: co.companyName || job.company,
+          companyDomain: co.companyDomain || '',
+          companyIndustry: (co.industry as string) || (co.companyIndustry as string) || '',
+          matchedIndustry: co.matchedIndustry,
+          companyLocation: (co.location as string) || '',
+          linkedinSlug: co.linkedinSlug,
+          website: (co.website as string) || '',
+        };
+      } catch { /* fall back to defaults */ }
+    }
+    setPipelineCompanyDefaults(defaults);
+    setAddToPipelineJob(job);
+  }, []);
 
   const loadRun = useCallback(async () => {
     try { setRun(await fetchRun(runId)); } catch (e) { console.error(e); }
@@ -450,21 +486,55 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
                       )}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right' }}>
-                      <button
-                        onClick={() => setSlideOutJob({ id: job._id, title: job.title, company: job.company })}
-                        style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 5,
-                          padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
-                          cursor: 'pointer', border: 'none',
-                          background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit',
-                          transition: 'opacity 120ms',
-                        }}
-                        onMouseOver={(e) => ((e.currentTarget as HTMLElement).style.opacity = '0.85')}
-                        onMouseOut={(e) => ((e.currentTarget as HTMLElement).style.opacity = '1')}
-                      >
-                        <Icon name="users" size={12} />
-                        {job.prospectCount && job.prospectCount > 0 ? `${job.prospectCount} Prospects` : 'Prospects'}
-                      </button>
+                      <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        {/* Add to candidate pipeline — only enable for accepted jobs */}
+                        <button
+                          disabled={job.qualityStatus !== 'good'}
+                          title={
+                            job.qualityStatus !== 'good'
+                              ? 'Only accepted jobs can be added to a candidate pipeline'
+                              : job.inPipeline
+                                ? `Already in pipeline — open ${job.inPipelineCompany ?? ''}`
+                                : 'Add this job to a candidate pipeline'
+                          }
+                          onClick={() => {
+                            if (job.inPipeline && job.inPipelineId) {
+                              router.push(`/candidates/${job.inPipelineId}`);
+                            } else {
+                              openAddToPipeline(job);
+                            }
+                          }}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                            cursor: job.qualityStatus !== 'good' ? 'not-allowed' : 'pointer',
+                            border: '1px solid var(--border-card)',
+                            background: job.inPipeline ? 'var(--status-success)1A' : '#FFF',
+                            color: job.qualityStatus !== 'good'
+                              ? 'var(--fg-muted)'
+                              : job.inPipeline ? 'var(--status-success)' : 'var(--fg-primary)',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          <Icon name={job.inPipeline ? 'check' : 'user-plus'} size={12} />
+                          {job.inPipeline ? 'In pipeline' : 'Add'}
+                        </button>
+                        <button
+                          onClick={() => setSlideOutJob({ id: job._id, title: job.title, company: job.company })}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                            cursor: 'pointer', border: 'none',
+                            background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit',
+                            transition: 'opacity 120ms',
+                          }}
+                          onMouseOver={(e) => ((e.currentTarget as HTMLElement).style.opacity = '0.85')}
+                          onMouseOut={(e) => ((e.currentTarget as HTMLElement).style.opacity = '1')}
+                        >
+                          <Icon name="users" size={12} />
+                          {job.prospectCount && job.prospectCount > 0 ? `${job.prospectCount} Prospects` : 'Prospects'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -571,6 +641,21 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
         jobTitle={slideOutJob?.title ?? ''}
         companyName={slideOutJob?.company ?? ''}
         runId={runId}
+      />
+
+      {/* Add-to-candidate-pipeline modal */}
+      <AddToPipelineModal
+        isOpen={addToPipelineJob !== null}
+        onClose={() => setAddToPipelineJob(null)}
+        job={addToPipelineJob}
+        companyDefaults={pipelineCompanyDefaults}
+        onAdded={(pipelineId) => {
+          setAddToPipelineJob(null);
+          // Refresh the jobs list so the row flips to "In pipeline"
+          loadJobs();
+          // Soft toast via router push? Keep it simple — navigate to the pipeline.
+          router.push(`/candidates/${pipelineId}`);
+        }}
       />
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }`}</style>

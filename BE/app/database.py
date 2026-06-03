@@ -84,6 +84,34 @@ async def connect_to_mongo():
         print("[OK] Rebuilt prospects email index as unique partial")
     except Exception as e:
         print(f"[WARN] Could not rebuild prospects email index: {e}")
+
+    # candidatePipelines — one pipeline per company; lookups by companyId/jobs.jobId.
+    try:
+        pipelines = database["candidatePipelines"]
+        await pipelines.create_index(
+            "companyDomain", name="idx_companyDomain", unique=True,
+            partialFilterExpression={"companyDomain": {"$type": "string", "$gt": ""}},
+        )
+        await pipelines.create_index("companyId", name="idx_companyId")
+        await pipelines.create_index("jobs.jobId", name="idx_jobs_jobId")
+        await pipelines.create_index([("companyName", "text")], name="idx_companyName_text")
+        print("[OK] candidatePipelines indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create candidatePipelines indexes: {e}")
+
+    # candidates — compound unique on (pipelineId, apolloId) so the same Apollo
+    # person can appear in different pipelines but is deduped within one.
+    try:
+        candidates = database["candidates"]
+        await candidates.create_index(
+            [("pipelineId", 1), ("apolloId", 1)],
+            name="idx_pipeline_apolloId", unique=True,
+        )
+        await candidates.create_index("pipelineId", name="idx_pipelineId")
+        await candidates.create_index("sourceJobIds", name="idx_sourceJobIds")
+        print("[OK] candidates indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create candidates indexes: {e}")
  
  
 async def close_mongo_connection():

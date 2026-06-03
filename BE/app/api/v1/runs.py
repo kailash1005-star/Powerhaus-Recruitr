@@ -138,6 +138,7 @@ async def get_run_jobs(
         cursor = jobs_col.find(query).sort(sort_by, sort_direction).skip(skip).limit(limit)
 
         prospects_col = db["prospects"]
+        pipelines_col = db["candidatePipelines"]
 
         jobs = []
         company_ids_seen: dict = {}
@@ -157,6 +158,18 @@ async def get_run_jobs(
                 doc["prospectCount"] = 0
             doc["industry"] = doc.get("industry") or ""
             doc["outreachCount"] = 0
+            # Is this job already in any candidate pipeline? Drives the
+            # "Add to pipeline" button enable/disable in the UI.
+            pipe = await pipelines_col.find_one(
+                {"jobs.jobId": doc["_id"]},
+                {"_id": 1, "companyName": 1},
+            )
+            if pipe:
+                doc["inPipeline"] = True
+                doc["inPipelineId"] = str(pipe["_id"])
+                doc["inPipelineCompany"] = pipe.get("companyName")
+            else:
+                doc["inPipeline"] = False
             jobs.append(doc)
 
         return {

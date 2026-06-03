@@ -135,6 +135,16 @@ export function ICPConfigPage() {
   const [icpConfig, setIcpConfig] = useState<ICPBackendConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [startingRun, setStartingRun] = useState(false);
+  // Sleek multi-phase launch sequence — replaces the abrupt button → push flow.
+  // idle → starting (overlay fades in, API call in flight + min-display delay)
+  //      → created (success tick on the create step)
+  //      → opening (brief "opening results" beat)
+  //      → navigate
+  type LaunchPhase = 'idle' | 'starting' | 'created' | 'opening';
+  const [launchPhase, setLaunchPhase] = useState<LaunchPhase>('idle');
+  const [launchSummary, setLaunchSummary] = useState<{
+    industries: number; titles: number; locations: number;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // UI state
@@ -267,24 +277,47 @@ export function ICPConfigPage() {
 
     setStartingRun(true);
     setError(null);
+    setLaunchSummary({
+      industries: selectedIndustries.length,
+      titles: selectedTitles.length,
+      locations: selectedLocations.length,
+    });
+    setLaunchPhase('starting');
+
+    // Pace the visual transitions. Each phase has a minimum display time so
+    // the user sees the work happen instead of getting yanked across screens.
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
     try {
-      const result = await startRun({
-        title: `Run (LinkedIn) — ${new Date().toLocaleDateString()}`,
-        source: 'jobspy',
-        runConfig: {
-          searchTitles: selectedTitles,
-          searchLocations: selectedLocations,
-          targetIndustries: selectedIndustries,
-          customIndustries: [],
-          hoursOld: parseInt(maxPostingAge) || 24,
-          resultsPerSearch: parseInt(resultsPerBatch) || 50,
-          siteName: ['linkedin'],
-          icpConfigSnapshot: icpConfig ? { version: icpConfig.version } : null,
-        },
-      });
+      // Fire the API and a minimum-display delay in parallel — whichever
+      // takes longer wins, so a fast API doesn't make the spinner flash.
+      const [result] = await Promise.all([
+        startRun({
+          title: `Run (LinkedIn) — ${new Date().toLocaleDateString()}`,
+          source: 'jobspy',
+          runConfig: {
+            searchTitles: selectedTitles,
+            searchLocations: selectedLocations,
+            targetIndustries: selectedIndustries,
+            customIndustries: [],
+            hoursOld: parseInt(maxPostingAge) || 24,
+            resultsPerSearch: parseInt(resultsPerBatch) || 50,
+            siteName: ['linkedin'],
+            icpConfigSnapshot: icpConfig ? { version: icpConfig.version } : null,
+          },
+        }),
+        sleep(900),
+      ]);
       const newId = result.id || result._id;
+
+      setLaunchPhase('created');
+      await sleep(550);
+      setLaunchPhase('opening');
+      await sleep(450);
+
       router.push(newId ? `/runs/${newId}` : '/runs');
     } catch (e: any) {
+      setLaunchPhase('idle');
       setError('Failed to start run: ' + e.message);
     } finally {
       setStartingRun(false);
@@ -704,6 +737,149 @@ export function ICPConfigPage() {
           </button>
         </div>
       </div>
+
+      <LaunchOverlay phase={launchPhase} summary={launchSummary} />
     </>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// LaunchOverlay — sleek multi-phase "your run is starting" sequence.
+// Phases drive a 3-step checklist; the panel fades in on mount and fades
+// out cleanly just before the router push.
+// ───────────────────────────────────────────────────────────────────────────
+
+type LaunchPhase = 'idle' | 'starting' | 'created' | 'opening';
+
+function LaunchOverlay({
+  phase, summary,
+}: {
+  phase: LaunchPhase;
+  summary: { industries: number; titles: number; locations: number } | null;
+}) {
+  const visible = phase !== 'idle';
+
+  const steps: Array<{ key: LaunchPhase; label: string; sublabel: string }> = [
+    { key: 'starting', label: 'Creating your run',          sublabel: 'Saving configuration & spinning up the pipeline' },
+    { key: 'created',  label: 'Run created',                sublabel: 'Background workers are scraping jobs now' },
+    { key: 'opening',  label: 'Opening results',            sublabel: 'You\'ll see live updates as jobs flow in' },
+  ];
+
+  const phaseOrder: LaunchPhase[] = ['starting', 'created', 'opening'];
+  const currentIdx = phaseOrder.indexOf(phase as LaunchPhase);
+
+  return (
+    <div
+      aria-hidden={!visible}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 100,
+        background: 'rgba(15, 23, 42, 0.55)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        opacity: visible ? 1 : 0,
+        pointerEvents: visible ? 'auto' : 'none',
+        transition: 'opacity 240ms ease',
+      }}
+    >
+      <div
+        style={{
+          width: '92%', maxWidth: 440, background: '#FFFFFF',
+          borderRadius: 16, padding: '28px 28px 24px',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.25)',
+          transform: visible ? 'translateY(0) scale(1)' : 'translateY(8px) scale(0.98)',
+          opacity: visible ? 1 : 0,
+          transition: 'opacity 220ms ease, transform 260ms cubic-bezier(.2,.7,.2,1.1)',
+        }}
+      >
+        {/* Header: animated icon + title */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12,
+            background: phase === 'opening' ? '#ECFDF5' : '#EEF2FF',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'background 240ms ease',
+          }}>
+            {phase === 'starting' && (
+              <span style={{
+                display: 'inline-block', width: 18, height: 18,
+                border: '2.5px solid #C7D2FE', borderTopColor: '#4F46E5',
+                borderRadius: '50%', animation: 'launchspin 0.8s linear infinite',
+              }} />
+            )}
+            {phase === 'created' && (
+              <Icon name="check" size={22} style={{ color: '#4F46E5' }} />
+            )}
+            {phase === 'opening' && (
+              <Icon name="rocket" size={22} style={{ color: '#059669' }} />
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>
+              {phase === 'opening' ? 'Launching pipeline' : phase === 'created' ? 'Run created' : 'Starting your run'}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
+              {summary
+                ? `${summary.industries} industr${summary.industries === 1 ? 'y' : 'ies'} · ${summary.titles} title${summary.titles === 1 ? '' : 's'} · ${summary.locations} location${summary.locations === 1 ? '' : 's'}`
+                : 'Preparing your pipeline'}
+            </div>
+          </div>
+        </div>
+
+        {/* Step checklist */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 }}>
+          {steps.map((step, i) => {
+            const done = i < currentIdx;
+            const active = i === currentIdx;
+            const pending = i > currentIdx;
+            return (
+              <div
+                key={step.key}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 12px', borderRadius: 8,
+                  background: active ? '#F5F3FF' : 'transparent',
+                  border: `1px solid ${active ? '#DDD6FE' : 'transparent'}`,
+                  transition: 'background 240ms ease, border-color 240ms ease',
+                  opacity: pending ? 0.55 : 1,
+                }}
+              >
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: 22, height: 22, borderRadius: 9999, flexShrink: 0,
+                  background: done ? '#059669' : active ? '#4F46E5' : '#E5E7EB',
+                  color: '#FFF',
+                  transition: 'background 240ms ease, transform 240ms cubic-bezier(.2,.7,.2,1.4)',
+                  transform: done ? 'scale(1)' : 'scale(0.9)',
+                }}>
+                  {done ? (
+                    <Icon name="check" size={12} />
+                  ) : active ? (
+                    <span style={{
+                      width: 10, height: 10, borderRadius: 9999,
+                      background: '#FFF', animation: 'launchpulse 1.2s ease-in-out infinite',
+                    }} />
+                  ) : (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#9CA3AF' }}>{i + 1}</span>
+                  )}
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>{step.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{step.sublabel}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes launchspin { to { transform: rotate(360deg); } }
+        @keyframes launchpulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50%      { opacity: 0.4; transform: scale(0.7); }
+        }
+      `}</style>
+    </div>
   );
 }

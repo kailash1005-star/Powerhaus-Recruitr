@@ -145,6 +145,94 @@ class ApolloService:
         )
 
     # ------------------------------------------------------------------
+    # Candidate search (Phase 4 — recruitment candidate pipelines)
+    # ------------------------------------------------------------------
+
+    def search_candidates(
+        self,
+        *,
+        title: str,
+        location_country: str | None = None,
+        current_industry: str | None = None,
+        max_results: int = 50,
+    ) -> dict:
+        """Apollo people search tuned for recruitment candidate sourcing.
+
+        Uses ``person_titles[]`` with ``include_similar_titles=true`` for
+        semantic title matching. Industry is matched against the CURRENT
+        employer's industry (Apollo has no past-industry filter). Location is
+        free text — pass the country (e.g. ``"germany"``).
+
+        Industry-fallback rule: if the industry-scoped search returns 0
+        people, automatically retry once WITHOUT industry and tag the result.
+        This balances precision vs. coverage when the recruiter's industry
+        label doesn't match Apollo's taxonomy.
+
+        Returns a dict with:
+            ``people`` (list of Apollo person dicts — search endpoint, no
+            email/phone), ``applied_industry_fallback`` (bool), and the
+            ``params_used`` for debugging.
+        """
+        if not title:
+            return {"people": [], "applied_industry_fallback": False, "params_used": {}}
+
+        base_params: dict = {
+            "person_titles[]": [title],
+            "include_similar_titles": "true",
+        }
+        if location_country:
+            base_params["person_locations[]"] = [location_country.strip().lower()]
+
+        label = f"candidate search [{title}]"
+
+        # --- attempt 1: with industry (if provided) ---
+        if current_industry:
+            params = {**base_params, "person_industries[]": [current_industry]}
+            people = self._paged_search_capped(params, label, max_results)
+            if people:
+                return {
+                    "people": people[:max_results],
+                    "applied_industry_fallback": False,
+                    "params_used": params,
+                }
+            logger.info(
+                "Apollo candidate search returned 0 with industry=%r — retrying without industry",
+                current_industry,
+            )
+
+        # --- attempt 2: without industry (broader pool) ---
+        people = self._paged_search_capped(base_params, label, max_results)
+        return {
+            "people": people[:max_results],
+            "applied_industry_fallback": bool(current_industry) and len(people) > 0,
+            "params_used": base_params,
+        }
+
+    def _paged_search_capped(
+        self, extra_params: dict, label: str, max_results: int,
+    ) -> list[dict]:
+        """Like _paged_search but stops paginating once max_results is reached.
+
+        Apollo's per_page max is 100; for candidate sourcing we cap each search
+        at 50 by default, so this is almost always a single-page call.
+        """
+        all_people: list[dict] = []
+        page = 1
+        per_page = min(APOLLO_PER_PAGE, max_results)
+        while True:
+            params = {"per_page": per_page, "page": page, **extra_params}
+            data = self._request_page(params, label, label)
+            if data is None:
+                break
+            people = data.get("people", [])
+            all_people.extend(people)
+            if len(all_people) >= max_results or not people:
+                break
+            page += 1
+            time.sleep(0.5)
+        return all_people
+
+    # ------------------------------------------------------------------
     # Enrichment (kept for on-demand use; not invoked by orchestrator)
     # ------------------------------------------------------------------
 

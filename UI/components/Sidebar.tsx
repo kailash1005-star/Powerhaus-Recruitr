@@ -22,6 +22,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'PIPELINE',
     items: [
       { href: '/runs', icon: 'play-circle', label: 'Runs', matchPrefix: '/runs' },
+      { href: '/candidates', icon: 'users', label: 'Candidates', matchPrefix: '/candidates' },
     ],
   },
   {

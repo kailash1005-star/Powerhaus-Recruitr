@@ -153,11 +153,44 @@ class LinkedInCompanyService:
             logger.warning("[LinkedIn] Error fetching %s: %s", slug, exc)
             return None
 
+    @staticmethod
+    def _extract_headquarter(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Pull HQ city/country/area from the raw LinkedIn payload.
+
+        LinkedIn's `headquarter` is typically:
+            {"country": "DE", "geographicArea": "Bavaria", "city": "Munich",
+             "postalCode": "80331", "line1": "..."}
+        Some companies have it under `confirmedLocations[]` instead — we fall
+        back to the first confirmed location with `headquarter: true`.
+        """
+        hq = data.get("headquarter") or {}
+        if not hq:
+            for loc in data.get("confirmedLocations") or []:
+                if loc.get("headquarter"):
+                    hq = loc
+                    break
+        if not hq:
+            return {}
+        return {
+            "city": hq.get("city") or "",
+            "country": hq.get("country") or "",
+            "geographicArea": hq.get("geographicArea") or "",
+            "postalCode": hq.get("postalCode") or "",
+            "line1": hq.get("line1") or "",
+        }
+
+    @staticmethod
+    def _format_hq_display(hq: Dict[str, Any]) -> str:
+        """Human-readable single-line HQ display: 'Munich, Bavaria, DE'."""
+        parts = [hq.get("city"), hq.get("geographicArea"), hq.get("country")]
+        return ", ".join([p for p in parts if p]).strip(", ")
+
     def fetch_company_info(self, url: str) -> Optional[Dict[str, Any]]:
         """
         Fetch company from LinkedIn and return only the fields we need:
           companyIndustries, staffingCompany, staffCount,
-          description, companyPageUrl, companyName, website
+          description, companyPageUrl, companyName, website,
+          headquarter (structured), companyLocation (display string)
         """
         data = self.fetch_company_raw(url)
         if data is None:
@@ -171,6 +204,8 @@ class LinkedInCompanyService:
 
         website = data.get("companyPageUrl", "")
         domain = self.extract_domain(website)
+        hq = self._extract_headquarter(data)
+        hq_display = self._format_hq_display(hq)
 
         return {
             "companyName": data.get("name") or "",
@@ -181,6 +216,8 @@ class LinkedInCompanyService:
             "companyPageUrl": website,
             "companyDomain": domain,
             "website": data.get("url", ""),
+            "headquarter": hq,
+            "companyLocation": hq_display,
         }
 
 

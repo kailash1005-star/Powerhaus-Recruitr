@@ -244,6 +244,8 @@ async def _run_phase2(
         staffing_company = bool(li.get("staffingCompany"))
         company_name = li.get("companyName") or name_lookup.get(url) or ""
         company_industry_text = ", ".join([c for c in li_industries if c])
+        company_location = li.get("companyLocation") or ""
+        headquarter = li.get("headquarter") or {}
 
         # ── Semantic industry match (dynamic) ────────────────────────────────
         # Ask the LLM whether LinkedIn's industry for this company belongs to the
@@ -293,12 +295,15 @@ async def _run_phase2(
             "website": website,
             "isEligible": targeted,
             "notes": reject_reason,
+            "location": company_location,
             "companyDetails": {
                 "description": li_description,
                 "website": website,
                 "industries": li_industries,
                 "staffCount": staff_count,
                 "staffingCompany": staffing_company,
+                "headquarter": headquarter,
+                "companyLocation": company_location,
             },
         }
         # Only write linkedinSlug when we actually extracted one — the Companies
