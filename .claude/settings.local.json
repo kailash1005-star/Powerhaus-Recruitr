@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "PowerShell($ports = @\\(3000, 8000\\); foreach \\($p in $ports\\) { $pids = \\(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue\\).OwningProcess | Sort-Object -Unique; foreach \\($pid_ in $pids\\) { try { Stop-Process -Id $pid_ -Force -ErrorAction Stop; \"killed PID $pid_ \\(port $p\\)\" } catch {} } }; Start-Sleep -Milliseconds 600; foreach \\($p in $ports\\) { if \\(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue\\) { \"port $p still held\" } else { \"port $p FREE\" } })",
+      "Bash(./venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

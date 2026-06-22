@@ -23,6 +23,7 @@ Credits are spent solely when enrichment (match/bulk_match) runs, which happens
 on-demand via enrich()/find_prospects(enrich=True), never in the background run.
 """
 import logging
+import re
 import time
 from typing import Any
 
@@ -41,6 +42,42 @@ from app.config import (
 from app.services.rejection_service import ProspectPreFilter, ProspectPostFilter
 
 logger = logging.getLogger(__name__)
+
+
+# Split on " - ", " — ", " – ", or " | " surrounded by whitespace — common
+# separators between a job title and a trailing qualifier (location, dept).
+_TITLE_SUFFIX_SEP = re.compile(r"\s+[-–—|]\s+")
+
+
+def _title_variants(title: str) -> list[str]:
+    """Generate progressively-relaxed title variants for Apollo fallback search.
+
+    Scraped job titles often include suffixes Apollo doesn't understand
+    (e.g. "Head of Investment Placement - UAE") or are too narrow to match
+    anyone. The cascade is:
+
+      1. Original
+      2. Strip trailing " - <suffix>" (or |, –, —)
+      3. Token-shrink: drop trailing tokens one at a time, floor 3 tokens
+    """
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def _add(t: str) -> None:
+        t = t.strip()
+        key = t.lower()
+        if t and key not in seen:
+            variants.append(t)
+            seen.add(key)
+
+    _add(title)
+    stripped = _TITLE_SUFFIX_SEP.split(title, maxsplit=1)[0]
+    _add(stripped)
+    tokens = stripped.split()
+    while len(tokens) > 3:
+        tokens = tokens[:-1]
+        _add(" ".join(tokens))
+    return variants
 
 
 class ApolloService:
@@ -163,50 +200,73 @@ class ApolloService:
         employer's industry (Apollo has no past-industry filter). Location is
         free text — pass the country (e.g. ``"germany"``).
 
-        Industry-fallback rule: if the industry-scoped search returns 0
-        people, automatically retry once WITHOUT industry and tag the result.
-        This balances precision vs. coverage when the recruiter's industry
-        label doesn't match Apollo's taxonomy.
+        Two-axis fallback:
+          1. Title variants — scraped titles often include location/qualifier
+             suffixes (e.g. "Head of Investment Placement - UAE") or are too
+             narrow ("Head of Investment Placement"). On 0 results we strip
+             trailing " - <suffix>" then token-shrink down to 3 tokens.
+          2. Industry — if industry-scoped search yields 0, retry without.
 
         Returns a dict with:
-            ``people`` (list of Apollo person dicts — search endpoint, no
-            email/phone), ``applied_industry_fallback`` (bool), and the
-            ``params_used`` for debugging.
+            ``people`` (list of Apollo person dicts), ``applied_industry_fallback``
+            (bool), ``applied_title_fallback`` (bool), ``title_used`` (str),
+            and ``params_used`` for debugging.
         """
-        if not title:
-            return {"people": [], "applied_industry_fallback": False, "params_used": {}}
-
-        base_params: dict = {
-            "person_titles[]": [title],
-            "include_similar_titles": "true",
+        empty = {
+            "people": [],
+            "applied_industry_fallback": False,
+            "applied_title_fallback": False,
+            "title_used": title or "",
+            "params_used": {},
         }
-        if location_country:
-            base_params["person_locations[]"] = [location_country.strip().lower()]
+        if not title:
+            return empty
 
-        label = f"candidate search [{title}]"
+        variants = _title_variants(title)
+        for idx, variant in enumerate(variants):
+            base_params: dict = {
+                "person_titles[]": [variant],
+                "include_similar_titles": "true",
+            }
+            if location_country:
+                base_params["person_locations[]"] = [location_country.strip().lower()]
 
-        # --- attempt 1: with industry (if provided) ---
-        if current_industry:
-            params = {**base_params, "person_industries[]": [current_industry]}
-            people = self._paged_search_capped(params, label, max_results)
+            label = f"candidate search [{variant}]"
+
+            # --- attempt 1: with industry (if provided) ---
+            if current_industry:
+                params = {**base_params, "person_industries[]": [current_industry]}
+                people = self._paged_search_capped(params, label, max_results)
+                if people:
+                    return {
+                        "people": people[:max_results],
+                        "applied_industry_fallback": False,
+                        "applied_title_fallback": idx > 0,
+                        "title_used": variant,
+                        "params_used": params,
+                    }
+                logger.info(
+                    "Apollo: 0 results for title=%r industry=%r — dropping industry",
+                    variant, current_industry,
+                )
+
+            # --- attempt 2: without industry (broader pool) ---
+            people = self._paged_search_capped(base_params, label, max_results)
             if people:
                 return {
                     "people": people[:max_results],
-                    "applied_industry_fallback": False,
-                    "params_used": params,
+                    "applied_industry_fallback": bool(current_industry),
+                    "applied_title_fallback": idx > 0,
+                    "title_used": variant,
+                    "params_used": base_params,
                 }
-            logger.info(
-                "Apollo candidate search returned 0 with industry=%r — retrying without industry",
-                current_industry,
-            )
+            if idx + 1 < len(variants):
+                logger.info(
+                    "Apollo: 0 results for title=%r — trying shorter variant %r",
+                    variant, variants[idx + 1],
+                )
 
-        # --- attempt 2: without industry (broader pool) ---
-        people = self._paged_search_capped(base_params, label, max_results)
-        return {
-            "people": people[:max_results],
-            "applied_industry_fallback": bool(current_industry) and len(people) > 0,
-            "params_used": base_params,
-        }
+        return empty
 
     def _paged_search_capped(
         self, extra_params: dict, label: str, max_results: int,
