@@ -112,6 +112,16 @@ async def connect_to_mongo():
         print("[OK] candidates indexes ensured")
     except Exception as e:
         print(f"[WARN] Could not create candidates indexes: {e}")
+
+    # AI Engineer chat — threads listed by recency, messages fetched per thread.
+    try:
+        await database["chatThreads"].create_index("updatedAt", name="idx_chatThreads_updatedAt")
+        await database["chatMessages"].create_index(
+            [("threadId", 1), ("createdAt", 1)], name="idx_chatMessages_thread"
+        )
+        print("[OK] AI Engineer chat indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create chat indexes: {e}")
  
  
 async def close_mongo_connection():

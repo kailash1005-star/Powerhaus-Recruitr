@@ -12,7 +12,6 @@ from app.config import (
     ACCEPTED_TITLE_KEYWORDS,
     REJECTED_TITLE_KEYWORDS,
     HR_KEYWORDS,
-    OPS_KEYWORDS,
     CSUITE_SENIORITIES,
     WANTED_FUNCTIONS,
     UNWANTED_FUNCTIONS,
@@ -110,14 +109,14 @@ class ProspectPreFilter:
                 rejected.append(p)
                 continue
 
-            has_hr_ops = _title_has_keywords(title, HR_KEYWORDS) or _title_has_keywords(title, OPS_KEYWORDS)
+            has_hr = _title_has_keywords(title, HR_KEYWORDS)
             has_persona = _fuzzy_match(title, self.personas) or _fuzzy_match(title, DEFAULT_PERSONA_TITLES)
             is_exec = seniority.lower() in CSUITE_SENIORITIES or bool(EXECUTIVE_TITLE_RE.search(t))
 
-            if has_hr_ops or has_persona or is_exec:
+            if has_hr or has_persona or is_exec:
                 accepted.append(p)
             else:
-                p["_rejection_reason"] = "no hr/ops keyword, no persona match, not executive"
+                p["_rejection_reason"] = "no hr keyword, no persona match, not executive"
                 p["_filter_step"] = "pre_filter_rejected"
                 rejected.append(p)
 
@@ -210,8 +209,6 @@ class ProspectPostFilter:
         t = title.lower()
         if _title_has_keywords(title, HR_KEYWORDS):
             reasons.append("hr_talent_lead")
-        if _title_has_keywords(title, OPS_KEYWORDS):
-            reasons.append("operations_lead")
         if seniority in CSUITE_SENIORITIES or re.search(
             r"\bchief\b|\bceo\b|\bcoo\b|\bcfo\b|\bcto\b|\bchro\b", t
         ):

@@ -17,5 +17,8 @@ rapidfuzz>=3.6.0
 requests>=2.32.0
 
 
+# ── AI Engineer agent (Pydantic AI + MCP client, provider-swappable) ──
+pydantic-ai-slim[openai,anthropic,google,mcp]>=1.0.0
+
 # ── Utilities ──────────────────────────────────────────────────
 python-dotenv>=1.0.0

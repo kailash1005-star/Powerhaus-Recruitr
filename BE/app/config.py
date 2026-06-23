@@ -54,6 +54,30 @@ class Settings(BaseSettings):
     # Apollo (Phase 3 — prospect search)
     APOLLO_API_KEY: str = Field(default="", description="Apollo.io API key")
 
+    # ── AI Engineer agent (Pydantic AI, provider-swappable) ─────────────
+    # Model is a Pydantic AI model string: "<provider>:<model>".
+    #   OpenAI:    openai:gpt-4o
+    #   Anthropic: anthropic:claude-sonnet-4-6
+    #   Google:    google-gla:gemini-2.5-pro
+    #   OpenRouter:openrouter:anthropic/claude-sonnet-4-6
+    # Swap providers by changing this one string (set AGENT_MODEL in .env).
+    AGENT_MODEL: str = Field(default="openai:gpt-4o", description="Pydantic AI model string for the agent")
+    AGENT_SYSTEM_PROMPT: str = Field(default="", description="Override the agent's system prompt (blank = built-in default)")
+    # Provider API keys (pushed into os.environ for Pydantic AI at agent build).
+    ANTHROPIC_API_KEY: str = Field(default="", description="Anthropic API key (for anthropic: models)")
+    GEMINI_API_KEY: str = Field(default="", description="Google Gemini API key (for google-gla: models)")
+    OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API key (for openrouter: models)")
+
+    # ── MCP tool servers the agent connects to ──────────────────────────
+    # The agent's tools come from MCP server(s). Point it at the LinkedIn MCP
+    # server we built. Prefer HTTP (run it as a service) OR stdio (spawn it).
+    #   HTTP : set AGENT_MCP_LINKEDIN_HTTP_URL=http://127.0.0.1:8765/mcp
+    #   stdio: set AGENT_MCP_LINKEDIN_DIR=C:/Users/WELCOME/Desktop/Linked-MCP/ai-version
+    # Leave both blank to run the agent as a plain chat assistant (no tools).
+    AGENT_MCP_LINKEDIN_HTTP_URL: str = Field(default="", description="Streamable-HTTP URL of the LinkedIn MCP server")
+    AGENT_MCP_LINKEDIN_DIR: str = Field(default="", description="Project dir of the LinkedIn MCP server (spawned via 'uv run linkedin-mcp')")
+    AGENT_MCP_AUTH_TOKEN: str = Field(default="", description="Bearer token for the LinkedIn MCP server (HTTP transport)")
+
     # Company rejection threshold
     MAX_STAFF_COUNT: int = Field(
         default=10000,
@@ -116,114 +140,63 @@ APOLLO_PER_PAGE = 100
 APOLLO_BULK_BATCH_SIZE = 10
 APOLLO_SENIORITIES = ["c_suite", "vp", "head", "director"]
 
+# Restrict prospect (buyer) search to the HR department only. Apollo's
+# `person_department_or_subdepartments[]` accepts a master department value that
+# covers every HR sub-department (HR, People Ops, Talent Acquisition, Recruiting,
+# Comp & Benefits, L&D, etc.). Sending this on every people search makes Apollo
+# return ONLY HR-function profiles — no general Operations, Finance, Tech, etc.
+# NOTE: applies to prospect/buyer search only, NOT recruitment candidate search.
+APOLLO_HR_DEPARTMENTS = ["master_human_resources"]
+
 # ────────────────────────────────────────────────────────────────────────────
 # Buyer-persona filter rules (used by ProspectPreFilter / ProspectPostFilter)
 # ────────────────────────────────────────────────────────────────────────────
 
-HR_KEYWORDS = ["hr", "human resource", "people", "talent", "recruitment", "workforce", "culture"]
+HR_KEYWORDS = ["hr", "human resource", "people", "talent", "recruitment", "recruiting", "workforce", "culture"]
+# Pure operations keywords — kept for reference but NO LONGER treated as a wanted
+# signal. We source HR-operations profiles only, not general business operations.
 OPS_KEYWORDS = ["operation", "ops"]
 CSUITE_SENIORITIES = {"c_suite", "owner", "founder", "partner"}
-WANTED_FUNCTIONS = ["hr", "human resource", "people", "talent", "operation", "ops"]
+# Only HR-domain functions are wanted. General "operation"/"ops" are intentionally
+# excluded so the search returns HR profiles, not other operations roles.
+WANTED_FUNCTIONS = ["hr", "human resource", "people", "talent", "recruiting", "recruitment"]
 UNWANTED_FUNCTIONS = [
-    "finance", "financial", "marketing", "sales", "technology", "tech",
-    "analytics", "asset", "culinary", "food", "recreation", "care",
-    "clinical", "medical", "information technology",
+    "operation", "ops", "finance", "financial", "marketing", "sales",
+    "technology", "tech", "analytics", "asset", "culinary", "food",
+    "recreation", "care", "clinical", "medical", "information technology",
 ]
 
-# Per-industry exclusions from UNWANTED_FUNCTIONS — keyed by normalized industry name
-INDUSTRY_UNWANTED_EXCLUSIONS = {
-    "healthcare":           ["care", "clinical", "medical"],
-    "medical_technology":   ["care", "clinical", "medical"],
-    "clean_technology":     ["technology", "tech"],
-    "education_technology": ["technology", "tech"],
-    "accounting":           ["finance", "financial"],
-}
+# Per-industry exclusions from UNWANTED_FUNCTIONS. Now empty: every non-HR
+# function is unwanted across all industries since we source HR profiles only.
+INDUSTRY_UNWANTED_EXCLUSIONS: dict[str, list[str]] = {}
 
 # ────────────────────────────────────────────────────────────────────────────
-# Persona titles per industry (used as Apollo title-search seed)
-# Keyed by normalized industry name. Unknown industries fall back to DEFAULT.
+# Persona titles (used as Apollo title-search seed)
+#
+# We source HR / People / Talent leadership ONLY — no general Operations, CEO,
+# CTO, CFO, medical, etc. Because the search is now restricted to a single
+# HR-domain persona set (plus the Apollo HR-department filter), there is no
+# longer a per-industry split: every industry uses DEFAULT_PERSONA_TITLES.
+# INDUSTRY_PERSONA_MAP is kept (empty) so existing call sites that look up by
+# industry transparently fall back to the HR-only default.
 # ────────────────────────────────────────────────────────────────────────────
 
-INDUSTRY_PERSONA_MAP = {
-    "government": [
-        "Chief Administrative Officer",
-        "City Manager",
-        "Deputy City Manager",
-        "Director of Human Resources",
-    ],
-    "not_for_profit": [
-        "Board Chair",
-        "Board Director",
-        "President",
-        "Executive Director",
-        "VP of People & Culture",
-    ],
-    "clean_technology": [
-        "Founder",
-        "Co-Founder",
-        "Chief Executive Officer",
-        "Chief Operating Officer",
-        "Chief Technology Officer",
-    ],
-    "engineering_construction": [
-        "Founder",
-        "Co-Founder",
-        "Chief Executive Officer",
-        "Chief Operating Officer",
-        "Chief Technology Officer",
-    ],
-    "healthcare": [
-        "Hospital Administrator",
-        "Chief Medical Officer",
-        "VP of Operations",
-        "VP of Talent Acquisition",
-    ],
-    "medical_technology": [
-        "Hospital Administrator",
-        "Chief Medical Officer",
-        "VP of Operations",
-        "VP of Talent Acquisition",
-    ],
-    "education": [
-        "Chief Executive Officer",
-        "Chief Operating Officer",
-        "VP of HR",
-        "Chief Human Resources Officer",
-        "Director of Talent Acquisition",
-    ],
-    "education_technology": [
-        "Chief Executive Officer",
-        "Chief Operating Officer",
-        "VP of HR",
-        "Director of Talent Acquisition",
-    ],
-    "legal": [
-        "Managing Partner",
-        "Chief Operating Officer",
-        "Director of Human Resources",
-    ],
-    "accounting": [
-        "Managing Partner",
-        "Chief Executive Officer",
-        "Chief Operating Officer",
-        "Director of Human Resources",
-    ],
-    "mining_resources": [
-        "VP of Operations",
-        "VP of Talent Acquisition",
-        "Chief Operating Officer",
-        "Director of Human Resources",
-    ],
-}
+INDUSTRY_PERSONA_MAP: dict[str, list[str]] = {}
 
-# Fallback persona titles when company industry is outside the map above
+# HR / People / Talent leadership titles used to seed Apollo prospect search.
 DEFAULT_PERSONA_TITLES = [
-    "Chief Executive Officer",
-    "Chief Operating Officer",
     "Chief Human Resources Officer",
-    "VP of HR",
-    "VP People & Culture",
+    "Chief People Officer",
+    "VP of Human Resources",
+    "VP of People & Culture",
+    "VP of Talent Acquisition",
+    "Head of People",
+    "Head of HR",
+    "Head of Talent Acquisition",
+    "Director of Human Resources",
     "Director of Talent Acquisition",
+    "Head of People Operations",
+    "HR Director",
 ]
 
 

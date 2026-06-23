@@ -34,6 +34,7 @@ from app.config import (
     APOLLO_PER_PAGE,
     APOLLO_BULK_BATCH_SIZE,
     APOLLO_SENIORITIES,
+    APOLLO_HR_DEPARTMENTS,
     INDUSTRY_PERSONA_MAP,
     DEFAULT_PERSONA_TITLES,
     normalize_industry_name,
@@ -157,12 +158,18 @@ class ApolloService:
         return all_people
 
     def search_by_titles(self, domain: str, titles: list[str]) -> list[dict]:
-        """Primary search — query Apollo with specific job titles."""
+        """Primary search — query Apollo with HR-leadership job titles.
+
+        Scoped to the HR department (``APOLLO_HR_DEPARTMENTS``) so Apollo returns
+        only HR / People / Talent profiles, never general Operations or other
+        functions.
+        """
         logger.info("Title search: %d title(s) at %s", len(titles), domain)
         return self._paged_search(
             {
                 "person_titles[]": titles,
                 "include_similar_titles": "true",
+                "person_department_or_subdepartments[]": APOLLO_HR_DEPARTMENTS,
                 "q_organization_domains_list[]": [domain],
             },
             domain,
@@ -170,11 +177,16 @@ class ApolloService:
         )
 
     def search_by_seniority(self, domain: str) -> list[dict]:
-        """Fallback search — fetch prospects by seniority level."""
+        """Fallback search — fetch HR-department prospects by seniority level.
+
+        Scoped to the HR department (``APOLLO_HR_DEPARTMENTS``) so the seniority
+        fallback also stays within HR and does not surface other operations.
+        """
         logger.info("Seniority search at %s", domain)
         return self._paged_search(
             {
                 "person_seniorities[]": APOLLO_SENIORITIES,
+                "person_department_or_subdepartments[]": APOLLO_HR_DEPARTMENTS,
                 "q_organization_domains_list[]": [domain],
             },
             domain,
