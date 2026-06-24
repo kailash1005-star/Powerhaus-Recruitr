@@ -35,7 +35,10 @@ python-multipart>=0.0.9  # required by FastAPI for file uploads
 
 
 # ── AI Engineer agent (Pydantic AI + MCP client, provider-swappable) ──
-pydantic-ai-slim[openai,anthropic,google,mcp]>=1.0.0
+# Pin to the 1.x line: pydantic-ai 2.0 rewrote the MCP API (removed
+# MCPServerStdio / MCPServerStreamableHTTP), which the agent code uses. Cap below
+# 2.0 so the unbounded ">=1.0.0" can't pull an incompatible major again.
+pydantic-ai-slim[openai,anthropic,google,mcp]>=1.0.0,<2.0
 
 # ── Utilities ──────────────────────────────────────────────────
 python-dotenv>=1.0.0
