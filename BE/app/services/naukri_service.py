@@ -17,7 +17,7 @@ from bson import ObjectId
 from firecrawl import Firecrawl
 
 from app.config import settings
-from app.services.rejection_service import JobTitleRejectionService
+
 
 class ConsoleLogger:
     def __init__(self, name):
@@ -463,7 +463,7 @@ async def scrape_and_store_naukri_jobs(
         raise ValueError("FIRECRAWL_API_KEY configuration is not set.")
 
     firecrawl = Firecrawl(api_key=api_key)
-    title_rejection = JobTitleRejectionService()
+
 
     # Scrape all pages (typically capped at 100 on Naukri)
     max_pages = 100
@@ -529,19 +529,16 @@ async def scrape_and_store_naukri_jobs(
 
         desc_data = safe.get("description_data") or {}
 
-        # 1. Title Rejection Filter
-        is_accepted, reason = title_rejection.evaluate_title(title)
-        
-        # 2. Experience Rejection Filter
-        if is_accepted:
-            # Parse experience strings
-            job_exp_str = desc_data.get("experience_required") or safe.get("experience") or ""
-            j_min_exp, j_max_exp = parse_experience_string(job_exp_str)
-            is_accepted, exp_reason = evaluate_experience(
-                j_min_exp, j_max_exp, min_candidate_exp, max_candidate_exp
-            )
-            if not is_accepted:
-                reason = exp_reason
+        # 1. Experience Rejection Filter
+        is_accepted = True
+        reason = ""
+        job_exp_str = desc_data.get("experience_required") or safe.get("experience") or ""
+        j_min_exp, j_max_exp = parse_experience_string(job_exp_str)
+        is_accepted, exp_reason = evaluate_experience(
+            j_min_exp, j_max_exp, min_candidate_exp, max_candidate_exp
+        )
+        if not is_accepted:
+            reason = exp_reason
 
         # 3. Location Rejection Filter
         if is_accepted:

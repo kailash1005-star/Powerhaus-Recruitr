@@ -6,6 +6,9 @@ GET  /api/v1/runs/{id}   - Get run details
 GET  /api/v1/runs/{id}/jobs - Get jobs for a run (paginated)
 """
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
+from fastapi.responses import StreamingResponse
+import json
+import asyncio
 from pydantic import BaseModel
 from app.database import get_database
 from app.schemas.runs import RunCreateSchema, RunResponseSchema
@@ -41,6 +44,7 @@ async def start_run(
             "source": request.source,
             "runStartedAt": datetime.utcnow(),
             "status": "active",
+            "currentPhase": "pending",
             "stats": {
                 "totalJobsScraped": 0,
                 "uniqueCompanies": 0,
@@ -295,3 +299,74 @@ async def get_outreach_status(run_id: str):
 @router.post("/{run_id}/trigger-email-flow")
 async def trigger_email_flow(run_id: str):
     return {"message": "Email outreach is not enabled in this iteration"}
+
+
+# ── SSE stream for real-time pipeline progress ──────────────────────────
+
+@router.get("/{run_id}/stream")
+async def stream_run_progress(run_id: str, db=Depends(get_db)):
+    """SSE endpoint that streams pipeline phase transitions in real time.
+    
+    The frontend connects after POST /start returns, and receives events
+    as the orchestrator updates `currentPhase` on the run document.
+    Events: phase (with phase name + stats), done, error.
+    """
+    run_oid = ObjectId(run_id)
+
+    async def event_generator():
+        last_phase = None
+        last_stats = None
+        polls = 0
+        max_polls = 600  # 10 minutes max (600 * 1s)
+
+        while polls < max_polls:
+            doc = await db["runs"].find_one(
+                {"_id": run_oid},
+                {"status": 1, "currentPhase": 1, "stats": 1, "error": 1},
+            )
+            if not doc:
+                yield _sse("error", {"message": "Run not found"})
+                return
+
+            phase = doc.get("currentPhase") or "pending"
+            status = doc.get("status") or "active"
+            stats = doc.get("stats") or {}
+
+            # Emit an event whenever phase or stats change
+            if phase != last_phase or stats != last_stats:
+                last_phase = phase
+                last_stats = dict(stats)  # shallow copy
+
+                if status == "completed" or phase == "done":
+                    yield _sse("phase", {"phase": "done", "stats": stats})
+                    yield _sse("done", {"runId": run_id})
+                    return
+
+                if status in ("cancelled", "failed") or phase == "failed":
+                    yield _sse("error", {
+                        "message": doc.get("error") or "Run failed",
+                        "phase": phase,
+                    })
+                    return
+
+                yield _sse("phase", {"phase": phase, "stats": stats})
+
+            await asyncio.sleep(1)
+            polls += 1
+
+        yield _sse("error", {"message": "Stream timed out"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format a single SSE frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"

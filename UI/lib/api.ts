@@ -174,6 +174,36 @@ export function startRun(payload: StartRunPayload): Promise<{ id: string; _id?: 
   return post('/api/v1/runs/start', payload);
 }
 
+/**
+ * Subscribe to real-time pipeline progress via SSE.
+ * Returns an EventSource that emits 'phase', 'done', and 'error' events.
+ */
+export function streamRunProgress(
+  runId: string,
+  onPhase: (data: { phase: string; stats: Record<string, number> }) => void,
+  onDone: (data: { runId: string }) => void,
+  onError: (data: { message: string }) => void,
+): EventSource {
+  const es = new EventSource(`${API_BASE}/api/v1/runs/${runId}/stream`);
+
+  es.addEventListener('phase', (e) => {
+    try { onPhase(JSON.parse((e as MessageEvent).data)); } catch {}
+  });
+  es.addEventListener('done', (e) => {
+    try { onDone(JSON.parse((e as MessageEvent).data)); } catch {}
+    es.close();
+  });
+  es.addEventListener('error', (e) => {
+    // SSE 'error' can be a reconnect or a real error event from the server
+    if ((e as MessageEvent).data) {
+      try { onError(JSON.parse((e as MessageEvent).data)); } catch {}
+    }
+    es.close();
+  });
+
+  return es;
+}
+
 // ── Run Jobs ──────────────────────────────────────────────────────────────────
 
 export interface RunJob {

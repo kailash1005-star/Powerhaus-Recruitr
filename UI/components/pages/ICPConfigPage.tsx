@@ -11,6 +11,7 @@ import {
   addTitle,
   addLocation,
   startRun,
+  streamRunProgress,
   type ICPBackendConfig,
 } from '@/lib/api';
 
@@ -140,7 +141,7 @@ export function ICPConfigPage() {
   //      → created (success tick on the create step)
   //      → opening (brief "opening results" beat)
   //      → navigate
-  type LaunchPhase = 'idle' | 'starting' | 'created' | 'opening';
+  type LaunchPhase = 'idle' | 'starting' | 'created' | 'scraping' | 'companies' | 'prospects' | 'done';
   const [launchPhase, setLaunchPhase] = useState<LaunchPhase>('idle');
   const [launchSummary, setLaunchSummary] = useState<{
     industries: number; titles: number; locations: number;
@@ -171,7 +172,7 @@ export function ICPConfigPage() {
   // Pipeline / scraper config
   // Naukri option is hidden for now — only linkedin is active
   const [activeSources] = useState<string[]>(['linkedin']);
-  const [resultsPerBatch, setResultsPerBatch] = useState('50');
+  const [resultsPerBatch, setResultsPerBatch] = useState('10');
   const [maxPostingAge, setMaxPostingAge] = useState('24');
 
   // ── Load ICP config ───────────────────────────────────────────
@@ -284,42 +285,58 @@ export function ICPConfigPage() {
     });
     setLaunchPhase('starting');
 
-    // Pace the visual transitions. Each phase has a minimum display time so
-    // the user sees the work happen instead of getting yanked across screens.
-    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
     try {
-      // Fire the API and a minimum-display delay in parallel — whichever
-      // takes longer wins, so a fast API doesn't make the spinner flash.
-      const [result] = await Promise.all([
-        startRun({
-          title: `Run (LinkedIn) — ${new Date().toLocaleDateString()}`,
-          source: 'jobspy',
-          runConfig: {
-            searchTitles: selectedTitles,
-            searchLocations: selectedLocations,
-            targetIndustries: selectedIndustries,
-            customIndustries: [],
-            hoursOld: parseInt(maxPostingAge) || 24,
-            resultsPerSearch: parseInt(resultsPerBatch) || 50,
-            siteName: ['linkedin'],
-            icpConfigSnapshot: icpConfig ? { version: icpConfig.version } : null,
-          },
-        }),
-        sleep(900),
-      ]);
+      const result = await startRun({
+        title: `Run (LinkedIn) — ${new Date().toLocaleDateString()}`,
+        source: 'jobspy',
+        runConfig: {
+          searchTitles: selectedTitles,
+          searchLocations: selectedLocations,
+          targetIndustries: selectedIndustries,
+          customIndustries: [],
+          hoursOld: parseInt(maxPostingAge) || 24,
+          resultsPerSearch: parseInt(resultsPerBatch) || 10,
+          siteName: ['linkedin'],
+          icpConfigSnapshot: icpConfig ? { version: icpConfig.version } : null,
+        },
+      });
       const newId = result.id || result._id;
+      if (!newId) throw new Error('No run ID returned');
 
       setLaunchPhase('created');
-      await sleep(550);
-      setLaunchPhase('opening');
-      await sleep(450);
 
-      router.push(newId ? `/runs/${newId}` : '/runs');
+      // Connect to SSE stream for real-time phase updates
+      const es = streamRunProgress(
+        newId,
+        (data) => {
+          // Map backend phases to UI phases
+          const phaseMap: Record<string, LaunchPhase> = {
+            pending: 'created',
+            scraping: 'scraping',
+            companies: 'companies',
+            prospects: 'prospects',
+            done: 'done',
+          };
+          const uiPhase = phaseMap[data.phase] || 'created';
+          setLaunchPhase(uiPhase);
+        },
+        async () => {
+          // Done — navigate to results
+          setLaunchPhase('done');
+          await new Promise((r) => setTimeout(r, 600));
+          router.push(`/runs/${newId}`);
+        },
+        (errData) => {
+          // Error — show message and reset
+          es.close();
+          setLaunchPhase('idle');
+          setError(errData.message || 'Pipeline failed');
+          setStartingRun(false);
+        },
+      );
     } catch (e: any) {
       setLaunchPhase('idle');
       setError('Failed to start run: ' + e.message);
-    } finally {
       setStartingRun(false);
     }
   };
@@ -744,12 +761,11 @@ export function ICPConfigPage() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// LaunchOverlay — sleek multi-phase "your run is starting" sequence.
-// Phases drive a 3-step checklist; the panel fades in on mount and fades
-// out cleanly just before the router push.
+// LaunchOverlay — real-time pipeline progress powered by SSE.
+// Shows actual backend phase transitions instead of fake timers.
 // ───────────────────────────────────────────────────────────────────────────
 
-type LaunchPhase = 'idle' | 'starting' | 'created' | 'opening';
+type LaunchPhase = 'idle' | 'starting' | 'created' | 'scraping' | 'companies' | 'prospects' | 'done';
 
 function LaunchOverlay({
   phase, summary,
@@ -760,13 +776,45 @@ function LaunchOverlay({
   const visible = phase !== 'idle';
 
   const steps: Array<{ key: LaunchPhase; label: string; sublabel: string }> = [
-    { key: 'starting', label: 'Creating your run',          sublabel: 'Saving configuration & spinning up the pipeline' },
-    { key: 'created',  label: 'Run created',                sublabel: 'Background workers are scraping jobs now' },
-    { key: 'opening',  label: 'Opening results',            sublabel: 'You\'ll see live updates as jobs flow in' },
+    { key: 'starting', label: 'Creating your run',              sublabel: 'Saving configuration & spinning up the pipeline' },
+    { key: 'scraping', label: 'Scraping jobs',                   sublabel: 'Searching LinkedIn for matching job postings' },
+    { key: 'companies', label: 'Resolving companies',            sublabel: 'Identifying target companies via LinkedIn & AI' },
+    { key: 'prospects', label: 'Finding prospects',              sublabel: 'Searching Apollo for HR decision-makers' },
   ];
 
-  const phaseOrder: LaunchPhase[] = ['starting', 'created', 'opening'];
+  const phaseOrder: LaunchPhase[] = ['starting', 'created', 'scraping', 'companies', 'prospects', 'done'];
   const currentIdx = phaseOrder.indexOf(phase as LaunchPhase);
+
+  // Map each step to its index range in phaseOrder
+  const stepDoneAfter: Record<string, number> = {
+    starting: 1,   // done after 'created'
+    scraping: 2,   // done after 'scraping' transitions to 'companies'
+    companies: 3,  // done after 'companies' transitions to 'prospects'
+    prospects: 4,  // done after 'prospects' transitions to 'done'
+  };
+
+  const headerTitle = phase === 'done'
+    ? 'Pipeline complete!'
+    : phase === 'prospects'
+    ? 'Finding prospects'
+    : phase === 'companies'
+    ? 'Resolving companies'
+    : phase === 'scraping'
+    ? 'Scraping jobs'
+    : phase === 'created'
+    ? 'Run created'
+    : 'Starting your run';
+
+  const headerIcon = phase === 'done' || phase === 'prospects'
+    ? 'rocket'
+    : phase === 'companies' || phase === 'scraping'
+    ? 'search'
+    : phase === 'created'
+    ? 'check'
+    : null; // spinner for 'starting'
+
+  const headerBg = phase === 'done' ? '#ECFDF5' : '#EEF2FF';
+  const headerIconColor = phase === 'done' ? '#059669' : '#4F46E5';
 
   return (
     <div
@@ -796,27 +844,24 @@ function LaunchOverlay({
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
           <div style={{
             width: 44, height: 44, borderRadius: 12,
-            background: phase === 'opening' ? '#ECFDF5' : '#EEF2FF',
+            background: headerBg,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             transition: 'background 240ms ease',
           }}>
-            {phase === 'starting' && (
+            {!headerIcon && (
               <span style={{
                 display: 'inline-block', width: 18, height: 18,
                 border: '2.5px solid #C7D2FE', borderTopColor: '#4F46E5',
                 borderRadius: '50%', animation: 'launchspin 0.8s linear infinite',
               }} />
             )}
-            {phase === 'created' && (
-              <Icon name="check" size={22} style={{ color: '#4F46E5' }} />
-            )}
-            {phase === 'opening' && (
-              <Icon name="rocket" size={22} style={{ color: '#059669' }} />
+            {headerIcon && (
+              <Icon name={headerIcon as any} size={22} style={{ color: headerIconColor }} />
             )}
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>
-              {phase === 'opening' ? 'Launching pipeline' : phase === 'created' ? 'Run created' : 'Starting your run'}
+              {headerTitle}
             </div>
             <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
               {summary
@@ -829,9 +874,10 @@ function LaunchOverlay({
         {/* Step checklist */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 }}>
           {steps.map((step, i) => {
-            const done = i < currentIdx;
-            const active = i === currentIdx;
-            const pending = i > currentIdx;
+            const doneThreshold = stepDoneAfter[step.key] ?? 0;
+            const done = currentIdx > doneThreshold;
+            const active = currentIdx >= (doneThreshold - 1) && currentIdx <= doneThreshold && !done;
+            const pending = !done && !active;
             return (
               <div
                 key={step.key}
@@ -851,7 +897,7 @@ function LaunchOverlay({
                   color: '#FFF',
                   transition: 'background 240ms ease, transform 240ms cubic-bezier(.2,.7,.2,1.4)',
                   transform: done ? 'scale(1)' : 'scale(0.9)',
-                }}>
+                }} border-color="transparent">
                   {done ? (
                     <Icon name="check" size={12} />
                   ) : active ? (

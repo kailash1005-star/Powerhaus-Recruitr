@@ -13,7 +13,7 @@ from typing import Any, Dict, Tuple
 from bson import ObjectId
 from jobspy import scrape_jobs
 
-from app.services.rejection_service import JobTitleRejectionService
+
 
 REQUIRED_COLUMNS = [
     "id",
@@ -185,7 +185,6 @@ async def scrape_and_store_jobs(
     Returns a stats dict:
       total_scraped, inserted, duplicates, accepted, rejected
     """
-    title_rejection = JobTitleRejectionService()
     raw_jobs = await asyncio.to_thread(_scrape_jobs, run_config)
 
     now = datetime.utcnow()
@@ -201,15 +200,10 @@ async def scrape_and_store_jobs(
         if not title:
             continue
 
-        # Title rejection
-        is_accepted, reason = title_rejection.evaluate_title(title)
-        quality = "good" if is_accepted else "poor"
-        rej_reason = None if is_accepted else reason
-
-        if is_accepted:
-            accepted += 1
-        else:
-            rejected += 1
+        # All scraped jobs are accepted (title rejection removed)
+        quality = "good"
+        rej_reason = None
+        accepted += 1
 
         # Dedupe
         dedupe_query, dedupe_strategy = _build_job_dedupe_query(safe)

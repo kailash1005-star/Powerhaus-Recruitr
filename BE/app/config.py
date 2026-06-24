@@ -173,14 +173,7 @@ ACCEPTED_TITLE_KEYWORDS = [
     "board director",
 ]
 
-# Reject these titles (non-executive roles that might contain exec keywords)
-REJECTED_TITLE_KEYWORDS = [
-    "assistant to", "secretary to", "office of the ceo",
-    "executive assistant", "admin assistant",
-    "coordinator", "analyst", "intern", "junior",
-    "mayor", "councillor", "council member", "elected",
-    "board directors", "non-director committee", "volunteer",
-]
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Apollo API settings

@@ -9,6 +9,8 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, List
 import logging
+import re
+import urllib.parse
 
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
@@ -39,7 +41,7 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
 
         await runs_col.update_one(
             {"_id": run_oid},
-            {"$set": {"status": "active", "updatedAt": now}},
+            {"$set": {"status": "active", "currentPhase": "scraping", "updatedAt": now}},
         )
 
         run_doc = await runs_col.find_one({"_id": run_oid})
@@ -89,6 +91,7 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
                     "stats.duplicates": total_duplicates,
                     "stats.acceptedJobs": total_accepted,
                     "stats.rejectedJobs": total_rejected,
+                    "currentPhase": "companies",
                     "updatedAt": datetime.utcnow(),
                 }
             },
@@ -129,6 +132,7 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
             {
                 "$set": {
                     "status": "completed",
+                    "currentPhase": "done",
                     "runEndedAt": datetime.utcnow(),
                     "updatedAt": datetime.utcnow(),
                 }
@@ -145,6 +149,8 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
             {
                 "$set": {
                     "status": "cancelled",
+                    "currentPhase": "failed",
+                    "error": str(exc),
                     "runEndedAt": datetime.utcnow(),
                     "updatedAt": datetime.utcnow(),
                 }
@@ -237,6 +243,15 @@ async def _run_phase2(
         # companies whose domain ends with .linkedin.local when searching Apollo.
         fallback_slug = slug or (url.rstrip("/").split("/")[-1] or "unknown")
         domain = raw_domain if raw_domain else f"{fallback_slug}.linkedin.local"
+
+        # URL decode and sanitize domain to match the regex: ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+        try:
+            domain = urllib.parse.unquote(domain)
+        except Exception:
+            pass
+        domain = re.sub(r'[^a-zA-Z0-9.-]', '', domain.strip())
+        if not re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', domain):
+            domain = "unknown.linkedin.local"
         staff_count = li.get("staffCount") or 0
         website = li.get("website") or ""
         li_industries = li.get("companyIndustries") or []
@@ -379,6 +394,7 @@ async def _run_phase2(
             "stats.acceptedCompanies": stats["acceptedCompanies"],
             "stats.rejectedCompanies": stats["rejectedCompanies"],
             "stats.skippedCompanies": stats["skippedCompanies"],
+            "currentPhase": "prospects",
             "updatedAt": datetime.utcnow(),
         }},
     )
