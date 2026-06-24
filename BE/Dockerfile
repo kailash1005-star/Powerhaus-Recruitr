@@ -6,6 +6,12 @@ WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
+# python-jobspy hard-pins numpy==1.26.3, which conflicts with the numpy>=2.0 that
+# Docling requires (pip would fail with ResolutionImpossible). jobspy runs fine on
+# numpy 2.x, so install it WITHOUT deps — its real runtime deps are already in
+# requirements.txt above.
+RUN pip install --no-cache-dir --prefix=/install --no-deps "python-jobspy>=1.1.75"
+
 # ── Stage 2: Runtime ────────────────────────────────────────────
 FROM python:3.12-slim
 
