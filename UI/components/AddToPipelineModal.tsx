@@ -164,8 +164,8 @@ export function AddToPipelineModal({ isOpen, onClose, job, companyDefaults, onAd
                 padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight: 500,
                 cursor: 'pointer',
                 border: '1px solid',
-                borderColor: mode === m ? 'var(--fg-primary)' : 'var(--border-card)',
-                background: mode === m ? 'var(--fg-primary)' : 'var(--bg-app)',
+                borderColor: mode === m ? 'var(--primary)' : 'var(--border-card)',
+                background: mode === m ? 'var(--primary)' : 'var(--bg-app)',
                 color: mode === m ? '#FFF' : 'var(--fg-secondary)',
                 fontFamily: 'inherit',
               }}
@@ -246,7 +246,7 @@ export function AddToPipelineModal({ isOpen, onClose, job, companyDefaults, onAd
             style={{
               height: 36, padding: '0 16px', borderRadius: 6, fontSize: 13, fontWeight: 600,
               cursor: busy ? 'not-allowed' : 'pointer', border: 'none',
-              background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit',
+              background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit',
               display: 'inline-flex', alignItems: 'center', gap: 6,
               opacity: (busy || (mode === 'existing' && !selectedId)) ? 0.6 : 1,
             }}

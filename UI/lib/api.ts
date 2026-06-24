@@ -520,3 +520,214 @@ export function patchCandidate(
 export function enrichCandidate(candidateId: string): Promise<Candidate> {
   return post(`/api/v1/pipelines/candidates/${candidateId}/enrich`, {});
 }
+
+// ── Candidate Matching (CV ↔ JD engine) ─────────────────────────────────────
+
+export interface CvBatchStatus {
+  batchId: string;
+  total: number;
+  counts: Record<string, number>;
+  complete: boolean;
+}
+
+export interface CvListItem {
+  _id: string;
+  sourceFileName?: string;
+  status: 'pending' | 'parsed' | 'embedded' | 'failed';
+  error?: string | null;
+  profile?: {
+    fullName?: string | null;
+    currentTitle?: string | null;
+    location?: string | null;
+    totalYears?: number | null;
+    skills?: string[];
+  } | null;
+  createdAt?: string;
+}
+
+export interface MatchedCandidate {
+  candidateId: string;
+  fullName?: string | null;
+  currentTitle?: string | null;
+  location?: string | null;
+  score: number;
+  subscores: Record<string, number>;
+  reasons: string[];
+  gaps: string[];
+  contact: { email?: string | null; phone?: string | null; linkedin?: string | null };
+}
+
+export interface MatchResult {
+  matchRunId: string;
+  jdId: string;
+  jdTitle?: string | null;
+  requirements: {
+    title?: string | null;
+    mustHaveSkills?: string[];
+    niceToHaveSkills?: string[];
+    minYears?: number | null;
+    location?: string | null;
+    seniority?: string | null;
+  };
+  candidatesConsidered: number;
+  results: MatchedCandidate[];
+}
+
+/** Upload a CV dump (multipart). Returns a batchId to poll. */
+export async function uploadCvs(files: File[]): Promise<{ batchId: string; received: number }> {
+  const fd = new FormData();
+  files.forEach((f) => fd.append('files', f));
+  const res = await fetch(`${API_BASE}/api/v1/matching/cv/upload`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error((await res.text()) || `upload → ${res.status}`);
+  return res.json();
+}
+
+export function fetchCvBatchStatus(batchId: string): Promise<CvBatchStatus> {
+  return get(`/api/v1/matching/cv/batch/${batchId}`);
+}
+
+export function fetchCvs(page = 1, limit = 20): Promise<{ total: number; items: CvListItem[] }> {
+  return get(`/api/v1/matching/cv?page=${page}&limit=${limit}`);
+}
+
+/** Run matching from a pasted JD text. */
+export function runMatchingText(jdText: string, returnTop?: number): Promise<MatchResult> {
+  return post('/api/v1/matching/run/json', { jdText, returnTop });
+}
+
+/** Run matching from an uploaded JD document (multipart). */
+export async function runMatchingFile(file: File, returnTop?: number): Promise<MatchResult> {
+  const fd = new FormData();
+  fd.append('file', file);
+  if (returnTop != null) fd.append('returnTop', String(returnTop));
+  const res = await fetch(`${API_BASE}/api/v1/matching/run`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error((await res.text()) || `match → ${res.status}`);
+  return res.json();
+}
+
+// ── Saved match runs (history) ──────────────────────────────────────────────
+
+export interface SavedMatchRun {
+  _id: string;
+  jdId?: string;
+  jdTitle?: string | null;
+  jdText?: string | null;
+  jdFileName?: string | null;
+  candidatesConsidered: number;
+  results: MatchedCandidate[];
+  createdAt?: string | null;
+}
+
+export function fetchMatchRuns(page = 1, limit = 20): Promise<{ total: number; items: SavedMatchRun[] }> {
+  return get(`/api/v1/matching/runs?page=${page}&limit=${limit}`);
+}
+
+/** Direct download URL for a candidate's CV (original file, or parsed .txt fallback). */
+export function cvDownloadUrl(candidateId: string): string {
+  return `${API_BASE}/api/v1/matching/cv/${candidateId}/download`;
+}
+
+// ── Outreach email ──────────────────────────────────────────────────────────
+
+export interface OutreachDraft {
+  to: string | null;
+  subject: string;
+  body: string;
+  sendEnabled: boolean;
+}
+
+/** Generate a professional outreach email draft for a candidate. */
+export function draftOutreach(candidateId: string, roleTitle?: string): Promise<OutreachDraft> {
+  return post('/api/v1/matching/outreach/draft', { candidateId, roleTitle });
+}
+
+/** Send the (edited) email. Throws if SMTP isn't configured yet. */
+export function sendOutreach(payload: { to: string; subject: string; body: string; candidateId?: string }): Promise<{ sent: boolean; to: string }> {
+  return post('/api/v1/matching/outreach/send', payload);
+}
+
+// ── Outreach CRM (Leads / Candidates funnel) ────────────────────────────────
+
+export type OutreachAudience = 'leads' | 'candidates';
+export type OutreachStatus =
+  | 'sent' | 'delivered' | 'opened' | 'clicked'
+  | 'replied' | 'meeting' | 'bounced' | 'unsubscribed';
+
+export interface OutreachRow {
+  id: string;
+  name: string;
+  secondary: string;
+  title: string;
+  email: string;
+  channel: 'Email' | 'LinkedIn';
+  status: OutreachStatus;
+  replyClass?: string | null;
+  lastActivity: string;
+  lastActivityAt?: string | null;
+  sentAt?: string | null;
+}
+
+export interface OutreachListResponse {
+  total: number;
+  page: number;
+  limit: number;
+  items: OutreachRow[];
+}
+
+export interface OutreachMetrics {
+  total: number;
+  opened: number;
+  replied: number;
+  meetings: number;
+  unsubscribed: number;
+  bounced: number;
+}
+
+export interface OutreachConfig {
+  provider: string;
+  sendEnabled: boolean;
+  smartleadWebhookVerified: boolean;
+  calcomWebhookVerified: boolean;
+}
+
+export function fetchOutreach(
+  audience: OutreachAudience, status?: string, page = 1, limit = 100,
+): Promise<OutreachListResponse> {
+  const q = new URLSearchParams({ audience, page: String(page), limit: String(limit) });
+  if (status && status !== 'all') q.set('status', status);
+  return get(`/api/v1/outreach?${q.toString()}`);
+}
+
+export function fetchOutreachMetrics(audience: OutreachAudience): Promise<OutreachMetrics> {
+  return get(`/api/v1/outreach/metrics?audience=${audience}`);
+}
+
+export function fetchOutreachConfig(): Promise<OutreachConfig> {
+  return get('/api/v1/outreach/config');
+}
+
+export interface EnrollPayload {
+  email: string;
+  name?: string;
+  title?: string;
+  company?: string;
+  roleTitle?: string;
+  audience?: 'lead' | 'candidate';
+  campaignName?: string;
+  candidateId?: string;
+  leadId?: string;
+}
+
+export interface EnrollResult {
+  messageId?: string;
+  tracked?: boolean;
+  sent?: boolean;
+  note?: string;
+  ok?: boolean;
+  error?: string;
+}
+
+/** Track/enroll a contact into the outreach CRM (and Smartlead if configured). */
+export function enrollOutreach(payload: EnrollPayload): Promise<EnrollResult> {
+  return post('/api/v1/outreach/enroll', payload);
+}

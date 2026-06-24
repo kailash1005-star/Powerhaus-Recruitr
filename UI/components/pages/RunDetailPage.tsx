@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { fetchRun, type Run } from '@/lib/api';
+import { runDisplayName } from '@/lib/runTitle';
 
 interface RunDetailPageProps {
   runId: string;
@@ -126,7 +127,7 @@ export function RunDetailPage({ runId }: RunDetailPageProps) {
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
-                <h1 style={{ fontSize: 24, fontWeight: 700, color: 'var(--fg-primary)', margin: 0 }}>{run.title}</h1>
+                <h1 style={{ fontSize: 24, fontWeight: 700, color: 'var(--fg-primary)', margin: 0 }}>{runDisplayName(run)}</h1>
                 <StatusBadge status={run.status} />
               </div>
               <div style={{ fontSize: 12, color: 'var(--fg-muted)', fontFamily: 'var(--font-mono)' }}>
@@ -197,7 +198,7 @@ export function RunDetailPage({ runId }: RunDetailPageProps) {
             <Link href={`/runs/${runId}/results`} style={{ textDecoration: 'none' }}>
               <button style={{
                 height: 38, padding: '0 20px', borderRadius: 8, fontSize: 14, fontWeight: 600,
-                cursor: 'pointer', border: 'none', background: 'var(--fg-primary)', color: '#FFF',
+                cursor: 'pointer', border: 'none', background: 'var(--primary)', color: '#FFF',
                 fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 8,
               }}>
                 View Results <Icon name="chevron-right" size={16} />

@@ -16,6 +16,23 @@ openai>=1.40.0
 rapidfuzz>=3.6.0
 requests>=2.32.0
 
+# ── Matching Engine (CV ↔ JD) ──────────────────────────────────
+# Docling: local document → markdown parsing (PDF/DOCX/TXT, OCR, tables). MIT.
+# Heavy (pulls torch + model weights); first import downloads models.
+docling>=2.0.0
+# Pinecone: optional vector backend for scale. The default vector store is an
+# in-Mongo brute-force cosine search (fine for the 50-CV demo), so Pinecone is
+# only imported when VECTOR_BACKEND=pinecone.
+pinecone>=5.0.0
+# numpy: cosine math for the Mongo brute-force vector store.
+# NOTE: Docling's stack (scipy, opencv) requires numpy>=2.0. python-jobspy
+# hard-pins numpy==1.26.3, but runs fine on 2.x (its pin is overly strict), so
+# we standardize on 2.x. For production, the cleanest fix is to split the
+# Docling-heavy ingestion into its own Cloud Run service/image with this stack,
+# keeping the scraper API on numpy 1.26.3.
+numpy>=2.0.0,<2.8
+python-multipart>=0.0.9  # required by FastAPI for file uploads
+
 
 # ── AI Engineer agent (Pydantic AI + MCP client, provider-swappable) ──
 pydantic-ai-slim[openai,anthropic,google,mcp]>=1.0.0

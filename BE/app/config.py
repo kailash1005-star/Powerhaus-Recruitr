@@ -78,6 +78,57 @@ class Settings(BaseSettings):
     AGENT_MCP_LINKEDIN_DIR: str = Field(default="", description="Project dir of the LinkedIn MCP server (spawned via 'uv run linkedin-mcp')")
     AGENT_MCP_AUTH_TOKEN: str = Field(default="", description="Bearer token for the LinkedIn MCP server (HTTP transport)")
 
+    # ── Matching Engine (CV ↔ JD) ──────────────────────────────────────────
+    # Embeddings (OpenAI). 3-small=1536 dim (cheap, strong); 3-large=3072.
+    EMBEDDING_MODEL: str = Field(default="text-embedding-3-small", description="OpenAI embedding model")
+    EMBEDDING_DIM: int = Field(default=1536, description="Embedding vector dimension (must match the model)")
+    # LLM models: cheap one for structured field extraction, stronger for the
+    # final top-N reasoning.
+    EXTRACTION_MODEL: str = Field(default="gpt-4o-mini", description="LLM for CV/JD structured extraction")
+    REASONING_MODEL: str = Field(default="gpt-4o-mini", description="LLM for top-N candidate reasoning")
+
+    # Vector backend: "mongo" (default — in-DB brute-force cosine, no extra infra,
+    # ideal for the 50-CV demo) or "pinecone" (for scale).
+    VECTOR_BACKEND: str = Field(default="mongo", description='Vector store backend: "mongo" or "pinecone"')
+    PINECONE_API_KEY: str = Field(default="", description="Pinecone API key (only if VECTOR_BACKEND=pinecone)")
+    PINECONE_INDEX: str = Field(default="recruitr-cv", description="Pinecone index name")
+    PINECONE_NAMESPACE: str = Field(default="default", description="Pinecone namespace (reserved for tenant isolation)")
+
+    # Matching tunables
+    MATCH_RETRIEVE_K: int = Field(default=50, description="How many candidates to pull from the vector store")
+    MATCH_REASON_TOP_N: int = Field(default=10, description="How many top candidates get LLM reasoning")
+    MATCH_RETURN_TOP: int = Field(default=5, description="Final number of candidates returned to the recruiter")
+    # Upload guard rails
+    MAX_UPLOAD_MB: int = Field(default=10, description="Max size per uploaded document (MB)")
+
+    # ── Outreach email (candidate contact) ─────────────────────────────────
+    # Draft generation needs only OPENAI_API_KEY. Actual SENDING needs SMTP
+    # creds below — leave blank to keep send disabled (draft-only).
+    SMTP_HOST: str = Field(default="", description="SMTP server host (e.g. smtp.gmail.com)")
+    SMTP_PORT: int = Field(default=587, description="SMTP port (587 STARTTLS)")
+    SMTP_USER: str = Field(default="", description="SMTP username")
+    SMTP_PASSWORD: str = Field(default="", description="SMTP password / app password")
+    SMTP_FROM: str = Field(default="", description="From email address")
+    SMTP_FROM_NAME: str = Field(default="Recruitr", description="From display name")
+    OUTREACH_SENDER_NAME: str = Field(default="The Talent Team", description="Signature name used in drafted emails")
+
+    # ── Outreach tracking (Smartlead sending + Cal.com meetings) ───────────
+    # The CRM (Outreach → Leads/Candidates) renders off a read model fed by
+    # provider WEBHOOKS. None of these are required for the UI to load — when
+    # absent, the CRM simply shows no rows and /health reports "not configured".
+    #   • Sending/enrollment needs SMARTLEAD_API_KEY (+ a campaign id).
+    #   • Webhook ingestion needs only the endpoints to be reachable; the
+    #     *_WEBHOOK_SECRET values turn on signature verification when set.
+    OUTREACH_PROVIDER: str = Field(default="smartlead", description="Outreach sending provider")
+    OUTREACH_TENANT_ID: str = Field(default="default", description="Tenant scope for outreach docs")
+    SMARTLEAD_API_KEY: str = Field(default="", description="Smartlead API key (for enrolling leads/candidates)")
+    SMARTLEAD_BASE_URL: str = Field(default="https://server.smartlead.ai/api/v1", description="Smartlead API base URL")
+    SMARTLEAD_DEFAULT_CAMPAIGN_ID: str = Field(default="", description="Default Smartlead campaign id for enrollment")
+    SMARTLEAD_WEBHOOK_SECRET: str = Field(default="", description="Shared secret to verify Smartlead webhook signatures")
+    # Cal.com (meetings). Cal.com signs webhooks with HMAC-SHA256 over the raw body.
+    CALCOM_API_KEY: str = Field(default="", description="Cal.com API key (optional, for future scheduling sync)")
+    CALCOM_WEBHOOK_SECRET: str = Field(default="", description="Cal.com webhook signing secret (X-Cal-Signature-256)")
+
     # Company rejection threshold
     MAX_STAFF_COUNT: int = Field(
         default=10000,

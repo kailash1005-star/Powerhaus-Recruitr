@@ -74,7 +74,7 @@ const btnAdd: React.CSSProperties = {
   fontWeight: 500,
   cursor: 'pointer',
   border: '1px solid var(--border-strong)',
-  background: 'var(--fg-primary)',
+  background: 'var(--primary)',
   color: '#FFF',
   fontFamily: 'inherit',
   display: 'inline-flex',
@@ -102,7 +102,7 @@ const sourceCard = (selected: boolean): React.CSSProperties => ({
   flex: 1,
   padding: 14,
   borderRadius: 10,
-  border: `1px solid ${selected ? 'var(--fg-primary)' : 'var(--border-card)'}`,
+  border: `1px solid ${selected ? 'var(--primary)' : 'var(--border-card)'}`,
   background: selected ? '#F0F0F0' : '#FAFAFA',
   cursor: 'pointer',
   textAlign: 'left' as const,
@@ -405,8 +405,8 @@ export function ICPConfigPage() {
                     onClick={() => toggleIndustry(ind.id)}
                     style={{
                       ...chipBase,
-                      borderColor: ind.selected ? 'var(--fg-primary)' : 'var(--border-card)',
-                      background: ind.selected ? 'var(--fg-primary)' : '#FAFAFA',
+                      borderColor: ind.selected ? 'var(--primary)' : 'var(--border-card)',
+                      background: ind.selected ? 'var(--primary)' : '#FAFAFA',
                       color: ind.selected ? '#FFF' : 'var(--fg-secondary)',
                     }}
                   >
@@ -531,7 +531,7 @@ export function ICPConfigPage() {
                     <span style={{
                       width: 16, height: 16, borderRadius: 9999,
                       border: '2px solid var(--fg-primary)',
-                      background: 'var(--fg-primary)',
+                      background: 'var(--primary)',
                       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                     }}>
                       <Icon name="check" size={10} style={{ color: '#FFF' }} />
@@ -727,7 +727,7 @@ export function ICPConfigPage() {
               height: 36, padding: '0 20px', borderRadius: 6, fontSize: 13, fontWeight: 600,
               cursor: startingRun || industries.filter((i) => i.selected).length === 0 ? 'not-allowed' : 'pointer',
               border: 'none',
-              background: startingRun || industries.filter((i) => i.selected).length === 0 ? '#999' : 'var(--fg-primary)',
+              background: startingRun || industries.filter((i) => i.selected).length === 0 ? '#999' : 'var(--primary)',
               color: '#FFF', fontFamily: 'inherit',
               display: 'inline-flex', alignItems: 'center', gap: 8,
             }}

@@ -122,8 +122,49 @@ async def connect_to_mongo():
         print("[OK] AI Engineer chat indexes ensured")
     except Exception as e:
         print(f"[WARN] Could not create chat indexes: {e}")
- 
- 
+
+    # ── Matching engine collections ────────────────────────────────────────
+    # cv_candidates — uploaded CVs; dedup by content hash; filter by status.
+    try:
+        cv = database["cv_candidates"]
+        await cv.create_index("contentHash", name="idx_contentHash", unique=True)
+        await cv.create_index("status", name="idx_status")
+        await cv.create_index("batchId", name="idx_batchId")
+        await cv.create_index("createdAt", name="idx_cv_createdAt")
+        print("[OK] cv_candidates indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create cv_candidates indexes: {e}")
+
+    # parsed_jds & match_runs — recency lookups / audit.
+    try:
+        await database["parsed_jds"].create_index("createdAt", name="idx_jd_createdAt")
+        await database["match_runs"].create_index("createdAt", name="idx_run_createdAt")
+        await database["match_runs"].create_index("jdId", name="idx_run_jdId")
+        print("[OK] matching (parsed_jds/match_runs) indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create matching indexes: {e}")
+
+    # ── Outreach CRM collections ───────────────────────────────────────────
+    # outreach_messages — read model; one per (tenant, dedupeKey). Filter by
+    # (audience, status); sort by lastActivityAt.
+    try:
+        msgs = database["outreach_messages"]
+        await msgs.create_index(
+            [("tenantId", 1), ("dedupeKey", 1)], name="idx_tenant_dedupe", unique=True,
+        )
+        await msgs.create_index([("tenantId", 1), ("audience", 1), ("status", 1)], name="idx_audience_status")
+        await msgs.create_index([("tenantId", 1), ("email", 1)], name="idx_outreach_email")
+        await msgs.create_index("lastActivityAt", name="idx_lastActivityAt")
+        # outreach_events — append-only; unique providerEventId = idempotency.
+        evs = database["outreach_events"]
+        await evs.create_index("providerEventId", name="idx_providerEventId", unique=True)
+        await evs.create_index("messageId", name="idx_event_messageId")
+        await evs.create_index("occurredAt", name="idx_event_occurredAt")
+        print("[OK] outreach (messages/events) indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create outreach indexes: {e}")
+
+
 async def close_mongo_connection():
     """
     Close MongoDB connection on application shutdown

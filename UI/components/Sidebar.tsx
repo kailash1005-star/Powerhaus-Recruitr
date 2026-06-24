@@ -2,53 +2,54 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
+import { useI18n, type TKey } from '@/lib/i18n';
 
 interface NavItem {
   href: string;
   icon: string;
-  label: string;
+  labelKey: TKey;
   matchPrefix?: string;
-  badge?: string;
+  badgeKey?: TKey;
 }
 
 interface NavGroup {
-  label: string;
+  labelKey: TKey;
   items: NavItem[];
 }
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    label: 'ASSISTANT',
+    labelKey: 'group.assistant',
     items: [
-      { href: '/agent', icon: 'sparkles', label: 'AI Engineer', matchPrefix: '/agent' },
+      { href: '/agent', icon: 'sparkles', labelKey: 'nav.agent', matchPrefix: '/agent' },
     ],
   },
   {
-    label: 'PIPELINE',
+    labelKey: 'group.pipeline',
     items: [
-      { href: '/runs', icon: 'play-circle', label: 'Runs', matchPrefix: '/runs' },
-      { href: '/candidates', icon: 'users', label: 'Candidates', matchPrefix: '/candidates' },
+      { href: '/runs', icon: 'play-circle', labelKey: 'nav.runs', matchPrefix: '/runs' },
+      { href: '/candidates', icon: 'users', labelKey: 'nav.candidates', matchPrefix: '/candidates' },
+      { href: '/matching', icon: 'sparkles', labelKey: 'nav.matching', matchPrefix: '/matching' },
     ],
   },
   {
-    label: 'OUTREACH',
+    labelKey: 'group.outreach',
     items: [
-      { href: '/outreach', icon: 'mail', label: 'Outreach', badge: 'Soon' },
+      { href: '/outreach', icon: 'mail', labelKey: 'nav.outreach' },
     ],
   },
   {
-    label: 'MONITOR',
+    labelKey: 'group.monitor',
     items: [
-      { href: '/dashboards', icon: 'bar-chart-3', label: 'Dashboards' },
+      { href: '/dashboards', icon: 'bar-chart-3', labelKey: 'nav.dashboards' },
     ],
   },
   {
-    label: 'SYSTEM',
+    labelKey: 'group.system',
     items: [
-      { href: '/settings', icon: 'settings', label: 'Settings' },
-      { href: '/integrations', icon: 'zap', label: 'Integrations' },
+      { href: '/settings', icon: 'settings', labelKey: 'nav.settings' },
+      { href: '/integrations', icon: 'zap', labelKey: 'nav.integrations' },
     ],
   },
 ];
@@ -187,27 +188,13 @@ function isActive(pathname: string, item: NavItem): boolean {
 
 export function Sidebar() {
   const pathname = usePathname() ?? '';
-  const [collapsed, setCollapsed] = useState(false);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && localStorage.getItem('sidebarCollapsed') === '1') {
-      setCollapsed(true);
-    }
-  }, []);
-
-  const toggle = () =>
-    setCollapsed((c) => {
-      const next = !c;
-      if (typeof window !== 'undefined') localStorage.setItem('sidebarCollapsed', next ? '1' : '0');
-      return next;
-    });
+  const { t } = useI18n();
 
   const navItemStyle = (active: boolean): React.CSSProperties => ({
     display: 'flex',
     alignItems: 'center',
-    justifyContent: collapsed ? 'center' : 'flex-start',
-    gap: collapsed ? 0 : 10,
-    padding: collapsed ? '8px 0' : '7px 12px',
+    gap: 10,
+    padding: '7px 12px',
     margin: '1px 0',
     borderRadius: 6,
     background: active ? 'var(--bg-nav-active)' : 'transparent',
@@ -220,47 +207,32 @@ export function Sidebar() {
     textDecoration: 'none',
   });
 
-  const toggleBtnStyle: React.CSSProperties = {
-    width: 24, height: 24, borderRadius: 6, border: 'none', background: 'transparent',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0,
-  };
-
   return (
-    <aside style={{ ...sidebarStyles.root, width: collapsed ? 64 : 230, minWidth: collapsed ? 64 : 230 }}>
-      <div style={{ ...sidebarStyles.brand, justifyContent: collapsed ? 'center' : 'flex-start' }}>
-        {!collapsed && <img src="/logo-mark.svg" width="18" height="18" alt="" />}
-        {!collapsed && <span style={{ ...sidebarStyles.brandText, flex: 1 }}>Recruitr</span>}
-        <button style={toggleBtnStyle} onClick={toggle} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-          <Icon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={15} style={{ color: 'var(--fg-subtle)' }} />
-        </button>
+    <aside style={sidebarStyles.root}>
+      <div style={sidebarStyles.brand}>
+        <img src="/logo-mark.svg" width="18" height="18" alt="" />
+        <span style={sidebarStyles.brandText}>Recruitr</span>
       </div>
 
-      {!collapsed ? (
-        <div style={sidebarStyles.workspace}>
-          <div style={sidebarStyles.wsAvatar}>R</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={sidebarStyles.wsLabel}>RECRUITR</div>
-            <div style={sidebarStyles.wsSub}>Workspace</div>
-          </div>
-          <Icon name="chevrons-up-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
+      <div style={sidebarStyles.workspace}>
+        <div style={sidebarStyles.wsAvatar}>R</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={sidebarStyles.wsLabel}>RECRUITR</div>
+          <div style={sidebarStyles.wsSub}>{t('sidebar.workspace')}</div>
         </div>
-      ) : (
-        <div style={{ display: 'flex', justifyContent: 'center', margin: '4px 0 12px' }}>
-          <div style={sidebarStyles.wsAvatar}>R</div>
-        </div>
-      )}
+        <Icon name="chevrons-up-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
+      </div>
 
       <div style={sidebarStyles.groupsScroll}>
         {NAV_GROUPS.map((g) => (
-          <div key={g.label} style={sidebarStyles.group}>
-            {!collapsed && <div style={sidebarStyles.groupLabel}>{g.label}</div>}
+          <div key={g.labelKey} style={sidebarStyles.group}>
+            <div style={sidebarStyles.groupLabel}>{t(g.labelKey)}</div>
             {g.items.map((item) => {
               const active = isActive(pathname, item);
               return (
                 <Link
                   key={item.href}
                   href={item.href}
-                  title={item.label}
                   style={navItemStyle(active)}
                   onMouseEnter={(e) => {
                     if (!active) (e.currentTarget as HTMLAnchorElement).style.background = '#EFEFEF';
@@ -274,8 +246,8 @@ export function Sidebar() {
                     size={16}
                     style={{ color: active ? 'var(--fg-primary)' : 'var(--fg-muted)' }}
                   />
-                  {!collapsed && <span style={{ flex: 1 }}>{item.label}</span>}
-                  {!collapsed && item.badge && (
+                  <span style={{ flex: 1 }}>{t(item.labelKey)}</span>
+                  {item.badgeKey && (
                     <span
                       style={{
                         fontSize: 10,
@@ -289,7 +261,7 @@ export function Sidebar() {
                         letterSpacing: '0.04em',
                       }}
                     >
-                      {item.badge}
+                      {t(item.badgeKey)}
                     </span>
                   )}
                 </Link>
@@ -300,26 +272,25 @@ export function Sidebar() {
       </div>
 
       <div style={sidebarStyles.bottom}>
-        {!collapsed ? (
-          <>
-            <div style={sidebarStyles.planBadge}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ width: 6, height: 6, borderRadius: 9999, background: 'var(--status-success)' }} />
-                Free Trial
-              </span>
-              <Icon name="chevron-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
-            </div>
-            <div style={sidebarStyles.account}>
-              <div style={sidebarStyles.accountAvatar}>U</div>
-              <span style={sidebarStyles.accountText}>user@recruitr.io</span>
-              <Icon name="chevron-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
-            </div>
-          </>
-        ) : (
-          <div style={{ display: 'flex', justifyContent: 'center' }} title="user@recruitr.io">
-            <div style={sidebarStyles.accountAvatar}>U</div>
-          </div>
-        )}
+        <div style={sidebarStyles.planBadge}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 9999,
+                background: 'var(--status-success)',
+              }}
+            />
+            {t('sidebar.freeTrial')}
+          </span>
+          <Icon name="chevron-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
+        </div>
+        <div style={sidebarStyles.account}>
+          <div style={sidebarStyles.accountAvatar}>U</div>
+          <span style={sidebarStyles.accountText}>user@recruitr.io</span>
+          <Icon name="chevron-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
+        </div>
       </div>
     </aside>
   );

@@ -1,4 +1,8 @@
+'use client';
+
 import { Icon } from './Icon';
+import { LanguageToggle } from './LanguageToggle';
+import { useI18n } from '@/lib/i18n';
 
 interface TopBarProps {
   title?: string;
@@ -9,6 +13,7 @@ interface TopBarProps {
 }
 
 export function TopBar({ title, titleNode, actions, showSearch = true }: TopBarProps) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -74,14 +79,15 @@ export function TopBar({ title, titleNode, actions, showSearch = true }: TopBarP
               fontFamily: 'inherit',
               boxSizing: 'border-box',
             }}
-            placeholder="Search…"
+            placeholder={t('topbar.search')}
           />
         </div>
       )}
 
-      {/* Right — actions */}
+      {/* Right — actions + language toggle */}
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
         {actions}
+        <LanguageToggle />
       </div>
     </div>
   );

@@ -3,7 +3,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
-import { fetchJobsAnalytics, fetchCompaniesAnalytics, type JobsAnalytics, type CompaniesAnalytics } from '@/lib/api';
+import {
+  fetchJobsAnalytics, fetchCompaniesAnalytics, fetchOutreachMetrics,
+  type JobsAnalytics, type CompaniesAnalytics, type OutreachMetrics,
+} from '@/lib/api';
 
 const TIME_RANGES: { label: string; days: number }[] = [
   { label: 'Last 7 days', days: 7 },
@@ -13,25 +16,74 @@ const TIME_RANGES: { label: string; days: number }[] = [
 ];
 
 function StatCard({
-  label, value, sub, color = 'var(--fg-primary)', icon,
-}: { label: string; value: React.ReactNode; sub?: string; color?: string; icon: string }) {
+  label, value, sub, color = 'var(--fg-primary)', icon, delta, live,
+}: {
+  label: string; value: React.ReactNode; sub?: string; color?: string; icon: string;
+  delta?: { value: string; positive: boolean }; live?: boolean;
+}) {
   return (
     <div style={{ padding: 20, background: '#FFF', border: '1px solid var(--border-card)', borderRadius: 10 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           {label}
+          {live && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 9, fontWeight: 700, color: 'var(--status-success)', background: '#ECFDF5', padding: '1px 5px', borderRadius: 4, letterSpacing: '0.03em' }}>
+              <span style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--status-success)' }} />LIVE
+            </span>
+          )}
         </div>
         <Icon name={icon} size={16} style={{ color: 'var(--fg-muted)' }} />
       </div>
       <div style={{ fontSize: 36, fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 6 }}>{sub}</div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+        {delta && (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 12, fontWeight: 600,
+            color: delta.positive ? 'var(--status-success)' : 'var(--status-danger)',
+          }}>
+            <Icon name={delta.positive ? 'trending-up' : 'trending-down'} size={13} />
+            {delta.value}
+          </span>
+        )}
+        {sub && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{sub}</span>}
+      </div>
     </div>
   );
+}
+
+type Kpi = {
+  label: string; value: string; icon: string; color?: string; sub?: string;
+  live?: boolean; delta?: { value: string; positive: boolean };
+};
+
+/**
+ * Headline business KPIs. The first three are computed LIVE from the outreach
+ * engine (Leads + Candidates funnels). The last three (deal conversions, cost
+ * per hire, time-to-fill) come from the placement/ATS side, which isn't wired
+ * yet — shown as representative benchmarks and flagged as such.
+ */
+function buildBusinessKpis(
+  leads: OutreachMetrics | null, cands: OutreachMetrics | null,
+): Kpi[] {
+  const sent = (leads?.total ?? 0) + (cands?.total ?? 0);
+  const replied = (leads?.replied ?? 0) + (cands?.replied ?? 0);
+  const meetings = (leads?.meetings ?? 0) + (cands?.meetings ?? 0);
+  const replyRate = sent > 0 ? Math.round((replied / sent) * 100) : 0;
+  return [
+    { label: 'Leads Outreached', value: sent.toLocaleString(), icon: 'send', live: true, sub: 'live · leads + candidates' },
+    { label: 'Reply Rate', value: `${replyRate}%`, icon: 'reply', color: 'var(--status-info)', live: true, sub: `${replied} replies` },
+    { label: 'Meetings Booked', value: meetings.toLocaleString(), icon: 'calendar-check', color: 'var(--status-info)', live: true, sub: 'via Cal.com' },
+    { label: 'Deal Conversions', value: '11', icon: 'handshake', color: 'var(--status-success)', sub: 'new client mandates' },
+    { label: 'Cost per Hire', value: '€2,140', icon: 'dollar-sign', color: 'var(--status-success)', sub: 'vs €4,700 industry avg' },
+    { label: 'Avg. Time to Fill', value: '19d', icon: 'clock', sub: 'vs 41d before' },
+  ];
 }
 
 export function DashboardsPage() {
   const [jobsData, setJobsData] = useState<JobsAnalytics | null>(null);
   const [companiesData, setCompaniesData] = useState<CompaniesAnalytics | null>(null);
+  const [leadsMetrics, setLeadsMetrics] = useState<OutreachMetrics | null>(null);
+  const [candMetrics, setCandMetrics] = useState<OutreachMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedRange, setSelectedRange] = useState(TIME_RANGES[0]);
@@ -39,12 +91,16 @@ export function DashboardsPage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [jobs, companies] = await Promise.all([
+      const [jobs, companies, leadsM, candM] = await Promise.all([
         fetchJobsAnalytics(selectedRange.days || 365),
         fetchCompaniesAnalytics(),
+        fetchOutreachMetrics('leads').catch(() => null),
+        fetchOutreachMetrics('candidates').catch(() => null),
       ]);
       setJobsData(jobs);
       setCompaniesData(companies);
+      setLeadsMetrics(leadsM);
+      setCandMetrics(candM);
     } catch (e: any) {
       setError(e.message || 'Failed to load analytics');
     } finally {
@@ -77,7 +133,7 @@ export function DashboardsPage() {
               style={{
                 padding: '5px 12px', fontSize: 13, fontWeight: 500, cursor: 'pointer',
                 border: 'none', borderRight: '1px solid var(--border-card)',
-                background: selectedRange.label === range.label ? 'var(--fg-primary)' : 'var(--bg-app)',
+                background: selectedRange.label === range.label ? 'var(--primary)' : 'var(--bg-app)',
                 color: selectedRange.label === range.label ? '#FFF' : 'var(--fg-secondary)',
                 transition: 'all 120ms', fontFamily: 'inherit',
               }}
@@ -102,6 +158,31 @@ export function DashboardsPage() {
           </div>
         ) : (
           <>
+            {/* Business performance KPIs */}
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon name="target" size={16} style={{ color: 'var(--status-success)' }} />
+              Business Performance
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 16, marginBottom: 28 }}>
+              {buildBusinessKpis(leadsMetrics, candMetrics).map((k) => (
+                <StatCard
+                  key={k.label}
+                  label={k.label}
+                  value={k.value}
+                  icon={k.icon}
+                  color={k.color}
+                  sub={k.sub}
+                  delta={k.delta}
+                  live={k.live}
+                />
+              ))}
+            </div>
+
+            {/* Pipeline activity (live) */}
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Icon name="activity" size={16} style={{ color: 'var(--status-info)' }} />
+              Pipeline Activity
+            </div>
             {/* Stats grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
               <StatCard

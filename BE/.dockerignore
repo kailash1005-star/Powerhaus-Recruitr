@@ -1,3 +1,5 @@
+# Keep the cloud image small + clean — never pack these in.
+venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -6,5 +8,14 @@ __pycache__/
 .gitignore
 .vscode/
 *.md
+
+# Local-only helpers and artifacts (not needed in the cloud)
+run.bat
+run.ps1
+run.sh
+*.log
+scratch_*.py
+.linkedin_cookies/
+
 Dockerfile
 .dockerignore

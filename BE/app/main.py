@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.database import connect_to_mongo, close_mongo_connection
 from app.config import settings
+from app.startup_checks import log_matching_readiness, matching_readiness, outreach_readiness
 
 app = FastAPI(
     title="Recruitment API",
@@ -28,12 +29,14 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Health check endpoint — includes matching-engine readiness so a
+    misconfigured environment (wrong Python / missing Docling) is visible."""
+    return {"status": "healthy", "matching": matching_readiness(), "outreach": outreach_readiness()}
 
 @app.on_event("startup")
 async def startup_db_client():
-    """Connect to MongoDB on startup"""
+    """Connect to MongoDB and verify the matching engine is runnable."""
+    log_matching_readiness()
     await connect_to_mongo()
  
  

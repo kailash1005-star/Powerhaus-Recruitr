@@ -30,8 +30,8 @@
   --border-strong:     #D1D5DB;   /* secondary button outline */
 
   /* ── Brand / Primary ──────────────────────────────────────── */
-  --primary:           #0F0F0F;   /* near-black CTA */
-  --primary-hover:     #1F1F1F;
+  --primary:           #1E3A8A;   /* navy blue CTA */
+  --primary-hover:     #1B3578;
   --primary-fg:        #FFFFFF;
   --link:              #111827;   /* monochromatic — no blue */
 

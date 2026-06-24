@@ -15,8 +15,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# System libraries the document parser (Docling / OpenCV) needs at runtime.
+# Without these the AI parser fails to import in the cloud.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
+
+# Pre-download the Docling AI models INTO the image so the first CV upload in
+# production is instant (instead of downloading hundreds of MB on first request).
+# This is the slow part of the build — it only runs once, at build time.
+RUN python -c "from docling.utils.model_downloader import download_models; download_models()"
 
 # Copy application source
 COPY . .

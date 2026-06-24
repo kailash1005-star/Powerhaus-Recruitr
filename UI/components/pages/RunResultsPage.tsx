@@ -174,8 +174,8 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
     fontWeight: 500,
     cursor: 'pointer',
     border: '1px solid',
-    borderColor: active ? 'var(--fg-primary)' : 'var(--border-card)',
-    background: active ? 'var(--fg-primary)' : 'var(--bg-app)',
+    borderColor: active ? 'var(--primary)' : 'var(--border-card)',
+    background: active ? 'var(--primary)' : 'var(--bg-app)',
     color: active ? '#FFF' : 'var(--fg-secondary)',
     transition: 'all 120ms',
     fontFamily: 'inherit',
@@ -275,7 +275,7 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
               onClick={() => alert('Email outreach is not enabled in this iteration.')}
               style={{
                 height: 32, padding: '0 14px', borderRadius: 6, fontSize: 13, fontWeight: 600,
-                cursor: 'pointer', border: 'none', background: 'var(--fg-primary)', color: '#FFF',
+                cursor: 'pointer', border: 'none', background: 'var(--primary)', color: '#FFF',
                 fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 6,
               }}
             >
@@ -525,7 +525,7 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
                             display: 'inline-flex', alignItems: 'center', gap: 5,
                             padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
                             cursor: 'pointer', border: 'none',
-                            background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit',
+                            background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit',
                             transition: 'opacity 120ms',
                           }}
                           onMouseOver={(e) => ((e.currentTarget as HTMLElement).style.opacity = '0.85')}
@@ -606,7 +606,7 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
                   style={{
                     width: 28, height: 28, borderRadius: 6, fontSize: 11, fontWeight: 700,
                     cursor: 'pointer', border: isActive ? 'none' : '1px solid var(--border-card)',
-                    background: isActive ? 'var(--fg-primary)' : '#FFF',
+                    background: isActive ? 'var(--primary)' : '#FFF',
                     color: isActive ? '#FFF' : 'var(--fg-secondary)',
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                     fontFamily: 'inherit', transition: 'all 120ms',

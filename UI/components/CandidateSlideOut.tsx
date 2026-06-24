@@ -263,7 +263,7 @@ export function CandidateSlideOut({
                     style={{
                       flex: 1, height: 36, borderRadius: 6, fontSize: 13, fontWeight: 600,
                       cursor: busyId === active._id || active.isEnriched ? 'not-allowed' : 'pointer',
-                      border: 'none', background: active.isEnriched ? 'var(--bg-app)' : 'var(--fg-primary)',
+                      border: 'none', background: active.isEnriched ? 'var(--bg-app)' : 'var(--primary)',
                       color: active.isEnriched ? 'var(--fg-muted)' : '#FFF',
                       fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                     }}
@@ -484,7 +484,7 @@ export function CandidateSlideOut({
                       style={{
                         height: 36, padding: '0 18px', borderRadius: 6, fontSize: 13, fontWeight: 600,
                         cursor: busyId === active._id ? 'not-allowed' : 'pointer',
-                        border: 'none', background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit',
+                        border: 'none', background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit',
                         display: 'inline-flex', alignItems: 'center', gap: 6,
                       }}
                     >

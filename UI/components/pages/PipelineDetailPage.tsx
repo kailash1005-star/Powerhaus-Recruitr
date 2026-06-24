@@ -244,7 +244,7 @@ export function PipelineDetailPage({ pipelineId }: Props) {
                             style={{
                               height: 32, padding: '0 14px', borderRadius: 6, fontSize: 13, fontWeight: 500,
                               cursor: canOpen ? 'pointer' : 'not-allowed', border: 'none',
-                              background: canOpen ? 'var(--fg-primary)' : 'var(--bg-app)',
+                              background: canOpen ? 'var(--primary)' : 'var(--bg-app)',
                               color: canOpen ? '#FFF' : 'var(--fg-muted)',
                               fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 6,
                             }}

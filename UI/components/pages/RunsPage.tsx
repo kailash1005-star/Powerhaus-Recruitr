@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { fetchRuns, deleteRun, renameRun, type Run } from '@/lib/api';
+import { runDisplayName } from '@/lib/runTitle';
 
 const STATUS_FILTERS = [
   { key: 'all',       label: 'All Runs' },
@@ -51,8 +52,8 @@ const chipStyle = (active: boolean): React.CSSProperties => ({
   borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer',
   border: '1px solid', transition: 'all 120ms', userSelect: 'none',
   textDecoration: 'none',
-  borderColor: active ? 'var(--fg-primary)' : 'var(--border-card)',
-  background: active ? 'var(--fg-primary)' : 'var(--bg-app)',
+  borderColor: active ? 'var(--primary)' : 'var(--border-card)',
+  background: active ? 'var(--primary)' : 'var(--bg-app)',
   color: active ? '#FFF' : 'var(--fg-secondary)',
 });
 
@@ -155,7 +156,7 @@ export function RunsPage() {
               display: 'inline-flex', alignItems: 'center', gap: 6,
               height: 32, padding: '0 14px', borderRadius: 6, fontSize: 13,
               fontWeight: 500, cursor: 'pointer', border: 'none',
-              background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit',
+              background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit',
             }}>
               <Icon name="plus" size={14} />
               New Run
@@ -206,7 +207,7 @@ export function RunsPage() {
               Start your first run by clicking New Run.
             </div>
             <Link href="/icp" style={{ textDecoration: 'none' }}>
-              <button style={{ height: 36, padding: '0 16px', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer', border: 'none', background: 'var(--fg-primary)', color: '#FFF', fontFamily: 'inherit' }}>
+              <button style={{ height: 36, padding: '0 16px', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer', border: 'none', background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit' }}>
                 + New Run
               </button>
             </Link>
@@ -214,11 +215,12 @@ export function RunsPage() {
         ) : (
           <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
-              {runs.map((run) => {
+              {runs.map((run, idx) => {
                 const id = (run.id || run._id) as string;
                 const stats = run.stats;
                 const isHovered = hover === id;
                 const isEditing = editingId === id;
+                const runNumber = (page - 1) * LIMIT + idx + 1;
                 return (
                   <div
                     key={id}
@@ -240,6 +242,15 @@ export function RunsPage() {
                       {/* Left */}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                            minWidth: 26, height: 26, padding: '0 7px', borderRadius: 7,
+                            background: 'var(--bg-chip, #F3F4F6)', color: 'var(--fg-secondary)',
+                            fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                            border: '1px solid var(--border-card)', flexShrink: 0,
+                          }}>
+                            {runNumber}
+                          </span>
                           {isEditing ? (
                             <input
                               autoFocus
@@ -261,7 +272,7 @@ export function RunsPage() {
                             />
                           ) : (
                             <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {run.title}
+                              {runDisplayName(run)}
                             </span>
                           )}
                           <RunStatusDot status={run.status} />
@@ -282,12 +293,6 @@ export function RunsPage() {
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <Icon name="map-pin" size={12} />
                               {run.runConfig.searchLocations.join(', ')}
-                            </span>
-                          )}
-                          {run.runConfig.siteName?.length > 0 && (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <Icon name="building-2" size={12} />
-                              {run.runConfig.siteName.join(', ')}
                             </span>
                           )}
                         </div>
@@ -330,7 +335,7 @@ export function RunsPage() {
                           <button
                             title="Rename run"
                             disabled={busyId === id}
-                            onClick={(e) => { e.stopPropagation(); startEdit(id, run.title); }}
+                            onClick={(e) => { e.stopPropagation(); startEdit(id, runDisplayName(run)); }}
                             style={{
                               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                               width: 30, height: 30, borderRadius: 6, cursor: 'pointer',
@@ -430,7 +435,7 @@ export function RunsPage() {
               </div>
             </div>
             <div style={{ fontSize: 13, color: 'var(--fg-secondary)', lineHeight: 1.5, marginBottom: 20 }}>
-              <strong>{confirmDelete.title}</strong> and all of its data — jobs, prospects,
+              <strong>{runDisplayName(confirmDelete)}</strong> and all of its data — jobs, prospects,
               outreach, and any companies unique to this run — will be permanently deleted.
               This cannot be undone.
             </div>

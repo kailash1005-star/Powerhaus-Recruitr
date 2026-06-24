@@ -192,8 +192,8 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     fontWeight: 500,
     cursor: 'pointer',
     border: '1px solid',
-    borderColor: active ? 'var(--fg-primary)' : 'var(--border-card)',
-    background: active ? 'var(--fg-primary)' : 'var(--bg-app)',
+    borderColor: active ? 'var(--primary)' : 'var(--border-card)',
+    background: active ? 'var(--primary)' : 'var(--bg-app)',
     color: active ? '#FFF' : 'var(--fg-secondary)',
     transition: 'all 120ms',
     fontFamily: 'inherit',
@@ -489,7 +489,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                             padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
                             cursor: busyId === c._id || c.isEnriched ? 'not-allowed' : 'pointer',
                             border: 'none',
-                            background: c.isEnriched ? 'var(--bg-app)' : 'var(--fg-primary)',
+                            background: c.isEnriched ? 'var(--bg-app)' : 'var(--primary)',
                             color: c.isEnriched ? 'var(--fg-muted)' : '#FFF',
                             fontFamily: 'inherit',
                           }}
@@ -566,7 +566,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                   style={{
                     width: 28, height: 28, borderRadius: 6, fontSize: 11, fontWeight: 700,
                     cursor: 'pointer', border: isActive ? 'none' : '1px solid var(--border-card)',
-                    background: isActive ? 'var(--fg-primary)' : '#FFF',
+                    background: isActive ? 'var(--primary)' : '#FFF',
                     color: isActive ? '#FFF' : 'var(--fg-secondary)',
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                     fontFamily: 'inherit', transition: 'all 120ms',
