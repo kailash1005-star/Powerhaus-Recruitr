@@ -9,7 +9,17 @@ motor>=3.6.0
 pymongo>=4.10.0
 
 # ── External Services ──────────────────────────────────────────
-python-jobspy>=1.1.75
+# NOTE: python-jobspy is installed separately in the Dockerfile with --no-deps.
+# It hard-pins numpy==1.26.3, which is incompatible with the numpy>=2.0 that
+# Docling's stack requires, so leaving it in this file makes pip's resolver fail
+# ("ResolutionImpossible"). jobspy runs fine on numpy 2.x (its pin is overly
+# strict), so we install it without deps and list its REAL runtime deps below so
+# they still resolve alongside the rest of the tree.
+beautifulsoup4>=4.12.2,<5.0.0
+markdownify>=0.13.1,<0.14.0
+pandas>=2.2.2,<3.0.0
+regex>=2024.4.28
+tls-client>=1.0.1,<2.0.0
 linkedin-api>=2.3.0
 firecrawl-py>=1.0.0
 openai>=1.40.0
