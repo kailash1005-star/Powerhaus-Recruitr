@@ -115,19 +115,21 @@ async def get_run_jobs(
     run_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    quality: str = Query(None, description="Filter by qualityStatus: good|poor"),
     sort_by: str = Query("createdAt", description="Sort field: title|company|location|boardName|qualityStatus|createdAt"),
     sort_order: str = Query("desc", description="Sort order: asc|desc"),
     db=Depends(get_db),
 ):
-    """Return paginated jobs for a run with summary counts."""
+    """Return paginated jobs for a run with summary counts.
+
+    The run results screen only deals with ACCEPTED jobs, so this endpoint
+    always scopes to ``qualityStatus == "good"`` — rejected ("poor") jobs are
+    never returned here.
+    """
     try:
         jobs_col = db["jobs"]
         run_oid = ObjectId(run_id)
 
-        query: dict = {"runId": run_oid}
-        if quality:
-            query["qualityStatus"] = quality
+        query: dict = {"runId": run_oid, "qualityStatus": "good"}
 
         total = await jobs_col.count_documents(query)
         skip = (page - 1) * limit

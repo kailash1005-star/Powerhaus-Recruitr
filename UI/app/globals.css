@@ -126,6 +126,27 @@
    Semantic type roles. Use these instead of raw vars where you can.
    ────────────────────────────────────────────────────────────── */
 
+/* Reset + lock the window: the app is a fixed full-viewport shell (AppShell is
+   position:fixed; inset:0), so the body must not keep its default 8px margin —
+   those margins push the body's margin-box past the viewport and produce stray
+   window-level scrollbars on every page. All real scrolling happens inside each
+   page's own flex:1; overflow:auto container. */
+html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+
+/* ──────────────────────────────────────────────────────────────
+   In-app scrollbars (Chrome / Edge / Safari).
+   Hide the vertical bar entirely — content still scrolls with the
+   wheel / trackpad — and keep a slim horizontal bar for wide content
+   like the jobs table.
+   ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 0px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-subtle); }
+::-webkit-scrollbar-corner { background: transparent; }
+/* Firefox has no per-axis control — keep both bars thin and subtle. */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+
 html, body { font-family: var(--font-sans); color: var(--fg-primary); -webkit-font-smoothing: antialiased; }
 
 .t-page-title    { font-size: var(--text-18); font-weight: var(--w-semibold); color: var(--fg-primary); letter-spacing: var(--tracking-tight); }

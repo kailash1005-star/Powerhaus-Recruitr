@@ -22,14 +22,6 @@ interface RunResultsPageProps {
   runId: string;
 }
 
-type JobFilter = 'all' | 'good' | 'poor';
-
-const FILTER_OPTIONS: { key: JobFilter; label: string }[] = [
-  { key: 'all', label: 'All Jobs' },
-  { key: 'good', label: 'Accepted' },
-  { key: 'poor', label: 'Rejected' },
-];
-
 const ROWS_OPTIONS = [25, 50, 100];
 
 function formatDate(dateStr?: string | null) {
@@ -75,7 +67,6 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
   const [creditStatus, setCreditStatus] = useState<EnrichmentCreditStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [jobFilter, setJobFilter] = useState<JobFilter>('all');
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(50);
 
@@ -127,10 +118,10 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
 
   const loadJobs = useCallback(async () => {
     try {
-      const quality = jobFilter === 'all' ? undefined : jobFilter;
-      setJobsResp(await fetchRunJobs(runId, page, rowsPerPage, quality, sortField ?? undefined, sortOrder));
+      // Results screen is accepted-only; the backend enforces this too.
+      setJobsResp(await fetchRunJobs(runId, page, rowsPerPage, 'good', sortField ?? undefined, sortOrder));
     } catch (e) { console.error(e); }
-  }, [runId, page, rowsPerPage, jobFilter, sortField, sortOrder]);
+  }, [runId, page, rowsPerPage, sortField, sortOrder]);
 
   useEffect(() => {
     setLoading(true);
@@ -166,20 +157,6 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
     else next.add(id);
     setSelectedJobs(next);
   };
-
-  const chipStyle = (active: boolean): React.CSSProperties => ({
-    padding: '5px 12px',
-    borderRadius: 6,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-    border: '1px solid',
-    borderColor: active ? 'var(--primary)' : 'var(--border-card)',
-    background: active ? 'var(--primary)' : 'var(--bg-app)',
-    color: active ? '#FFF' : 'var(--fg-secondary)',
-    transition: 'all 120ms',
-    fontFamily: 'inherit',
-  });
 
   const thStyle: React.CSSProperties = {
     textAlign: 'left',
@@ -285,29 +262,9 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
         }
       />
 
-      {/* Filter strip */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '12px 24px', borderBottom: '1px solid var(--border-default)',
-        background: 'var(--bg-app)', flexWrap: 'wrap',
-      }}>
-        {FILTER_OPTIONS.map((f) => (
-          <button
-            key={f.key}
-            onClick={() => { setJobFilter(f.key); setPage(1); setSelectedJobs(new Set()); }}
-            style={chipStyle(jobFilter === f.key)}
-          >
-            {f.label}
-          </button>
-        ))}
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>
-          <span style={{ fontWeight: 700, color: 'var(--fg-primary)' }}>{totalJobs.toLocaleString()}</span> total jobs
-        </span>
-      </div>
-
-      {/* Jobs table */}
-      <div style={{ flex: 1, overflow: 'auto', background: '#FFF' }}>
+      {/* Jobs table — accepted jobs only. minHeight:0 lets this flex child
+          shrink so the table body (not the page) owns the vertical scroll. */}
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', background: '#FFF' }}>
         {jobs.length === 0 ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 24px', color: 'var(--fg-muted)' }}>
             <div style={{ textAlign: 'center' }}>
@@ -316,8 +273,8 @@ export function RunResultsPage({ runId }: RunResultsPageProps) {
               ) : (
                 <>
                   <Icon name="search" size={36} style={{ marginBottom: 16 }} />
-                  <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--fg-primary)', marginBottom: 6 }}>No jobs found</div>
-                  <div style={{ fontSize: 13 }}>No jobs match the current filter.</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--fg-primary)', marginBottom: 6 }}>No accepted jobs</div>
+                  <div style={{ fontSize: 13 }}>This run has no accepted jobs yet.</div>
                 </>
               )}
             </div>

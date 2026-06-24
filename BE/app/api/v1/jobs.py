@@ -1,9 +1,15 @@
 """
 Jobs API Endpoints
-GET  /api/v1/jobs  - List all jobs (paginated, sortable)
+GET  /api/v1/jobs                              - List all jobs (paginated, sortable)
+GET  /api/v1/jobs/{job_id}/prospects           - Prospects for a job's company
+POST /api/v1/jobs/prospects/{id}/enrich        - On-demand Apollo email enrichment
 """
+import asyncio
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.database import get_database
+from app.services.apollo_service import ApolloService
 from bson import ObjectId
 
 router = APIRouter()
@@ -105,3 +111,98 @@ async def get_job_prospects(job_id: str, db=Depends(get_db)):
             prospects.append(p)
 
     return {"prospects": prospects, "emailTemplate": None}
+
+
+# ── POST /prospects/{prospect_id}/enrich ───────────────────────────────
+# Apollo's placeholder when contact info isn't unlocked.
+_LOCKED_EMAIL_MARKERS = ("email_not_unlocked", "@domain.com")
+
+
+def _best_prospect_email(person: dict) -> str | None:
+    """Pick a usable email from an Apollo /people/match person payload.
+
+    Apollo returns ``email`` (work) and ``personal_emails``; when contact info
+    is still locked it returns a placeholder like
+    ``email_not_unlocked@domain.com`` which we must not surface as real.
+    """
+    email = (person.get("email") or "").strip()
+    if email and not any(m in email.lower() for m in _LOCKED_EMAIL_MARKERS):
+        return email
+    for pe in person.get("personal_emails") or []:
+        if pe and pe.strip():
+            return pe.strip()
+    return None
+
+
+@router.post("/prospects/{prospect_id}/enrich")
+async def enrich_prospect(prospect_id: str, db=Depends(get_db)):
+    """On-demand Apollo enrichment for a single prospect — reveals their email.
+
+    The free Apollo people-search that originally found this prospect masks all
+    contact info. This calls Apollo ``/people/match`` (credit-consuming, with
+    ``reveal_personal_emails``) to unlock the email + LinkedIn + phone, then
+    persists them on the prospect document so the UI can use the email to reach
+    out. Mirrors the candidate enrichment flow but for the ``prospects``
+    collection.
+    """
+    try:
+        oid = ObjectId(prospect_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid prospect id")
+
+    col = db["prospects"]
+    prospect = await col.find_one({"_id": oid})
+    if not prospect:
+        raise HTTPException(status_code=404, detail="Prospect not found")
+
+    apollo_id = prospect.get("apolloId")
+    if not apollo_id:
+        raise HTTPException(status_code=400, detail="Prospect has no apolloId to enrich")
+
+    svc = ApolloService()
+    # _enrich_single → Apollo /people/match with reveal_personal_emails=True.
+    person = await asyncio.to_thread(svc._enrich_single, {"id": apollo_id})
+    if not person:
+        raise HTTPException(status_code=502, detail="Apollo enrichment returned no data")
+
+    email = _best_prospect_email(person)
+
+    details = dict(prospect.get("prospectDetails") or {})
+    if person.get("linkedin_url"):
+        details["linkedinUrl"] = person["linkedin_url"]
+    if person.get("formatted_address"):
+        details["location"] = person["formatted_address"]
+    phones = person.get("phone_numbers") or []
+    if phones:
+        raw = phones[0]
+        if isinstance(raw, dict):
+            details["phone"] = raw.get("sanitized_number") or raw.get("raw_number")
+        elif isinstance(raw, str):
+            details["phone"] = raw
+
+    update: dict = {
+        "isEnriched": True,
+        "prospectDetails": details,
+        "updatedAt": datetime.utcnow(),
+    }
+    if email:
+        update["email"] = email
+    # Backfill identity fields the masked search may have left blank.
+    if person.get("first_name") and not prospect.get("firstName"):
+        update["firstName"] = person["first_name"]
+    if person.get("last_name") and not (prospect.get("lastName") or "").strip():
+        update["lastName"] = person["last_name"]
+    if person.get("title") and not prospect.get("title"):
+        update["title"] = person["title"]
+    if person.get("seniority") and not prospect.get("seniority"):
+        update["seniority"] = person["seniority"]
+
+    await col.update_one({"_id": oid}, {"$set": update})
+
+    out = await col.find_one({"_id": oid})
+    out["_id"] = str(out["_id"])
+    if out.get("runId"):
+        out["runId"] = str(out["runId"])
+    if out.get("companyId"):
+        out["companyId"] = str(out["companyId"])
+    return {"prospect": out, "emailRevealed": bool(email)}

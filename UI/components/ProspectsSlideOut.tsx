@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { Icon } from './Icon';
-import { fetchJobProspects, type JobProspect } from '@/lib/api';
+import { fetchJobProspects, enrichProspect, type JobProspect } from '@/lib/api';
 
 interface ProspectsSlideOutProps {
   isOpen: boolean;
@@ -53,6 +53,8 @@ export function ProspectsSlideOut({
   const [tab, setTab] = useState<Tab>('All');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+  const [enrichingId, setEnrichingId] = useState<string | null>(null);
+  const [enrichError, setEnrichError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen || !jobId) return;
@@ -86,6 +88,22 @@ export function ProspectsSlideOut({
     navigator.clipboard.writeText(email);
     setCopiedEmail(email);
     setTimeout(() => setCopiedEmail(null), 2000);
+  };
+
+  const handleEnrich = async (p: JobProspect) => {
+    setEnrichingId(p._id);
+    setEnrichError(null);
+    try {
+      const { prospect, emailRevealed } = await enrichProspect(p._id);
+      setProspects((prev) => prev.map((x) => (x._id === prospect._id ? { ...x, ...prospect } : x)));
+      if (!emailRevealed) {
+        setEnrichError('Apollo had no email on file for this prospect.');
+      }
+    } catch {
+      setEnrichError('Enrichment failed. Check the Apollo API key / credits and try again.');
+    } finally {
+      setEnrichingId(null);
+    }
   };
 
   return (
@@ -298,6 +316,10 @@ Best,
 [Your name]`;
 
                   const fullDraft = `Subject: ${draftSubject}\n\n${draftBody}`;
+                  const mailtoHref = active.email
+                    ? `mailto:${active.email}?subject=${encodeURIComponent(draftSubject)}&body=${encodeURIComponent(draftBody)}`
+                    : null;
+                  const isEnriching = enrichingId === active._id;
 
                   return (
                     <div style={{ marginBottom: 24 }}>
@@ -318,17 +340,41 @@ Best,
                               </span>
                             )}
                           </div>
-                          {active.email && (
-                            <button
-                              onClick={() => copyEmail(active.email!)}
-                              style={{ fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'transparent', color: copiedEmail === active.email ? '#059669' : 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
-                            >
-                              <Icon name={copiedEmail === active.email ? 'check-check' : 'copy'} size={13} />
-                              {copiedEmail === active.email ? 'Copied!' : 'Copy'}
-                            </button>
-                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            {active.email && (
+                              <button
+                                onClick={() => copyEmail(active.email!)}
+                                style={{ fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'transparent', color: copiedEmail === active.email ? '#059669' : 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                              >
+                                <Icon name={copiedEmail === active.email ? 'check-check' : 'copy'} size={13} />
+                                {copiedEmail === active.email ? 'Copied!' : 'Copy'}
+                              </button>
+                            )}
+                            {!active.isEnriched && (
+                              <button
+                                onClick={() => handleEnrich(active)}
+                                disabled={isEnriching}
+                                style={{
+                                  fontSize: 12, fontWeight: 700, cursor: isEnriching ? 'wait' : 'pointer',
+                                  border: 'none', borderRadius: 6, padding: '5px 12px',
+                                  background: isEnriching ? '#C7D2FE' : '#4F46E5', color: '#FFF',
+                                  display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'inherit',
+                                }}
+                              >
+                                <Icon name={isEnriching ? 'loader' : 'sparkles'} size={13} />
+                                {isEnriching ? 'Enriching…' : active.email ? 'Re-enrich' : 'Enrich email'}
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
+
+                      {/* Enrichment error / no-email notice */}
+                      {enrichError && enrichingId === null && (
+                        <div style={{ marginBottom: 12, padding: '8px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 12, color: '#B91C1C' }}>
+                          {enrichError}
+                        </div>
+                      )}
 
                       {/* Email draft preview */}
                       <div style={{ border: '1px solid var(--border-card)', borderRadius: 10, overflow: 'hidden', background: '#FFF' }}>
@@ -370,6 +416,30 @@ Best,
                           fontFamily: 'inherit',
                         }}>
                           {draftBody}
+                        </div>
+
+                        {/* Action footer — open the prefilled email in the user's mail client */}
+                        <div style={{ padding: '10px 16px', background: '#FAFBFC', borderTop: '1px solid var(--border-card)', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+                          {!active.email && (
+                            <span style={{ fontSize: 11, color: 'var(--fg-muted)', marginRight: 'auto' }}>
+                              Enrich the prospect to unlock their email.
+                            </span>
+                          )}
+                          {mailtoHref ? (
+                            <a
+                              href={mailtoHref}
+                              style={{ fontSize: 12, fontWeight: 700, textDecoration: 'none', borderRadius: 6, padding: '7px 14px', background: '#4F46E5', color: '#FFF', display: 'flex', alignItems: 'center', gap: 6 }}
+                            >
+                              <Icon name="mail" size={13} /> Send email
+                            </a>
+                          ) : (
+                            <button
+                              disabled
+                              style={{ fontSize: 12, fontWeight: 700, borderRadius: 6, padding: '7px 14px', background: '#E5E7EB', color: '#9CA3AF', border: 'none', display: 'flex', alignItems: 'center', gap: 6, cursor: 'not-allowed' }}
+                            >
+                              <Icon name="mail" size={13} /> Send email
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>

@@ -258,6 +258,16 @@ export function fetchJobProspects(
   return get(`/api/v1/jobs/${jobId}/prospects`);
 }
 
+/**
+ * On-demand Apollo enrichment for a single prospect — unlocks their email
+ * (and LinkedIn/phone where available). Consumes one Apollo credit.
+ */
+export function enrichProspect(
+  prospectId: string,
+): Promise<{ prospect: JobProspect; emailRevealed: boolean }> {
+  return post(`/api/v1/jobs/prospects/${prospectId}/enrich`, {});
+}
+
 // ── Credits & Outreach ────────────────────────────────────────────────────────
 
 export interface EnrichmentCreditStatus {
