@@ -20,7 +20,7 @@ from app.config import settings
 from app.services.jobspy_service import scrape_and_store_jobs
 from app.services.naukri_service import scrape_and_store_naukri_jobs
 from app.services.openai_company_service import OpenAICompanyService
-from app.services.apollo_service import ApolloService
+from app.services.agent.prospect_sourcing_agent import source_prospects_for_company
 from app.services.linkedin_service import LinkedInCompanyService, get_linkedin_service
 
 logger = logging.getLogger(__name__)
@@ -419,8 +419,6 @@ async def _run_phase3(
         print("[Phase3] APOLLO_API_KEY not set — skipping Phase 3")
         return stats
 
-    apollo = ApolloService()
-
     # Scope to companies linked to THIS run's accepted jobs (Phase 2 set companyId).
     # Without this, every targeted company from ALL past runs is re-searched, which
     # wastes Apollo credits and triggers 429 rate-limiting.
@@ -444,23 +442,39 @@ async def _run_phase3(
     for c in targeted:
         domain = c["companyDomain"]
         industry_name = c.get("matchedIndustry") or ""
+        company_name = c.get("companyName") or domain
+
+        # The job title(s) this company is hiring for drive the AI's choice of
+        # which decision-maker (functional head) to contact.
+        job_titles = await jobs_col.distinct(
+            "title", {"runId": run_oid, "companyId": c["_id"], "qualityStatus": "good"}
+        )
+        job_titles = [t for t in job_titles if t]
+
         try:
-            result = apollo.find_prospects(domain, industry_name, enrich=False)
+            result = await source_prospects_for_company(
+                domain=domain,
+                company_name=company_name,
+                industry=industry_name,
+                job_titles=job_titles,
+            )
         except Exception as e:
-            logger.error("[Phase3] Apollo failed for %s: %s", domain, e)
+            logger.error("[Phase3] AI sourcing failed for %s: %s", domain, e)
             continue
         # Small spacing between companies to stay under Apollo's rate limit.
         await asyncio.sleep(0.5)
 
         accepted = result.get("accepted", [])
-        rejected = result.get("rejected", [])
         stats["companiesProcessed"] += 1
+        logger.info(
+            "[Phase3] %s → %d prospect(s) via titles %s (%s)",
+            domain, len(accepted), result.get("decision_maker_titles"), result.get("reasoning", "")[:80],
+        )
 
-        for p in accepted + rejected:
-            is_accepted = p in accepted
+        for p in accepted:
             doc = _build_prospect_doc(
                 p, run_oid=run_oid, company_oid=c["_id"],
-                industry_name=industry_name, is_accepted=is_accepted,
+                industry_name=industry_name, is_accepted=True,
             )
             if not doc:
                 continue
@@ -469,8 +483,7 @@ async def _run_phase3(
                 {"$set": doc, "$setOnInsert": {"createdAt": datetime.utcnow()}},
                 upsert=True,
             )
-            if is_accepted:
-                stats["totalProspects"] += 1
+            stats["totalProspects"] += 1
 
     await runs_col.update_one(
         {"_id": run_oid},

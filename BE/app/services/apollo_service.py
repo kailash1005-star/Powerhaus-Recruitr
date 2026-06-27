@@ -33,14 +33,8 @@ from app.config import (
     APOLLO_BASE_URL,
     APOLLO_PER_PAGE,
     APOLLO_BULK_BATCH_SIZE,
-    APOLLO_SENIORITIES,
-    APOLLO_HR_DEPARTMENTS,
-    INDUSTRY_PERSONA_MAP,
-    DEFAULT_PERSONA_TITLES,
-    normalize_industry_name,
     settings,
 )
-from app.services.rejection_service import ProspectPreFilter, ProspectPostFilter
 
 logger = logging.getLogger(__name__)
 
@@ -138,59 +132,44 @@ class ApolloService:
         self._rate_limited = True
         return None
 
-    def _paged_search(self, extra_params: dict, domain: str, label: str) -> list[dict]:
-        """Run a paginated people search with the given filter params."""
-        all_people: list[dict] = []
-        page = 1
-        while True:
-            params = {"per_page": APOLLO_PER_PAGE, "page": page, **extra_params}
-            data = self._request_page(params, domain, label)
-            if data is None:
-                break
-            people = data.get("people", [])
-            total = data.get("total_entries", 0)
-            pages = max(1, -(-total // APOLLO_PER_PAGE))
-            all_people.extend(people)
-            if page >= pages or not people:
-                break
-            page += 1
-            time.sleep(0.5)
-        return all_people
+    def search_people_by_titles(
+        self, domain: str, titles: list[str], max_results: int = 50,
+    ) -> list[dict]:
+        """Search Apollo for people at ``domain`` matching ``titles``.
 
-    def search_by_titles(self, domain: str, titles: list[str]) -> list[dict]:
-        """Primary search — query Apollo with HR-leadership job titles.
-
-        Scoped to the HR department (``APOLLO_HR_DEPARTMENTS``) so Apollo returns
-        only HR / People / Talent profiles, never general Operations or other
-        functions.
+        Department-agnostic (the AI sourcing agent decides the relevant titles,
+        which may belong to any function), with ``include_similar_titles`` for
+        semantic matching. Free people-search (no enrichment credits).
         """
-        logger.info("Title search: %d title(s) at %s", len(titles), domain)
-        return self._paged_search(
+        if not domain or not titles:
+            return []
+        self._rate_limited = False
+        logger.info("AI title search: %s at %s", titles[:3], domain)
+        return self._paged_search_capped(
             {
                 "person_titles[]": titles,
                 "include_similar_titles": "true",
-                "person_department_or_subdepartments[]": APOLLO_HR_DEPARTMENTS,
                 "q_organization_domains_list[]": [domain],
             },
-            domain,
-            "title search",
+            f"ai title search {titles[:2]}",
+            max_results,
         )
 
-    def search_by_seniority(self, domain: str) -> list[dict]:
-        """Fallback search — fetch HR-department prospects by seniority level.
+    def search_all_people(self, domain: str, max_results: int = 50) -> list[dict]:
+        """Plain people-search by company domain only — NO title/seniority filter.
 
-        Scoped to the HR department (``APOLLO_HR_DEPARTMENTS``) so the seniority
-        fallback also stays within HR and does not surface other operations.
+        Used as the fallback when targeted title searches return nobody (common
+        for small startups whose titles don't match standard leadership labels).
+        Returns the full roster so the AI can pick the real decision-makers.
         """
-        logger.info("Seniority search at %s", domain)
-        return self._paged_search(
-            {
-                "person_seniorities[]": APOLLO_SENIORITIES,
-                "person_department_or_subdepartments[]": APOLLO_HR_DEPARTMENTS,
-                "q_organization_domains_list[]": [domain],
-            },
-            domain,
-            "seniority search",
+        if not domain:
+            return []
+        self._rate_limited = False
+        logger.info("AI plain company search at %s", domain)
+        return self._paged_search_capped(
+            {"q_organization_domains_list[]": [domain]},
+            f"ai plain search {domain}",
+            max_results,
         )
 
     # ------------------------------------------------------------------
@@ -369,73 +348,7 @@ class ApolloService:
             logger.error("Apollo enrich error for %s: %s", pid, e)
             return None
 
-    # ------------------------------------------------------------------
-    # Full pipeline
-    # ------------------------------------------------------------------
-
-    def find_prospects(
-        self,
-        domain: str,
-        industry_name: str | None,
-        enrich: bool = False,
-    ) -> dict[str, Any]:
-        """
-        Returns:
-          strategy   — "primary" or "fallback"
-          accepted   — prospects to keep
-          rejected   — prospects rejected at any step
-          stats      — counts per stage
-        """
-        if not domain:
-            return {"strategy": "none", "accepted": [], "rejected": [], "stats": {}}
-
-        key = normalize_industry_name(industry_name or "")
-        titles = INDUSTRY_PERSONA_MAP.get(key, DEFAULT_PERSONA_TITLES)
-
-        self._rate_limited = False
-
-        # Step 1 — title-based search
-        title_hits = self.search_by_titles(domain, titles)
-        if title_hits:
-            processed = self.enrich(title_hits) if enrich else title_hits
-            for p in processed:
-                p["_filter_step"] = "selected"
-                p.setdefault("_match_reasons", ["primary_title_match"])
-            return {
-                "strategy": "primary",
-                "accepted": processed,
-                "rejected": [],
-                "stats": {
-                    "title_hits": len(title_hits),
-                    "processed": len(processed),
-                    "selected": len(processed),
-                    "is_enriched": enrich,
-                },
-            }
-
-        # Step 2 — fallback to seniority + filters
-        logger.info("Title search empty at %s, falling back to seniority", domain)
-        raw = self.search_by_seniority(domain)
-
-        pre_filter = ProspectPreFilter(industry_name)
-        pre_accepted, pre_rejected = pre_filter.filter(raw)
-
-        processed = self.enrich(pre_accepted) if enrich else pre_accepted
-
-        post_filter = ProspectPostFilter(industry_name)
-        post_accepted, post_rejected = post_filter.extract_personas(processed)
-
-        all_rejected = pre_rejected + post_rejected
-        return {
-            "strategy": "fallback",
-            "accepted": post_accepted,
-            "rejected": all_rejected,
-            "stats": {
-                "raw_hits": len(raw),
-                "pre_accepted": len(pre_accepted),
-                "processed": len(processed),
-                "selected": len(post_accepted),
-                "rejected": len(all_rejected),
-                "is_enriched": enrich,
-            },
-        }
+    # Prospect sourcing is now handled by the AI agent in
+    # app/services/agent/prospect_sourcing_agent.py (no static title lists / no
+    # keyword accept-reject filters). This service only exposes the raw Apollo
+    # search/enrich primitives the agent uses.
