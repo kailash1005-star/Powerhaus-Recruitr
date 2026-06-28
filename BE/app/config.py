@@ -53,6 +53,11 @@ class Settings(BaseSettings):
 
     # Apollo (Phase 3 — prospect search)
     APOLLO_API_KEY: str = Field(default="", description="Apollo.io API key")
+    APOLLO_WEBHOOK_URL: str = Field(
+        default="",
+        description="Publicly reachable URL Apollo POSTs revealed phone numbers to "
+                    "(e.g. https://<host>/api/v1/jobs/prospects/mobile-webhook).",
+    )
 
     # ── AI Engineer agent (Pydantic AI, provider-swappable) ─────────────
     # Model is a Pydantic AI model string: "<provider>:<model>".

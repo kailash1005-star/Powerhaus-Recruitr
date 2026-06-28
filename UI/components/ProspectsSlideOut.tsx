@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { Icon } from './Icon';
-import { fetchJobProspects, enrichProspect, type JobProspect } from '@/lib/api';
+import { fetchJobProspects, enrichProspect, enrichProspectPhone, type JobProspect } from '@/lib/api';
 
 interface ProspectsSlideOutProps {
   isOpen: boolean;
@@ -55,6 +55,9 @@ export function ProspectsSlideOut({
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
   const [enrichingId, setEnrichingId] = useState<string | null>(null);
   const [enrichError, setEnrichError] = useState<string | null>(null);
+  const [phoneEnrichingId, setPhoneEnrichingId] = useState<string | null>(null);
+  const [phoneEnrichError, setPhoneEnrichError] = useState<string | null>(null);
+  const [copiedPhone, setCopiedPhone] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen || !jobId) return;
@@ -104,6 +107,52 @@ export function ProspectsSlideOut({
     } finally {
       setEnrichingId(null);
     }
+  };
+
+  const handlePhoneEnrich = async (p: JobProspect) => {
+    setPhoneEnrichingId(p._id);
+    setPhoneEnrichError(null);
+    try {
+      const result = await enrichProspectPhone(p._id);
+      if (result.status === 'enriched' && result.phone) {
+        setProspects((prev) =>
+          prev.map((x) =>
+            x._id === p._id
+              ? {
+                  ...x,
+                  mobileEnrichmentStatus: 'enriched' as const,
+                  prospectDetails: { ...x.prospectDetails, phone: result.phone! },
+                }
+              : x,
+          ),
+        );
+      } else if (result.status === 'pending') {
+        setProspects((prev) =>
+          prev.map((x) =>
+            x._id === p._id
+              ? { ...x, mobileEnrichmentStatus: 'pending' as const }
+              : x,
+          ),
+        );
+      } else {
+        setPhoneEnrichError('Apollo had no phone number on file for this prospect.');
+      }
+    } catch (e: any) {
+      const msg = e?.message || '';
+      if (msg.includes('503') || msg.includes('APOLLO_WEBHOOK_URL')) {
+        setPhoneEnrichError('Phone enrichment requires APOLLO_WEBHOOK_URL to be configured in the backend .env file.');
+      } else {
+        setPhoneEnrichError('Phone enrichment failed. Check Apollo API key / credits.');
+      }
+    } finally {
+      setPhoneEnrichingId(null);
+    }
+  };
+
+  const copyPhone = (phone: string) => {
+    navigator.clipboard.writeText(phone);
+    setCopiedPhone(phone);
+    setTimeout(() => setCopiedPhone(null), 2000);
   };
 
   return (
@@ -373,6 +422,90 @@ Best,
                       {enrichError && enrichingId === null && (
                         <div style={{ marginBottom: 12, padding: '8px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 12, color: '#B91C1C' }}>
                           {enrichError}
+                        </div>
+                      )}
+
+                      {/* ─── Phone row ─────────────────────────────────── */}
+                      {(() => {
+                        const phone = active.prospectDetails?.phone;
+                        const mobileStatus = active.mobileEnrichmentStatus;
+                        const isPhoneEnriching = phoneEnrichingId === active._id;
+
+                        return (
+                          <div style={{ border: '1px solid var(--border-card)', borderRadius: 10, overflow: 'hidden', marginBottom: 12 }}>
+                            <div style={{ background: '#F2F4F6', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                                <span style={{ color: 'var(--fg-muted)' }}>Phone:</span>
+                                {phone ? (
+                                  <span style={{ fontWeight: 700, color: '#059669', background: '#ECFDF5', padding: '2px 8px', borderRadius: 4 }}>{phone}</span>
+                                ) : mobileStatus === 'pending' ? (
+                                  <span style={{ fontWeight: 600, color: '#1D4ED8', background: '#EFF6FF', border: '1px solid #BFDBFE', padding: '2px 8px', borderRadius: 4, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <Icon name="loader" size={11} /> Pending webhook
+                                  </span>
+                                ) : (
+                                  <span style={{ fontWeight: 600, color: '#6B7280', background: '#F3F4F6', border: '1px solid #E5E7EB', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
+                                    Not revealed
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                {phone && (
+                                  <button
+                                    onClick={() => copyPhone(phone)}
+                                    style={{ fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'transparent', color: copiedPhone === phone ? '#059669' : 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                                  >
+                                    <Icon name={copiedPhone === phone ? 'check-check' : 'copy'} size={13} />
+                                    {copiedPhone === phone ? 'Copied!' : 'Copy'}
+                                  </button>
+                                )}
+                                {phone && (
+                                  <a
+                                    href={`tel:${phone}`}
+                                    style={{ fontSize: 12, fontWeight: 600, textDecoration: 'none', color: '#4F46E5', display: 'flex', alignItems: 'center', gap: 4 }}
+                                  >
+                                    <Icon name="phone" size={13} /> Call
+                                  </a>
+                                )}
+                                {!phone && mobileStatus !== 'pending' && (
+                                  <button
+                                    onClick={() => handlePhoneEnrich(active)}
+                                    disabled={isPhoneEnriching}
+                                    style={{
+                                      fontSize: 12, fontWeight: 700, cursor: isPhoneEnriching ? 'wait' : 'pointer',
+                                      border: 'none', borderRadius: 6, padding: '5px 12px',
+                                      background: isPhoneEnriching ? '#A7F3D0' : '#059669', color: '#FFF',
+                                      display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'inherit',
+                                    }}
+                                  >
+                                    <Icon name={isPhoneEnriching ? 'loader' : 'phone'} size={13} />
+                                    {isPhoneEnriching ? 'Revealing…' : 'Find phone'}
+                                  </button>
+                                )}
+                                {mobileStatus === 'pending' && !phone && (
+                                  <button
+                                    onClick={() => handlePhoneEnrich(active)}
+                                    disabled={isPhoneEnriching}
+                                    style={{
+                                      fontSize: 12, fontWeight: 600, cursor: isPhoneEnriching ? 'wait' : 'pointer',
+                                      border: '1px solid #BFDBFE', borderRadius: 6, padding: '5px 12px',
+                                      background: '#EFF6FF', color: '#1D4ED8',
+                                      display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'inherit',
+                                    }}
+                                  >
+                                    <Icon name={isPhoneEnriching ? 'loader' : 'refresh-cw'} size={13} />
+                                    {isPhoneEnriching ? 'Checking…' : 'Retry'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Phone enrichment error */}
+                      {phoneEnrichError && phoneEnrichingId === null && (
+                        <div style={{ marginBottom: 12, padding: '8px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 12, color: '#B91C1C' }}>
+                          {phoneEnrichError}
                         </div>
                       )}
 

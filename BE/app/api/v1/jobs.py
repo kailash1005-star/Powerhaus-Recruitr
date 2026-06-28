@@ -10,6 +10,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.database import get_database
 from app.services.apollo_service import ApolloService
+from app.config import settings
 from bson import ObjectId
 
 router = APIRouter()
@@ -206,3 +207,104 @@ async def enrich_prospect(prospect_id: str, db=Depends(get_db)):
     if out.get("companyId"):
         out["companyId"] = str(out["companyId"])
     return {"prospect": out, "emailRevealed": bool(email)}
+
+
+# ── POST /prospects/{prospect_id}/enrich-mobile ─────────────────────────
+@router.post("/prospects/{prospect_id}/enrich-mobile")
+async def enrich_prospect_mobile(prospect_id: str, db=Depends(get_db)):
+    """Reveal a prospect's mobile number via Apollo (reveal_phone_number=True).
+
+    Apollo may return the number immediately (cached) — saved at once — or deliver
+    it asynchronously to APOLLO_WEBHOOK_URL, in which case the prospect is marked
+    ``mobileEnrichmentStatus: "pending"`` and filled in by /prospects/mobile-webhook.
+    """
+    try:
+        oid = ObjectId(prospect_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid prospect id")
+
+    webhook_url = settings.APOLLO_WEBHOOK_URL or ""
+    if not webhook_url:
+        raise HTTPException(
+            status_code=503,
+            detail=("APOLLO_WEBHOOK_URL is not configured. Set it in .env to a publicly "
+                    "reachable URL (e.g. an ngrok tunnel for local dev) ending in "
+                    "/api/v1/jobs/prospects/mobile-webhook so Apollo can deliver phone numbers."),
+        )
+
+    col = db["prospects"]
+    companies_col = db["companies"]
+    prospect = await col.find_one({"_id": oid})
+    if not prospect:
+        raise HTTPException(status_code=404, detail="Prospect not found")
+
+    details = dict(prospect.get("prospectDetails") or {})
+    if details.get("phone"):
+        return {"prospect_id": prospect_id, "status": "enriched", "phone": details["phone"]}
+
+    # Best-effort company name/domain to disambiguate the Apollo match.
+    org = None
+    if prospect.get("companyId"):
+        company = await companies_col.find_one({"_id": prospect["companyId"]})
+        if company:
+            dom = company.get("companyDomain") or ""
+            org = dom if dom and not dom.endswith(".linkedin.local") else company.get("companyName")
+
+    svc = ApolloService()
+    person = await asyncio.to_thread(
+        lambda: svc.match_phone(
+            apollo_id=prospect.get("apolloId"),
+            email=prospect.get("email") or None,
+            first_name=prospect.get("firstName") or None,
+            last_name=prospect.get("lastName") or None,
+            organization_name=org,
+            webhook_url=webhook_url,
+        )
+    )
+    if person is None:
+        raise HTTPException(status_code=502, detail="Apollo phone match request failed")
+
+    now = datetime.utcnow()
+    found_phone = ApolloService.extract_mobile(person)
+    if found_phone:
+        details["phone"] = found_phone
+        await col.update_one(
+            {"_id": oid},
+            {"$set": {"prospectDetails": details, "mobileEnrichmentStatus": "enriched", "updatedAt": now}},
+        )
+        return {"prospect_id": prospect_id, "status": "enriched", "phone": found_phone}
+
+    # No number yet → Apollo will POST it to the webhook.
+    await col.update_one(
+        {"_id": oid},
+        {"$set": {"mobileEnrichmentStatus": "pending", "updatedAt": now}},
+    )
+    return {"prospect_id": prospect_id, "status": "pending", "phone": None}
+
+
+# ── POST /prospects/mobile-webhook ──────────────────────────────────────
+@router.post("/prospects/mobile-webhook")
+async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
+    """Public receiver for Apollo's asynchronous phone-number delivery."""
+    if payload.get("status") and payload.get("status") != "success":
+        return {"status": "ignored", "reason": f"status is {payload.get('status')}"}
+
+    col = db["prospects"]
+    now = datetime.utcnow()
+    updated = 0
+    for person in payload.get("people", []) or []:
+        apollo_id = person.get("id")
+        phone = ApolloService.extract_mobile(person)
+        if not apollo_id or not phone:
+            continue
+        # Update the copies that triggered this reveal (pending), across runs.
+        cursor = col.find({"apolloId": apollo_id, "mobileEnrichmentStatus": "pending"})
+        async for p in cursor:
+            details = dict(p.get("prospectDetails") or {})
+            details["phone"] = phone
+            await col.update_one(
+                {"_id": p["_id"]},
+                {"$set": {"prospectDetails": details, "mobileEnrichmentStatus": "enriched", "updatedAt": now}},
+            )
+            updated += 1
+    return {"status": "ok", "updated": updated}

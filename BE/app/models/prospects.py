@@ -27,6 +27,7 @@ class ProspectsModel(BaseModel):
     seniority: Optional[str] = None
     industryName: Optional[str] = None
     isEnriched: bool = False
+    mobileEnrichmentStatus: Optional[str] = None  # None | "pending" | "enriched"
     isAccepted: bool = True
     matchReasons: List[str] = Field(default_factory=list)
     rejectionReason: Optional[str] = None

@@ -331,6 +331,60 @@ class ApolloService:
             logger.error("Apollo bulk enrich error: %s", e)
             return []
 
+    def match_phone(
+        self,
+        *,
+        apollo_id: str | None = None,
+        email: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        organization_name: str | None = None,
+        webhook_url: str = "",
+    ) -> dict | None:
+        """Apollo /people/match with reveal_phone_number=True (credit-consuming).
+
+        Apollo may return the phone immediately (cached) or deliver it later to
+        ``webhook_url``. Returns the matched person dict (which may already carry
+        ``phone_numbers``) or None on failure.
+        """
+        body: dict = {"reveal_phone_number": True, "reveal_personal_emails": False}
+        if webhook_url:
+            body["webhook_url"] = webhook_url
+        if apollo_id:
+            body["id"] = apollo_id
+        if email:
+            body["email"] = email
+        if first_name:
+            body["first_name"] = first_name
+        if last_name:
+            body["last_name"] = last_name
+        if organization_name:
+            body["organization_name"] = organization_name
+        try:
+            resp = requests.post(
+                f"{APOLLO_BASE_URL}/people/match",
+                headers=self._headers(),
+                json=body,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            return resp.json().get("person", {})
+        except Exception as e:
+            logger.error("Apollo phone match error: %s", e)
+            return None
+
+    @staticmethod
+    def extract_mobile(person: dict) -> str | None:
+        """Pull the best mobile/phone number from an Apollo person payload."""
+        phones = person.get("phone_numbers") or []
+        if not phones:
+            return None
+        mobiles = [p for p in phones if isinstance(p, dict) and (p.get("type") == "mobile" or p.get("type_cd") == "mobile")]
+        pick = (mobiles or phones)[0]
+        if isinstance(pick, dict):
+            return pick.get("sanitized_number") or pick.get("raw_number")
+        return pick if isinstance(pick, str) else None
+
     def _enrich_single(self, person: dict) -> dict | None:
         pid = person.get("id")
         if not pid:

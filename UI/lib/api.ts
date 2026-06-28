@@ -273,6 +273,7 @@ export interface JobProspect {
   industryName?: string;
   isEnriched: boolean;
   isAccepted: boolean;
+  mobileEnrichmentStatus?: 'pending' | 'enriched' | null;
   matchReasons?: string[];
   rejectionReason?: string | null;
   prospectDetails?: {
@@ -296,6 +297,17 @@ export function enrichProspect(
   prospectId: string,
 ): Promise<{ prospect: JobProspect; emailRevealed: boolean }> {
   return post(`/api/v1/jobs/prospects/${prospectId}/enrich`, {});
+}
+
+/**
+ * On-demand Apollo phone-number reveal for a single prospect.
+ * Returns immediately if phone is cached, or status "pending" when Apollo
+ * will deliver the number asynchronously via webhook.
+ */
+export function enrichProspectPhone(
+  prospectId: string,
+): Promise<{ prospect_id: string; status: 'enriched' | 'pending'; phone: string | null }> {
+  return post(`/api/v1/jobs/prospects/${prospectId}/enrich-mobile`, {});
 }
 
 // ── Credits & Outreach ────────────────────────────────────────────────────────
