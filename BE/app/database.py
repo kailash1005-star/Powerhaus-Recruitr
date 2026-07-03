@@ -113,6 +113,17 @@ async def connect_to_mongo():
     except Exception as e:
         print(f"[WARN] Could not create candidates indexes: {e}")
 
+    # profileEnrichmentCache — Apify profile results keyed by public identifier
+    # (_id). A TTL index expires entries a bit past the app-level re-enrich
+    # window so stale profiles are re-fetched instead of served forever.
+    try:
+        cache = database["profileEnrichmentCache"]
+        ttl_seconds = (settings.PROFILE_CACHE_TTL_DAYS + 1) * 86400
+        await cache.create_index("fetchedAt", name="idx_cache_ttl", expireAfterSeconds=ttl_seconds)
+        print("[OK] profileEnrichmentCache index ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create profileEnrichmentCache index: {e}")
+
     # AI Engineer chat — threads listed by recency, messages fetched per thread.
     try:
         await database["chatThreads"].create_index("updatedAt", name="idx_chatThreads_updatedAt")

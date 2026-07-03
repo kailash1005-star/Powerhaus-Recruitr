@@ -22,6 +22,9 @@ regex>=2024.4.28
 tls-client>=1.0.1,<2.0.0
 linkedin-api>=2.3.0
 firecrawl-py>=1.0.0
+# Apify client — candidate enrichment via the HarvestAPI LinkedIn profile actor
+# (deep résumé data Apollo doesn't carry). Official, lightweight SDK.
+apify-client>=1.7.0
 openai>=1.40.0
 rapidfuzz>=3.6.0
 requests>=2.32.0

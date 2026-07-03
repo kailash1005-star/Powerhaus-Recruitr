@@ -1,0 +1,367 @@
+{
+  "id": "66f98ea5210b570001b044da",
+  "first_name": "Sudharsan",
+  "last_name": "S",
+  "name": "Sudharsan S",
+  "linkedin_url": "http://www.linkedin.com/in/sudharsan2618",
+  "title": "AI Engineer",
+  "photo_url": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-scale_200_200/B56Zl_azrXJkAY-/0/1758779358553?e=2147483647&v=beta&t=UIw6UP2JsgI06hpkMHjf9dRj4DcxyZWSa_V3YbfRlUY",
+  "twitter_url": null,
+  "github_url": null,
+  "facebook_url": null,
+  "extrapolated_email_confidence": 0.6,
+  "headline": "Gen AI Engineer",
+  "organization_id": "60f406689799670001adadfc",
+  "employment_history": [
+    {
+      "_id": "6a2bea0e77184f00017a32b1",
+      "created_at": null,
+      "current": true,
+      "degree": null,
+      "description": null,
+      "emails": null,
+      "end_date": null,
+      "grade_level": null,
+      "kind": null,
+      "major": null,
+      "org_matched_by_name": false,
+      "organization_id": "60f406689799670001adadfc",
+      "organization_name": "Trusty Bytes",
+      "raw_address": null,
+      "start_date": "2025-04-01",
+      "title": "AI Engineer",
+      "updated_at": null,
+      "id": "6a2bea0e77184f00017a32b1",
+      "key": "6a2bea0e77184f00017a32b1"
+    },
+    {
+      "_id": "6a2bea0e77184f00017a32b2",
+      "created_at": null,
+      "current": true,
+      "degree": null,
+      "description": null,
+      "emails": null,
+      "end_date": null,
+      "grade_level": null,
+      "kind": null,
+      "major": null,
+      "org_matched_by_name": false,
+      "organization_id": "688ae4f51ee6180001aa34df",
+      "organization_name": "AgamX Technology Solutions GmbH",
+      "raw_address": null,
+      "start_date": "2025-04-01",
+      "title": "AI Engineer",
+      "updated_at": null,
+      "id": "6a2bea0e77184f00017a32b2",
+      "key": "6a2bea0e77184f00017a32b2"
+    },
+    {
+      "_id": "6a2bea0e77184f00017a32b3",
+      "created_at": null,
+      "current": false,
+      "degree": null,
+      "description": null,
+      "emails": null,
+      "end_date": "2025-03-01",
+      "grade_level": null,
+      "kind": null,
+      "major": null,
+      "org_matched_by_name": false,
+      "organization_id": "61d74829d8d3d400de8c9ed5",
+      "organization_name": "ConceptVines",
+      "raw_address": null,
+      "start_date": "2024-06-01",
+      "title": "Software Engineer",
+      "updated_at": null,
+      "id": "6a2bea0e77184f00017a32b3",
+      "key": "6a2bea0e77184f00017a32b3"
+    },
+    {
+      "_id": "6a2bea0e77184f00017a32b4",
+      "created_at": null,
+      "current": false,
+      "degree": null,
+      "description": null,
+      "emails": null,
+      "end_date": "2024-06-01",
+      "grade_level": null,
+      "kind": null,
+      "major": null,
+      "org_matched_by_name": false,
+      "organization_id": "61d74829d8d3d400de8c9ed5",
+      "organization_name": "ConceptVines",
+      "raw_address": null,
+      "start_date": "2024-01-01",
+      "title": "Full-Stack Developer-Intern",
+      "updated_at": null,
+      "id": "6a2bea0e77184f00017a32b4",
+      "key": "6a2bea0e77184f00017a32b4"
+    }
+  ],
+  "street_address": "",
+  "city": "Chennai",
+  "state": "Tamil Nadu",
+  "country": "India",
+  "postal_code": null,
+  "formatted_address": "Chennai, Tamil Nadu, India",
+  "time_zone": "Asia/Kolkata",
+  "email": "sudharsan@trustybytes.com",
+  "email_status": "extrapolated",
+  "organization": {
+    "id": "60f406689799670001adadfc",
+    "name": "Trusty Bytes",
+    "website_url": "http://www.trustybytes.com",
+    "angellist_url": null,
+    "linkedin_url": "http://www.linkedin.com/company/trusty-bytes",
+    "twitter_url": null,
+    "facebook_url": null,
+    "primary_phone": {},
+    "languages": [],
+    "alexa_ranking": null,
+    "phone": null,
+    "linkedin_uid": "72592472",
+    "founded_year": 2020,
+    "publicly_traded_symbol": null,
+    "publicly_traded_exchange": null,
+    "logo_url": "https://zenprospect-production.s3.amazonaws.com/uploads/pictures/69ff2ce298d4730001f4448f/picture",
+    "crunchbase_url": null,
+    "primary_domain": "trustybytes.com",
+    "sic_codes": [
+      "7371"
+    ],
+    "naics_codes": [
+      "54151"
+    ],
+    "industry": "information technology & services",
+    "estimated_num_employees": 38,
+    "keywords": [
+      "mobile app development",
+      "technology consulting",
+      "custom software development",
+      "enterprise software solutions",
+      "automate solutions",
+      "cyber security compliance",
+      "information technology services",
+      "ai consulting",
+      "launch scale",
+      "infrastructure network management",
+      "product strategy",
+      "mvp developement",
+      "business software solutions",
+      "web applications",
+      "application modernization",
+      "devops cicd automation",
+      "security & performance management",
+      "managed services",
+      "it services & it consulting",
+      "web design",
+      "social media marketing",
+      "back-end development",
+      "user experience design",
+      "online presence",
+      "customer engagement",
+      "web development",
+      "pay-per-click advertising",
+      "b2b",
+      "email marketing",
+      "computer systems design and related services",
+      "seo",
+      "website optimization",
+      "brand awareness",
+      "marketing and advertising",
+      "software development",
+      "website creation",
+      "digital marketing",
+      "full-stack development",
+      "front-end development",
+      "digital channels",
+      "services",
+      "content marketing",
+      "digital strategy",
+      "information technology and services",
+      "information technology & services",
+      "management consulting",
+      "consumer internet",
+      "consumers",
+      "internet",
+      "marketing & advertising",
+      "search marketing",
+      "marketing"
+    ],
+    "organization_revenue_printed": null,
+    "organization_revenue": 0.0,
+    "industries": [
+      "information technology & services"
+    ],
+    "secondary_industries": [],
+    "snippets_loaded": true,
+    "industry_tag_id": "5567cd4773696439b10b0000",
+    "industry_tag_hash": {
+      "information technology & services": "5567cd4773696439b10b0000"
+    },
+    "retail_location_count": 0,
+    "raw_address": "Guindy Race Course Road, Guindy, Tamil Nadu 600032, IN",
+    "street_address": "Race Course Road",
+    "city": "Chennai",
+    "state": "Tamil Nadu",
+    "postal_code": "600032",
+    "country": "India",
+    "owned_by_organization_id": null,
+    "short_description": "An IT services and consulting company based in India, partnering with clients globally to elevate business value through custom software development, technology consulting, and digital reliability services. We focus on building dependable, scalable solutions while acting as a long-term technology partner, not just a service vendor.\n\nServices & Expertise\n•   Personalized Software Development.\n•   Technology Consulting.\n•   Artificial Intelligence Solutions.\n•   Managed Services (24 x 7).\n•   Automation Solutions.\n\nWhy Us\n•   We work closely with clients to understand their business context, aligning the right talent and technology to meet unique needs.\n•   We prioritize clarity, reliability, and fast execution, enabling faster time-to-market.\n•   Success is defined by measurable business outcomes, performance, stability, cost reduction, and speed not hours delivered.\n•   Our systems are designed with reliability, observability, and maintainability as first-class requirements.\n•   We build long-term partnerships and remain people-centric, with strong emphasis on both Customer Experience (CX) and Employee Experience (EX).\n•   Founder-led engagement ensures leadership involvement, accountability, and better decision-making.\n•   Trust, transparency, and accountability define how we work.\n\nFor more information, \nvisit trustybytes.com \nreach out to us at info@trustybytes.com",
+    "suborganizations": [],
+    "num_suborganizations": 0,
+    "total_funding": null,
+    "total_funding_printed": null,
+    "latest_funding_round_date": null,
+    "latest_funding_stage": null,
+    "funding_events": [],
+    "technology_names": [
+      "AI",
+      "Amazon AWS",
+      "Amazon AWS",
+      "Amazon Route 53",
+      "Amazon Route 53",
+      "Bootstrap Framework",
+      "Gmail",
+      "Google Apps",
+      "Google Search Console",
+      "Google Tag Manager",
+      "Google Workspace",
+      "Heroku",
+      "IoT",
+      "MailJet",
+      "Mobile Friendly",
+      "Node.js",
+      "Remote",
+      "Scala",
+      "Slack",
+      "reCAPTCHA"
+    ],
+    "current_technologies": [
+      {
+        "uid": "ai",
+        "name": "AI",
+        "category": "Other"
+      },
+      {
+        "uid": "amazon_aws",
+        "name": "Amazon AWS",
+        "category": "Hosting"
+      },
+      {
+        "uid": "amazon_aws",
+        "name": "Amazon AWS",
+        "category": "Hosting"
+      },
+      {
+        "uid": "amazon_route_53",
+        "name": "Amazon Route 53",
+        "category": "Domain Name Services"
+      },
+      {
+        "uid": "amazon_route_53",
+        "name": "Amazon Route 53",
+        "category": "Domain Name Services"
+      },
+      {
+        "uid": "bootstrap_framework",
+        "name": "Bootstrap Framework",
+        "category": "CSS and JavaScript Libraries"
+      },
+      {
+        "uid": "gmail",
+        "name": "Gmail",
+        "category": "Email Providers"
+      },
+      {
+        "uid": "google_apps",
+        "name": "Google Apps",
+        "category": "Other"
+      },
+      {
+        "uid": "google_search_console",
+        "name": "Google Search Console",
+        "category": "Analytics and Tracking"
+      },
+      {
+        "uid": "google_tag_manager",
+        "name": "Google Tag Manager",
+        "category": "Tag Management"
+      },
+      {
+        "uid": "google workspace",
+        "name": "Google Workspace",
+        "category": "Cloud Services"
+      },
+      {
+        "uid": "heroku",
+        "name": "Heroku",
+        "category": "Hosting"
+      },
+      {
+        "uid": "iot",
+        "name": "IoT",
+        "category": "Other"
+      },
+      {
+        "uid": "mailjet",
+        "name": "MailJet",
+        "category": "Email Delivery"
+      },
+      {
+        "uid": "mobile_friendly",
+        "name": "Mobile Friendly",
+        "category": "Other"
+      },
+      {
+        "uid": "node.js",
+        "name": "Node.js",
+        "category": "Frameworks and Programming Languages"
+      },
+      {
+        "uid": "remote",
+        "name": "Remote",
+        "category": "Other"
+      },
+      {
+        "uid": "scala",
+        "name": "Scala",
+        "category": "Frameworks and Programming Languages"
+      },
+      {
+        "uid": "slack",
+        "name": "Slack",
+        "category": "Chats"
+      },
+      {
+        "uid": "recaptcha",
+        "name": "reCAPTCHA",
+        "category": "Captcha"
+      }
+    ],
+    "org_chart_root_people_ids": [],
+    "org_chart_sector": "OrgChart::SectorHierarchy::Rules::IT",
+    "org_chart_removed": false,
+    "org_chart_show_department_filter": true,
+    "organization_headcount_six_month_growth": 0.1388888888888889,
+    "organization_headcount_twelve_month_growth": 0.5769230769230769,
+    "organization_headcount_twenty_four_month_growth": 0.3666666666666666
+  },
+  "departments": [
+    "master_engineering_technical"
+  ],
+  "subdepartments": [
+    "artificial_intelligence_machine_learning",
+    "engineering_technical"
+  ],
+  "seniority": "entry",
+  "functions": [
+    "engineering"
+  ],
+  "intent_strength": null,
+  "show_intent": false,
+  "email_domain_catchall": false,
+  "email_domain_catchall_verdict": "allow",
+  "revealed_for_current_team": true,
+  "personal_emails": []
+}

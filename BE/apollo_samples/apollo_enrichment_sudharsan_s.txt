@@ -1,0 +1,149 @@
+==============================================================================
+APOLLO ENRICHMENT — FIELD INVENTORY
+==============================================================================
+
+── RECRUITING HIGHLIGHTS ─────────────────────────────────
+  name                      : Sudharsan S
+  title                     : AI Engineer
+  headline                  : Gen AI Engineer
+  seniority                 : entry
+  departments               : ['master_engineering_technical']
+  functions                 : ['engineering']
+  linkedin_url              : http://www.linkedin.com/in/sudharsan2618
+  location                  : Chennai, Tamil Nadu, India
+  email                     : sudharsan@trustybytes.com
+  email_status              : extrapolated
+  personal_emails           : <empty>
+  phone (extracted)         : <empty>
+  current_org               : Trusty Bytes
+  org_website               : http://www.trustybytes.com
+  org_industry              : information technology & services
+  org_employees             : 38
+  employment_history_count  : 4
+
+── CONTACT REVEAL STATUS ─────────────────────────────────
+  email revealed      : True (extrapolated)
+  personal emails     : 0
+  phone numbers       : 0  (may arrive later via webhook)
+
+── EMPLOYMENT HISTORY ────────────────────────────────────
+  [0] AI Engineer @ Trusty Bytes  (2025-04-01 → present)
+  [1] AI Engineer @ AgamX Technology Solutions GmbH  (2025-04-01 → present)
+  [2] Software Engineer @ ConceptVines  (2024-06-01 → 2025-03-01)
+  [3] Full-Stack Developer-Intern @ ConceptVines  (2024-01-01 → 2024-06-01)
+
+── FULL FIELD INVENTORY (every key path) ─────────────────
+  id : str = 66f98ea5210b570001b044da
+  first_name : str = Sudharsan
+  last_name : str = S
+  name : str = Sudharsan S
+  linkedin_url : str = http://www.linkedin.com/in/sudharsan2618
+  title : str = AI Engineer
+  photo_url : str = https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-s…
+  twitter_url : NoneType = <empty>
+  github_url : NoneType = <empty>
+  facebook_url : NoneType = <empty>
+  extrapolated_email_confidence : float = 0.6
+  headline : str = Gen AI Engineer
+  organization_id : str = 60f406689799670001adadfc
+  employment_history : list[4] (item shape below)
+  employment_history[0]._id : str = 6a2bea0e77184f00017a32b1
+  employment_history[0].created_at : NoneType = <empty>
+  employment_history[0].current : bool = True
+  employment_history[0].degree : NoneType = <empty>
+  employment_history[0].description : NoneType = <empty>
+  employment_history[0].emails : NoneType = <empty>
+  employment_history[0].end_date : NoneType = <empty>
+  employment_history[0].grade_level : NoneType = <empty>
+  employment_history[0].kind : NoneType = <empty>
+  employment_history[0].major : NoneType = <empty>
+  employment_history[0].org_matched_by_name : bool = False
+  employment_history[0].organization_id : str = 60f406689799670001adadfc
+  employment_history[0].organization_name : str = Trusty Bytes
+  employment_history[0].raw_address : NoneType = <empty>
+  employment_history[0].start_date : str = 2025-04-01
+  employment_history[0].title : str = AI Engineer
+  employment_history[0].updated_at : NoneType = <empty>
+  employment_history[0].id : str = 6a2bea0e77184f00017a32b1
+  employment_history[0].key : str = 6a2bea0e77184f00017a32b1
+  street_address : str = <empty>
+  city : str = Chennai
+  state : str = Tamil Nadu
+  country : str = India
+  postal_code : NoneType = <empty>
+  formatted_address : str = Chennai, Tamil Nadu, India
+  time_zone : str = Asia/Kolkata
+  email : str = sudharsan@trustybytes.com
+  email_status : str = extrapolated
+  organization.id : str = 60f406689799670001adadfc
+  organization.name : str = Trusty Bytes
+  organization.website_url : str = http://www.trustybytes.com
+  organization.angellist_url : NoneType = <empty>
+  organization.linkedin_url : str = http://www.linkedin.com/company/trusty-bytes
+  organization.twitter_url : NoneType = <empty>
+  organization.facebook_url : NoneType = <empty>
+  organization.primary_phone : dict (empty)
+  organization.languages : list (empty)
+  organization.alexa_ranking : NoneType = <empty>
+  organization.phone : NoneType = <empty>
+  organization.linkedin_uid : str = 72592472
+  organization.founded_year : int = 2020
+  organization.publicly_traded_symbol : NoneType = <empty>
+  organization.publicly_traded_exchange : NoneType = <empty>
+  organization.logo_url : str = https://zenprospect-production.s3.amazonaws.com/uploads/pictures/69ff2ce298d473…
+  organization.crunchbase_url : NoneType = <empty>
+  organization.primary_domain : str = trustybytes.com
+  organization.sic_codes : list[1] of scalar = [7371]
+  organization.naics_codes : list[1] of scalar = [54151]
+  organization.industry : str = information technology & services
+  organization.estimated_num_employees : int = 38
+  organization.keywords : list[52] of scalar = [mobile app development, technology consulting, custom software development, enterprise software solutions, automate solutions …]
+  organization.organization_revenue_printed : NoneType = <empty>
+  organization.organization_revenue : float = 0.0
+  organization.industries : list[1] of scalar = [information technology & services]
+  organization.secondary_industries : list (empty)
+  organization.snippets_loaded : bool = True
+  organization.industry_tag_id : str = 5567cd4773696439b10b0000
+  organization.industry_tag_hash.information technology & services : str = 5567cd4773696439b10b0000
+  organization.retail_location_count : int = 0
+  organization.raw_address : str = Guindy Race Course Road, Guindy, Tamil Nadu 600032, IN
+  organization.street_address : str = Race Course Road
+  organization.city : str = Chennai
+  organization.state : str = Tamil Nadu
+  organization.postal_code : str = 600032
+  organization.country : str = India
+  organization.owned_by_organization_id : NoneType = <empty>
+  organization.short_description : str = An IT services and consulting company based in India, partnering with clients g…
+  organization.suborganizations : list (empty)
+  organization.num_suborganizations : int = 0
+  organization.total_funding : NoneType = <empty>
+  organization.total_funding_printed : NoneType = <empty>
+  organization.latest_funding_round_date : NoneType = <empty>
+  organization.latest_funding_stage : NoneType = <empty>
+  organization.funding_events : list (empty)
+  organization.technology_names : list[20] of scalar = [AI, Amazon AWS, Amazon AWS, Amazon Route 53, Amazon Route 53 …]
+  organization.current_technologies : list[20] (item shape below)
+  organization.current_technologies[0].uid : str = ai
+  organization.current_technologies[0].name : str = AI
+  organization.current_technologies[0].category : str = Other
+  organization.org_chart_root_people_ids : list (empty)
+  organization.org_chart_sector : str = OrgChart::SectorHierarchy::Rules::IT
+  organization.org_chart_removed : bool = False
+  organization.org_chart_show_department_filter : bool = True
+  organization.organization_headcount_six_month_growth : float = 0.1388888888888889
+  organization.organization_headcount_twelve_month_growth : float = 0.5769230769230769
+  organization.organization_headcount_twenty_four_month_growth : float = 0.3666666666666666
+  departments : list[1] of scalar = [master_engineering_technical]
+  subdepartments : list[2] of scalar = [artificial_intelligence_machine_learning, engineering_technical]
+  seniority : str = entry
+  functions : list[1] of scalar = [engineering]
+  intent_strength : NoneType = <empty>
+  show_intent : bool = False
+  email_domain_catchall : bool = False
+  email_domain_catchall_verdict : str = allow
+  revealed_for_current_team : bool = True
+  personal_emails : list (empty)
+
+==============================================================================
+TOTAL TOP-LEVEL KEYS: 34   TOTAL LEAF PATHS: 110
+==============================================================================

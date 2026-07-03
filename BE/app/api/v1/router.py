@@ -4,7 +4,7 @@ API Router - Aggregates all v1 routers
 import logging
 
 from fastapi import APIRouter
-from app.api.v1 import icp, runs, analytics, jobs, pipelines, companies, matching, outreach
+from app.api.v1 import icp, runs, analytics, jobs, pipelines, companies, matching, outreach, candidates
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ api_router.include_router(pipelines.router, prefix="/pipelines", tags=["Pipeline
 api_router.include_router(companies.router, prefix="/companies", tags=["Companies"])
 api_router.include_router(matching.router, prefix="/matching", tags=["Matching"])
 api_router.include_router(outreach.router, prefix="/outreach", tags=["Outreach"])
+api_router.include_router(candidates.router, prefix="/candidates", tags=["Candidates"])
 
 # AI Engineer agent — OPTIONAL. Its third-party stack (pydantic-ai / MCP) can
 # fail to import on a version mismatch; that must never take down the whole API.

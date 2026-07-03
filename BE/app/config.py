@@ -59,6 +59,28 @@ class Settings(BaseSettings):
                     "(e.g. https://<host>/api/v1/jobs/prospects/mobile-webhook).",
     )
 
+    # ── Candidate enrichment (Apify / HarvestAPI LinkedIn profile scraper) ──
+    # Apollo gives identity + company + verified email but NO résumé depth
+    # (skills/education/certs/experience descriptions). The HarvestAPI actor on
+    # Apify returns that depth for ~$0.004/profile with no cookies/proxy on our
+    # side (the vendor runs its own authenticated account pool). We call it for
+    # a SELECTED set of candidates on-demand, then merge with the Apollo record.
+    APIFY_TOKEN: str = Field(default="", description="Apify API token (Console → Settings → Integrations)")
+    APIFY_PROFILE_ACTOR: str = Field(
+        default="harvestapi/linkedin-profile-scraper",
+        description="Apify actor id for the LinkedIn profile scraper",
+    )
+    # Actor mode enum. We use the profile-only ($4/1k) mode and keep Apollo's
+    # email; the "+ email search ($10/1k)" value is the alternative.
+    APIFY_PROFILE_MODE: str = Field(
+        default="Profile details no email ($4 per 1k)",
+        description="Apify actor profileScraperMode enum value",
+    )
+    # Hard cap on profiles per enrichment call — a runaway-cost guard.
+    APIFY_ENRICH_MAX: int = Field(default=25, description="Max profiles enriched per call")
+    # Don't re-enrich (and re-pay for) the same profile within this many days.
+    PROFILE_CACHE_TTL_DAYS: int = Field(default=30, description="Profile enrichment cache TTL (days)")
+
     # ── AI Engineer agent (Pydantic AI, provider-swappable) ─────────────
     # Model is a Pydantic AI model string: "<provider>:<model>".
     #   OpenAI:    openai:gpt-4o

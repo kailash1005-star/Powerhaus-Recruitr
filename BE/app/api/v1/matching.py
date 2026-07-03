@@ -275,12 +275,29 @@ async def outreach_config():
 
 @router.post("/outreach/draft")
 async def outreach_draft(req: OutreachDraftRequest, db=Depends(get_db)):
-    """Generate a professional HR-toned outreach email for a candidate."""
-    cv = await db["cv_candidates"].find_one({"_id": _oid(req.candidateId)}, {"profile": 1, "contact": 1})
-    if not cv:
-        raise HTTPException(status_code=404, detail="candidate not found")
-    profile = cv.get("profile") or {}
-    contact = cv.get("contact") or {}
+    """Generate a professional HR-toned outreach email for a candidate.
+
+    Looks the candidate up in the CV corpus first; falls back to a pipeline
+    candidate (Apify-enriched) so "Reach out" works for pipeline match results.
+    """
+    oid = _oid(req.candidateId)
+    cv = await db["cv_candidates"].find_one({"_id": oid}, {"profile": 1, "contact": 1})
+    if cv:
+        profile = cv.get("profile") or {}
+        contact = cv.get("contact") or {}
+    else:
+        cand = await db["candidates"].find_one({"_id": oid})
+        if not cand:
+            raise HTTPException(status_code=404, detail="candidate not found")
+        enrichment = cand.get("apifyEnrichment") or {}
+        profile = enrichment.get("profile") or {
+            "fullName": cand.get("displayName"),
+            "currentTitle": cand.get("currentTitle"),
+        }
+        contact = enrichment.get("contact") or {}
+        # Apollo verified email lives on enrichedData when the Apollo stage ran.
+        if not contact.get("email"):
+            contact = {**contact, "email": (cand.get("enrichedData") or {}).get("email")}
     try:
         draft = await email_service.generate_outreach_email(profile, req.roleTitle)
     except Exception as e:  # noqa: BLE001

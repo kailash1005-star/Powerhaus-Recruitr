@@ -1,0 +1,156 @@
+==============================================================================
+APOLLO ENRICHMENT — FIELD INVENTORY
+==============================================================================
+
+── RECRUITING HIGHLIGHTS ─────────────────────────────────
+  name                      : Satya Nadella
+  title                     : Chairman and CEO
+  headline                  : Chairman and CEO at Microsoft
+  seniority                 : c_suite
+  departments               : ['c_suite']
+  functions                 : <empty>
+  linkedin_url              : http://www.linkedin.com/in/satyanadella
+  location                  : Redmond, Washington, United States
+  email                     : satyan@microsoft.com
+  email_status              : verified
+  personal_emails           : <empty>
+  phone (extracted)         : <empty>
+  current_org               : Microsoft
+  org_website               : http://www.microsoft.com
+  org_industry              : information technology & services
+  org_employees             : 228000
+  employment_history_count  : 5
+
+── CONTACT REVEAL STATUS ─────────────────────────────────
+  email revealed      : True (verified)
+  personal emails     : 0
+  phone numbers       : 0  (may arrive later via webhook)
+
+── EMPLOYMENT HISTORY ────────────────────────────────────
+  [0] Chairman and CEO @ Microsoft  (2014-02-01 → present)
+  [1] Member Board of Trustees @ University of Chicago  (2018-01-01 → present)
+  [2] Board Member @ Starbucks  (2017-01-01 → 2024-01-01)
+  [3] Chairman @ The Business Council U.S.  (2021-01-01 → 2023-01-01)
+  [4] Board Member @ Fred Hutch  (2016-01-01 → 2022-01-01)
+
+── FULL FIELD INVENTORY (every key path) ─────────────────
+  id : str = 67a683b4359ad8000147cb69
+  first_name : str = Satya
+  last_name : str = Nadella
+  name : str = Satya Nadella
+  linkedin_url : str = http://www.linkedin.com/in/satyanadella
+  title : str = Chairman and CEO
+  photo_url : str = https://media.licdn.com/dms/image/v2/C5603AQHHUuOSlRVA1w/profile-displayphoto-s…
+  twitter_url : NoneType = <empty>
+  github_url : NoneType = <empty>
+  facebook_url : NoneType = <empty>
+  extrapolated_email_confidence : NoneType = <empty>
+  headline : str = Chairman and CEO at Microsoft
+  organization_id : str = 62337760d02af100a5ca2468
+  employment_history : list[5] (item shape below)
+  employment_history[0]._id : str = 6a42d39c9e19e300011b4e7e
+  employment_history[0].created_at : NoneType = <empty>
+  employment_history[0].current : bool = True
+  employment_history[0].degree : NoneType = <empty>
+  employment_history[0].description : NoneType = <empty>
+  employment_history[0].emails : NoneType = <empty>
+  employment_history[0].end_date : NoneType = <empty>
+  employment_history[0].grade_level : NoneType = <empty>
+  employment_history[0].kind : NoneType = <empty>
+  employment_history[0].major : NoneType = <empty>
+  employment_history[0].org_matched_by_name : bool = False
+  employment_history[0].organization_id : str = 62337760d02af100a5ca2468
+  employment_history[0].organization_name : str = Microsoft
+  employment_history[0].raw_address : NoneType = <empty>
+  employment_history[0].start_date : str = 2014-02-01
+  employment_history[0].title : str = Chairman and CEO
+  employment_history[0].updated_at : NoneType = <empty>
+  employment_history[0].id : str = 6a42d39c9e19e300011b4e7e
+  employment_history[0].key : str = 6a42d39c9e19e300011b4e7e
+  street_address : str = <empty>
+  city : str = Redmond
+  state : str = Washington
+  country : str = United States
+  postal_code : NoneType = <empty>
+  formatted_address : str = Redmond, WA, USA
+  time_zone : str = America/Los_Angeles
+  email : str = satyan@microsoft.com
+  email_status : str = verified
+  organization.id : str = 62337760d02af100a5ca2468
+  organization.name : str = Microsoft
+  organization.website_url : str = http://www.microsoft.com
+  organization.angellist_url : NoneType = <empty>
+  organization.linkedin_url : str = http://www.linkedin.com/company/microsoft
+  organization.twitter_url : str = https://twitter.com/MicrosoftDE
+  organization.facebook_url : str = https://www.facebook.com/MicrosoftDE
+  organization.primary_phone.number : str = +1 800-285-7772
+  organization.primary_phone.source : str = Owler
+  organization.primary_phone.sanitized_number : str = +18002857772
+  organization.languages : list[1] of scalar = [English]
+  organization.alexa_ranking : int = 32
+  organization.phone : str = +1 800-285-7772
+  organization.linkedin_uid : str = 1035
+  organization.founded_year : int = 1975
+  organization.publicly_traded_symbol : str = MSFT
+  organization.publicly_traded_exchange : str = nasdaq
+  organization.logo_url : str = https://zenprospect-production.s3.amazonaws.com/uploads/pictures/6a3b85b3919cc5…
+  organization.crunchbase_url : NoneType = <empty>
+  organization.primary_domain : str = microsoft.com
+  organization.sic_codes : list[3] of scalar = [3571, 7372, 7373]
+  organization.naics_codes : list[3] of scalar = [54151, 51321, 51821]
+  organization.sanitized_phone : str = +18002857772
+  organization.market_cap : str = 2770.6B
+  organization.industry : str = information technology & services
+  organization.estimated_num_employees : int = 228000
+  organization.keywords : list[208] of scalar = [business software, developer tools, home, educational software, tablets …]
+  organization.organization_revenue_printed : str = 281.7B
+  organization.organization_revenue : float = 281724000000.0
+  organization.industries : list[3] of scalar = [information technology & services, computer software, internet]
+  organization.secondary_industries : list[2] of scalar = [computer software, internet]
+  organization.snippets_loaded : bool = True
+  organization.industry_tag_id : str = 5567cd4773696439b10b0000
+  organization.industry_tag_hash.information technology & services : str = 5567cd4773696439b10b0000
+  organization.industry_tag_hash.computer software : str = 5567cd4e7369643b70010000
+  organization.industry_tag_hash.internet : str = 5567cd4d736964397e020000
+  organization.retail_location_count : int = 93
+  organization.raw_address : str = 1 Microsoft Way, Redmond, Washington 98052, US
+  organization.street_address : str = 1 Microsoft Way
+  organization.city : str = Redmond
+  organization.state : str = Washington
+  organization.postal_code : str = 98052
+  organization.country : str = United States
+  organization.owned_by_organization_id : NoneType = <empty>
+  organization.short_description : str = Microsoft Corporation is a leading American multinational technology company ba…
+  organization.suborganizations : list[193] (item shape below)
+  organization.suborganizations[0].id : str = 54a11c0969702d88c4b87100
+  organization.suborganizations[0].name : str = Xamarin
+  organization.suborganizations[0].website_url : str = http://www.xamarin.com
+  organization.num_suborganizations : int = 193
+  organization.annual_revenue_printed : str = 281.7B
+  organization.annual_revenue : float = 281724000000.0
+  organization.technology_names : list[913] of scalar = [.NET, 3M 360 Encompass - Health Analytics Sui…, A Small Orange, ABAP, ADAPT …]
+  organization.current_technologies : list[913] (item shape below)
+  organization.current_technologies[0].uid : str = net
+  organization.current_technologies[0].name : str = .NET
+  organization.current_technologies[0].category : str = Frameworks and Programming Languages
+  organization.org_chart_root_people_ids : list[1] of scalar = [67a683b4359ad8000147cb69]
+  organization.org_chart_sector : str = OrgChart::SectorHierarchy::Rules::IT
+  organization.org_chart_removed : bool = False
+  organization.org_chart_show_department_filter : bool = True
+  organization.organization_headcount_six_month_growth : float = 0.01447050450211864
+  organization.organization_headcount_twelve_month_growth : float = 0.01508796482235205
+  organization.organization_headcount_twenty_four_month_growth : float = 0.06820706993686466
+  departments : list[1] of scalar = [c_suite]
+  subdepartments : list[1] of scalar = [executive]
+  seniority : str = c_suite
+  functions : list (empty)
+  intent_strength : NoneType = <empty>
+  show_intent : bool = False
+  email_domain_catchall : bool = False
+  email_domain_catchall_verdict : str = allow
+  revealed_for_current_team : bool = True
+  personal_emails : list (empty)
+
+==============================================================================
+TOTAL TOP-LEVEL KEYS: 34   TOTAL LEAF PATHS: 116
+==============================================================================

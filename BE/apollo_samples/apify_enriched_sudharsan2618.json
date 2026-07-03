@@ -1,0 +1,1466 @@
+{
+  "profile": {
+    "fullName": "Sudharsan D S",
+    "firstName": "Sudharsan",
+    "lastName": "D S",
+    "headline": "Gen AI Engineer",
+    "summary": "An Engineer who likes to make things simple and beautiful. Specialized in Agentic AI system design, building Gen AI application development, Finetuning, pipeline building and deploying. Have strong knowledge on transformers, pytorch, Data Structures and Algorithms.\n\nI approach AI with an engineering-first mindset: clear problem framing, strong data foundations, disciplined evaluation, and scalable delivery. I value systems that work consistently in production over solutions that only perform well in isolation.",
+    "location": "Chennai, Tamil Nadu, India",
+    "currentTitle": "AI Engineer",
+    "currentCompany": "Trusty Bytes",
+    "totalYears": 2.4,
+    "skills": [
+      "Solution Architecture",
+      "Generative AI Tools",
+      "Artificial Intelligence (AI)",
+      "Cloud Computing",
+      "Python (Programming Language)",
+      "English",
+      "MCP (Multi Agent Protocol)",
+      "Model Context Protocol (MCP)",
+      "n8n",
+      "LangChain",
+      "Langgraph",
+      "Vector Databases",
+      "Program Evaluation",
+      "Power System Automation",
+      "Automation",
+      "Web Scraping",
+      "Big Data",
+      "Graph Databases",
+      "Kubernetes",
+      "Fine Tuning",
+      "API Development",
+      "Data Compression",
+      "Data Structures",
+      "Computer Engineering",
+      "Software Solutions",
+      "Microservices",
+      "Defining Requirements",
+      "Query Optimization",
+      "Software Development",
+      "Microsoft Power Apps",
+      "Microsoft Azure",
+      "Flask",
+      "React.js",
+      "Git",
+      "Jenkins",
+      "React Native",
+      "Amazon Web Services (AWS)",
+      "Spring Boot",
+      "Core Java",
+      "MySQL",
+      "Tableau",
+      "Databases",
+      "Microsoft Office",
+      "Microsoft PowerPoint",
+      "Microsoft Excel",
+      "Microsoft Power BI",
+      "SQL",
+      "HTML",
+      "Critical Thinking",
+      "Communication",
+      "Problem Solving",
+      "Analytical Skills",
+      "Public Speaking",
+      "Leadership",
+      "RAG"
+    ],
+    "titles": [
+      "AI Engineer",
+      "AI Engineer",
+      "Software Engineer",
+      "Full-Stack Developer-Intern"
+    ],
+    "experience": [
+      {
+        "title": "AI Engineer",
+        "company_name": "Trusty Bytes",
+        "location": "Chennai, Tamil Nadu, India",
+        "employment_type": "Full-time",
+        "summary": "Build AI-driven Agentic business workflow automation that including complex orchestration, implemented multiple collabration platform, cross platform functionalities, mail summarizing systems with unstructured data using RAG architecture, Graph database, chromaDB, Embedded systems, and mistral LLM. Worked with n8n, power apps, google apps, data driven api’s, and pinecone vector database. By implementing this our Enterprise partner was able to reduce manual work time by\n40 percent and increase productivity.",
+        "description": "Build AI-driven Agentic business workflow automation that including complex orchestration, implemented multiple collabration platform, cross platform functionalities, mail summarizing systems with unstructured data using RAG architecture, Graph database, chromaDB, Embedded systems, and mistral LLM. Worked with n8n, power apps, google apps, data driven api’s, and pinecone vector database. By implementing this our Enterprise partner was able to reduce manual work time by\n40 percent and increase productivity.",
+        "skills": [
+          "Artificial Intelligence (AI)",
+          "Generative AI Tools",
+          "RAG",
+          "Python (Programming Language)",
+          "Automation",
+          "n8n",
+          "Microsoft Power Apps",
+          "LangChain",
+          "Langgraph"
+        ],
+        "starts_at": "2025-04",
+        "ends_at": null,
+        "is_current": true
+      },
+      {
+        "title": "AI Engineer",
+        "company_name": "AgamX Technology Solutions GmbH",
+        "location": "Cologne, North Rhine-Westphalia, Germany",
+        "employment_type": "Full-time",
+        "summary": "",
+        "description": "",
+        "skills": [
+          "Artificial Intelligence (AI)",
+          "LangChain",
+          "Program Evaluation",
+          "n8n",
+          "Power System Automation"
+        ],
+        "starts_at": "2025-04",
+        "ends_at": null,
+        "is_current": true
+      },
+      {
+        "title": "Software Engineer",
+        "company_name": "ConceptVines",
+        "location": "Chennai, Tamil Nadu, India",
+        "employment_type": "Full-time",
+        "summary": "Experiencing cutting edge technologies like Open source LLM , fine tuning models, ML deployment, Python, Graph DB, Pytest. By accessing this open source models and open source platforms we build variety of models using RAG architecture.",
+        "description": "Experiencing cutting edge technologies like Open source LLM , fine tuning models, ML deployment, Python, Graph DB, Pytest. By accessing this open source models and open source platforms we build variety of models using RAG architecture.",
+        "skills": [
+          "React.js",
+          "RAG",
+          "Python (Programming Language)",
+          "Fine Tuning",
+          "Graph Databases",
+          "Kubernetes",
+          "Flask",
+          "Generative AI Tools",
+          "Amazon Web Services (AWS)"
+        ],
+        "starts_at": "2024-06",
+        "ends_at": "2025-03",
+        "is_current": false
+      },
+      {
+        "title": "Full-Stack Developer-Intern",
+        "company_name": "ConceptVines",
+        "location": "Chennai",
+        "employment_type": "Internship",
+        "summary": "Hey, here i working as a backend developer and contributed in a payment gateway application development. \nContribution:\n*Developed and maintained the backend infrastructure of a robust payment gateway application, ensuring seamless and secure transaction processing.\n\n*Collaborated with cross-functional teams, including front-end developers and quality assurance, to implement new features and enhance the overall functionality of the payment gateway.\n\n*Implemented RESTful APIs to facilitate communication between the front-end and backend systems, optimizing data flow and reducing latency.",
+        "description": "Hey, here i working as a backend developer and contributed in a payment gateway application development. \nContribution:\n*Developed and maintained the backend infrastructure of a robust payment gateway application, ensuring seamless and secure transaction processing.\n\n*Collaborated with cross-functional teams, including front-end developers and quality assurance, to implement new features and enhance the overall functionality of the payment gateway.\n\n*Implemented RESTful APIs to facilitate communication between the front-end and backend systems, optimizing data flow and reducing latency.",
+        "skills": [
+          "React Native",
+          "API Development",
+          "MySQL",
+          "React.js",
+          "Git",
+          "Jenkins",
+          "Spring Boot"
+        ],
+        "starts_at": "2024-01",
+        "ends_at": "2024-06",
+        "is_current": false
+      }
+    ],
+    "education": [
+      {
+        "school_name": "Mahendra Institutions",
+        "degree_name": "Bachelor of Technology - BTech",
+        "field_of_study": "Information Technology",
+        "starts_at": "2020-06",
+        "ends_at": "2024-05"
+      },
+      {
+        "school_name": "Higher Secondary School - India",
+        "degree_name": "HSC",
+        "field_of_study": "Computer Science",
+        "starts_at": "2019-04",
+        "ends_at": "2020-03"
+      }
+    ],
+    "certifications": [
+      {
+        "name": "Model Context Protocol: Advanced Topics",
+        "authority": ""
+      },
+      {
+        "name": "Introduction to Model Context Protocol",
+        "authority": ""
+      },
+      {
+        "name": "Introduction to Model Context Protocol",
+        "authority": ""
+      },
+      {
+        "name": "AWS Certified Cloud Practitioner",
+        "authority": ""
+      },
+      {
+        "name": "Neo4j Certified Professional",
+        "authority": ""
+      },
+      {
+        "name": "Generative AI Professional Certification",
+        "authority": ""
+      },
+      {
+        "name": "Cypher Fundamentals",
+        "authority": ""
+      },
+      {
+        "name": "Neo4j &amp; LLM Fundamentals",
+        "authority": ""
+      },
+      {
+        "name": "Neo4j Fundamentals",
+        "authority": ""
+      }
+    ],
+    "languages": [
+      {
+        "name": "Deutsch",
+        "proficiency": "Professional working proficiency"
+      },
+      {
+        "name": "English",
+        "proficiency": "Professional working proficiency"
+      },
+      {
+        "name": "German",
+        "proficiency": "Professional working proficiency"
+      },
+      {
+        "name": "Tamil",
+        "proficiency": "Native or bilingual proficiency"
+      }
+    ]
+  },
+  "contact": {
+    "email": "sudharsan@trustybytes.com",
+    "phone": null,
+    "linkedin": "https://www.linkedin.com/in/sudharsan2618",
+    "emailStatus": "extrapolated"
+  },
+  "source": {
+    "apollo": true,
+    "apify": true
+  },
+  "raw": {
+    "apify": {
+      "id": "ACoAAEFvfH4BhnCy-M6OzYLUPRXPBVPdI-i83-g",
+      "publicIdentifier": "sudharsan2618",
+      "linkedinUrl": "https://www.linkedin.com/in/sudharsan2618",
+      "firstName": "Sudharsan",
+      "lastName": "D S",
+      "emails": [],
+      "headline": "Gen AI Engineer",
+      "websites": [
+        "https://sudharsan2618.github.io/sudharsan-portfolio/"
+      ],
+      "openToWork": false,
+      "hiring": false,
+      "premium": true,
+      "influencer": false,
+      "memorialized": false,
+      "creator": true,
+      "location": {
+        "linkedinText": "Chennai, Tamil Nadu, India",
+        "countryCode": "IN",
+        "parsed": {
+          "text": "Chennai, India",
+          "countryCode": "IN",
+          "regionCode": null,
+          "country": "India",
+          "countryFull": "India",
+          "state": "Tamil Nadu",
+          "city": "Chennai"
+        }
+      },
+      "objectUrn": "1097825406",
+      "registeredAt": "2023-02-24T10:21:19.042Z",
+      "topSkills": [
+        "Solution Architecture",
+        "Generative AI Tools",
+        "Artificial Intelligence (AI)",
+        "Cloud Computing",
+        "Python (Programming Language)"
+      ],
+      "connectionsCount": 829,
+      "followerCount": 1118,
+      "verified": true,
+      "about": "An Engineer who likes to make things simple and beautiful. Specialized in Agentic AI system design, building Gen AI application development, Finetuning, pipeline building and deploying. Have strong knowledge on transformers, pytorch, Data Structures and Algorithms.\n\nI approach AI with an engineering-first mindset: clear problem framing, strong data foundations, disciplined evaluation, and scalable delivery. I value systems that work consistently in production over solutions that only perform well in isolation.",
+      "currentPosition": [
+        {
+          "position": "AI Engineer",
+          "location": "Chennai, Tamil Nadu, India",
+          "employmentType": "Full-time",
+          "workplaceType": "Hybrid",
+          "companyName": "Trusty Bytes",
+          "companyLinkedinUrl": "https://www.linkedin.com/company/trusty-bytes/",
+          "companyId": "72592472",
+          "duration": "1 yr 4 mos",
+          "description": "Build AI-driven Agentic business workflow automation that including complex orchestration, implemented multiple collabration platform, cross platform functionalities, mail summarizing systems with unstructured data using RAG architecture, Graph database, chromaDB, Embedded systems, and mistral LLM. Worked with n8n, power apps, google apps, data driven api’s, and pinecone vector database. By implementing this our Enterprise partner was able to reduce manual work time by\n40 percent and increase productivity.",
+          "skills": [
+            "Artificial Intelligence (AI)",
+            "Generative AI Tools",
+            "RAG",
+            "Python (Programming Language)",
+            "Automation",
+            "n8n",
+            "Microsoft Power Apps",
+            "LangChain",
+            "Langgraph"
+          ],
+          "startDate": {
+            "month": "Apr",
+            "year": 2025,
+            "text": "Apr 2025"
+          },
+          "endDate": {
+            "text": "Present"
+          },
+          "companyLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_400_400/B56Zz2KIaLHoAc-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=lWuEPl2LvCCpD1VUxmGIE9IVccxhL1O5g3AI02kcpQI",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_400_400/B56Zz2KIaLHoAc-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=lWuEPl2LvCCpD1VUxmGIE9IVccxhL1O5g3AI02kcpQI",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_200_200/B56Zz2KIaLHoAM-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=b72MmkWooRtPuOmpyX_WX4zKegqw7-6Dis6Z9xhLwtQ",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_100_100/B56Zz2KIaLHoAU-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=C29y7e1bDjR5v9wHlmyAsmJekFLABia7JrrR-Pi0-ek",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          },
+          "companyUniversalName": "trusty-bytes"
+        }
+      ],
+      "profileTopEducation": [
+        {
+          "schoolName": "Mahendra Institutions",
+          "schoolLinkedinUrl": "https://www.linkedin.com/company/874191/",
+          "schoolId": "874191",
+          "degree": "Bachelor of Technology - BTech",
+          "fieldOfStudy": "Information Technology",
+          "period": "Jun 2020 - May 2024",
+          "startDate": {
+            "month": "Jun",
+            "year": 2020,
+            "text": "Jun 2020"
+          },
+          "endDate": {
+            "month": "May",
+            "year": 2024,
+            "text": "May 2024"
+          },
+          "schoolLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_400_400/company-logo_400_400/0/1631353357359?e=1784764800&v=beta&t=9mWjEgwmpqEprHRMuhN8kGxv9lYSGstRLVcK9cyfKQU",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_400_400/company-logo_400_400/0/1631353357359?e=1784764800&v=beta&t=9mWjEgwmpqEprHRMuhN8kGxv9lYSGstRLVcK9cyfKQU",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_200_200/company-logo_200_200/0/1631353357359?e=1784764800&v=beta&t=chVkJ0AXRIbxr94MTU_dOSNSFrTONhBzphX3RwVMY-Y",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_100_100/company-logo_100_100/0/1631353357359?e=1784764800&v=beta&t=atYmw-o0XvxmL3FT_9Frv-YiuizIe9vKbscZF6i93mU",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        }
+      ],
+      "profileActions": [],
+      "profilePicture": {
+        "url": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-crop_800_800/B56Zl_azrXJkAI-/0/1758779358416?e=1784764800&v=beta&t=xrKX9mXC7GWlCupxr8VNoQNlkHvQ3va_knugg96xs2E",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-crop_800_800/B56Zl_azrXJkAI-/0/1758779358416?e=1784764800&v=beta&t=xrKX9mXC7GWlCupxr8VNoQNlkHvQ3va_knugg96xs2E",
+            "width": 800,
+            "height": 800
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-scale_400_400/B56Zl_azrXJkAg-/0/1758779358553?e=1784764800&v=beta&t=qDFJdyrVgkeEXAi_zHlRv0VJCliW9vhWGEHW_c9ZVkY",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-scale_200_200/B56Zl_azrXJkAY-/0/1758779358553?e=1784764800&v=beta&t=qLIqZcp5Okb3sZW8jaouWVoESEIui9OR6YFBz_bGPt0",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-scale_100_100/B56Zl_azrXJkAc-/0/1758779358553?e=1784764800&v=beta&t=pDIIPOOoEC7qVNHBJ5GUmdAtD21LEtCJZStM4gPxoXM",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "coverPicture": {
+        "url": "https://media.licdn.com/dms/image/v2/D5616AQGH1qSNG8AzKQ/profile-displaybackgroundimage-shrink_350_1400/profile-displaybackgroundimage-shrink_350_1400/0/1733448442412?e=1784764800&v=beta&t=9dyHP_V1sdyll74_wu49l79_urmx1IhANmVo0gydHkA",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D5616AQGH1qSNG8AzKQ/profile-displaybackgroundimage-shrink_350_1400/profile-displaybackgroundimage-shrink_350_1400/0/1733448442412?e=1784764800&v=beta&t=9dyHP_V1sdyll74_wu49l79_urmx1IhANmVo0gydHkA",
+            "width": 1400,
+            "height": 350
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D5616AQGH1qSNG8AzKQ/profile-displaybackgroundimage-shrink_200_800/profile-displaybackgroundimage-shrink_200_800/0/1733448442412?e=1784764800&v=beta&t=UrpJLLg8zQli7D1QQRgo1mil7cyByNTK3Kbg5yjxl1A",
+            "width": 800,
+            "height": 200
+          }
+        ]
+      },
+      "photo": "https://media.licdn.com/dms/image/v2/D5603AQEdfNkQIaM4NA/profile-displayphoto-crop_800_800/B56Zl_azrXJkAI-/0/1758779358416?e=1784764800&v=beta&t=xrKX9mXC7GWlCupxr8VNoQNlkHvQ3va_knugg96xs2E",
+      "profileLocales": [
+        {
+          "country": "US",
+          "language": "en"
+        }
+      ],
+      "primaryLocale": {
+        "country": "US",
+        "language": "en"
+      },
+      "multiLocaleHeadline": [
+        {
+          "headline": "Gen AI Engineer",
+          "locale": "en_US"
+        }
+      ],
+      "services": {
+        "description": null,
+        "media": [],
+        "servicesList": [
+          "Cloud Application Development",
+          "Cloud Management",
+          "IT Consulting",
+          "SaaS Development",
+          "Custom Software Development",
+          "Database Development",
+          "Application Development"
+        ],
+        "rating": null,
+        "requestUrl": "https://www.linkedin.com/in/sudharsan2618/opportunities/services/request-proposal?servicePageVanityName=0033143265ba4b3700"
+      },
+      "experience": [
+        {
+          "position": "AI Engineer",
+          "location": "Chennai, Tamil Nadu, India",
+          "employmentType": "Full-time",
+          "workplaceType": "Hybrid",
+          "companyName": "Trusty Bytes",
+          "companyLinkedinUrl": "https://www.linkedin.com/company/trusty-bytes/",
+          "companyId": "72592472",
+          "duration": "1 yr 4 mos",
+          "description": "Build AI-driven Agentic business workflow automation that including complex orchestration, implemented multiple collabration platform, cross platform functionalities, mail summarizing systems with unstructured data using RAG architecture, Graph database, chromaDB, Embedded systems, and mistral LLM. Worked with n8n, power apps, google apps, data driven api’s, and pinecone vector database. By implementing this our Enterprise partner was able to reduce manual work time by\n40 percent and increase productivity.",
+          "skills": [
+            "Artificial Intelligence (AI)",
+            "Generative AI Tools",
+            "RAG",
+            "Python (Programming Language)",
+            "Automation",
+            "n8n",
+            "Microsoft Power Apps",
+            "LangChain",
+            "Langgraph"
+          ],
+          "startDate": {
+            "month": "Apr",
+            "year": 2025,
+            "text": "Apr 2025"
+          },
+          "endDate": {
+            "text": "Present"
+          },
+          "companyLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_400_400/B56Zz2KIaLHoAc-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=lWuEPl2LvCCpD1VUxmGIE9IVccxhL1O5g3AI02kcpQI",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_400_400/B56Zz2KIaLHoAc-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=lWuEPl2LvCCpD1VUxmGIE9IVccxhL1O5g3AI02kcpQI",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_200_200/B56Zz2KIaLHoAM-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=b72MmkWooRtPuOmpyX_WX4zKegqw7-6Dis6Z9xhLwtQ",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQFO32USoh1zZQ/company-logo_100_100/B56Zz2KIaLHoAU-/0/1773656377998/trusty_bytes_logo?e=1784764800&v=beta&t=C29y7e1bDjR5v9wHlmyAsmJekFLABia7JrrR-Pi0-ek",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          },
+          "companyUniversalName": "trusty-bytes"
+        },
+        {
+          "position": "AI Engineer",
+          "location": "Cologne, North Rhine-Westphalia, Germany",
+          "employmentType": "Full-time",
+          "workplaceType": "Remote",
+          "companyName": "AgamX Technology Solutions GmbH",
+          "companyLinkedinUrl": "https://www.linkedin.com/company/agamx-technology-solutions/",
+          "companyId": "107375166",
+          "duration": "1 yr 4 mos",
+          "description": null,
+          "skills": [
+            "Artificial Intelligence (AI)",
+            "LangChain",
+            "Program Evaluation",
+            "n8n",
+            "Power System Automation"
+          ],
+          "startDate": {
+            "month": "Apr",
+            "year": 2025,
+            "text": "Apr 2025"
+          },
+          "endDate": {
+            "text": "Present"
+          },
+          "companyLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGShI2uLf6TUQ/company-logo_400_400/B4EZbT1gf1HYAY-/0/1747310742011?e=1784764800&v=beta&t=DHZhQIcDrk90RUyRaEeNtiXC0cZu47iALupElTF0ir4",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGShI2uLf6TUQ/company-logo_400_400/B4EZbT1gf1HYAY-/0/1747310742011?e=1784764800&v=beta&t=DHZhQIcDrk90RUyRaEeNtiXC0cZu47iALupElTF0ir4",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGShI2uLf6TUQ/company-logo_200_200/B4EZbT1gf1HYAI-/0/1747310742011?e=1784764800&v=beta&t=FyLds3QHvPeCBcqqhmz7utBzZd9Hj8EzQma-bPSkf6Y",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGShI2uLf6TUQ/company-logo_100_100/B4EZbT1gf1HYAQ-/0/1747310742011?e=1784764800&v=beta&t=0YdGL0NZke2RCUi9PeURNcpSThh9lwV_t4kPXhe92Xo",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          },
+          "companyUniversalName": "agamx-technology-solutions"
+        },
+        {
+          "position": "Software Engineer",
+          "location": "Chennai, Tamil Nadu, India",
+          "employmentType": "Full-time",
+          "workplaceType": "On-site",
+          "companyName": "ConceptVines",
+          "companyLinkedinUrl": "https://www.linkedin.com/company/conceptvines/",
+          "companyId": "80109785",
+          "duration": "10 mos",
+          "description": "Experiencing cutting edge technologies like Open source LLM , fine tuning models, ML deployment, Python, Graph DB, Pytest. By accessing this open source models and open source platforms we build variety of models using RAG architecture.",
+          "skills": [
+            "React.js",
+            "RAG",
+            "Python (Programming Language)",
+            "Fine Tuning",
+            "Graph Databases",
+            "Kubernetes",
+            "Flask",
+            "Generative AI Tools",
+            "Amazon Web Services (AWS)"
+          ],
+          "experienceGroupId": "c6ec9061105202c74e9224deef6dc0dd77ed9948",
+          "startDate": {
+            "month": "Jun",
+            "year": 2024,
+            "text": "Jun 2024"
+          },
+          "endDate": {
+            "month": "Mar",
+            "year": 2025,
+            "text": "Mar 2025"
+          },
+          "companyLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_400_400/B56Z4KywVHIQAU-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=Kt95oewjOhLUO7s3-k0vBz_41oyXgodfuw79tQlOJOU",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_400_400/B56Z4KywVHIQAU-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=Kt95oewjOhLUO7s3-k0vBz_41oyXgodfuw79tQlOJOU",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_200_200/B56Z4KywVHIQAE-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=CCldq-A3DM8ddnlTzSdxgiMdB5Bgxnt0mkbHKCgSCmU",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_100_100/B56Z4KywVHIQAI-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=J0ijngdHKZ1L6mp0lkBvg1EsTt2jIxNR2JCbyEsZ0L0",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          },
+          "companyUniversalName": "conceptvines"
+        },
+        {
+          "position": "Full-Stack Developer-Intern",
+          "location": "Chennai",
+          "employmentType": "Internship",
+          "workplaceType": "On-site",
+          "companyName": "ConceptVines",
+          "companyLinkedinUrl": "https://www.linkedin.com/company/conceptvines/",
+          "companyId": "80109785",
+          "duration": "6 mos",
+          "description": "Hey, here i working as a backend developer and contributed in a payment gateway application development. \nContribution:\n*Developed and maintained the backend infrastructure of a robust payment gateway application, ensuring seamless and secure transaction processing.\n\n*Collaborated with cross-functional teams, including front-end developers and quality assurance, to implement new features and enhance the overall functionality of the payment gateway.\n\n*Implemented RESTful APIs to facilitate communication between the front-end and backend systems, optimizing data flow and reducing latency.",
+          "skills": [
+            "React Native",
+            "API Development",
+            "MySQL",
+            "React.js",
+            "Git",
+            "Jenkins",
+            "Spring Boot"
+          ],
+          "experienceGroupId": "c6ec9061105202c74e9224deef6dc0dd77ed9948",
+          "startDate": {
+            "month": "Jan",
+            "year": 2024,
+            "text": "Jan 2024"
+          },
+          "endDate": {
+            "month": "Jun",
+            "year": 2024,
+            "text": "Jun 2024"
+          },
+          "companyLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_400_400/B56Z4KywVHIQAU-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=Kt95oewjOhLUO7s3-k0vBz_41oyXgodfuw79tQlOJOU",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_400_400/B56Z4KywVHIQAU-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=Kt95oewjOhLUO7s3-k0vBz_41oyXgodfuw79tQlOJOU",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_200_200/B56Z4KywVHIQAE-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=CCldq-A3DM8ddnlTzSdxgiMdB5Bgxnt0mkbHKCgSCmU",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQHidP9KO6BrCg/company-logo_100_100/B56Z4KywVHIQAI-/0/1778297538151/conceptvines_logo?e=1784764800&v=beta&t=J0ijngdHKZ1L6mp0lkBvg1EsTt2jIxNR2JCbyEsZ0L0",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          },
+          "companyUniversalName": "conceptvines"
+        }
+      ],
+      "education": [
+        {
+          "schoolName": "Mahendra Institutions",
+          "schoolLinkedinUrl": "https://www.linkedin.com/company/874191/",
+          "schoolId": "874191",
+          "degree": "Bachelor of Technology - BTech",
+          "fieldOfStudy": "Information Technology",
+          "skills": [],
+          "description": "Here, i completed my technology education with 8.76 CGPA.",
+          "insights": "Activities and societies: Class representative , null class promoter , library community member.",
+          "startDate": {
+            "month": "Jun",
+            "year": 2020,
+            "text": "Jun 2020"
+          },
+          "endDate": {
+            "month": "May",
+            "year": 2024,
+            "text": "May 2024"
+          },
+          "period": "Jun 2020 - May 2024",
+          "schoolLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_400_400/company-logo_400_400/0/1631353357359?e=1784764800&v=beta&t=9mWjEgwmpqEprHRMuhN8kGxv9lYSGstRLVcK9cyfKQU",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_400_400/company-logo_400_400/0/1631353357359?e=1784764800&v=beta&t=9mWjEgwmpqEprHRMuhN8kGxv9lYSGstRLVcK9cyfKQU",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_200_200/company-logo_200_200/0/1631353357359?e=1784764800&v=beta&t=chVkJ0AXRIbxr94MTU_dOSNSFrTONhBzphX3RwVMY-Y",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/C4E0BAQH5pbchCKLAlw/company-logo_100_100/company-logo_100_100/0/1631353357359?e=1784764800&v=beta&t=atYmw-o0XvxmL3FT_9Frv-YiuizIe9vKbscZF6i93mU",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "schoolName": "Higher Secondary School - India",
+          "schoolLinkedinUrl": "https://www.linkedin.com/company/7852021/",
+          "schoolId": "7852021",
+          "degree": "HSC",
+          "fieldOfStudy": "Computer Science",
+          "skills": [],
+          "insights": "Grade: 70%",
+          "startDate": {
+            "month": "Apr",
+            "year": 2019,
+            "text": "Apr 2019"
+          },
+          "endDate": {
+            "month": "Mar",
+            "year": 2020,
+            "text": "Mar 2020"
+          },
+          "period": "Apr 2019 - Mar 2020",
+          "schoolLogo": null
+        }
+      ],
+      "certifications": [
+        {
+          "title": "Model Context Protocol: Advanced Topics",
+          "issuedAt": "Issued Jun 2026",
+          "link": "https://verify.skilljar.com/c/bmrphr3e3edv",
+          "issuedBy": "Anthropic",
+          "issuedByLink": "https://www.linkedin.com/company/74126343/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_400_400/company-logo_400_400/0/1719256729905/anthropicresearch_logo?e=1784764800&v=beta&t=Fd8iHZYtXuU5v_N1Smv5cF8kSU8XcZD8-lmH-90NwUg",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_400_400/company-logo_400_400/0/1719256729905/anthropicresearch_logo?e=1784764800&v=beta&t=Fd8iHZYtXuU5v_N1Smv5cF8kSU8XcZD8-lmH-90NwUg",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_200_200/company-logo_200_200/0/1719256413073/anthropicresearch_logo?e=1784764800&v=beta&t=k4tXzpRx43i4U8xSvAJ4bWXTtZiw7y5GNpjDUSPIWdI",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_100_100/company-logo_100_100/0/1719256989269/anthropicresearch_logo?e=1784764800&v=beta&t=qgGT88_FvGyHW5VGy6mQhsjoAQp1yENC5-9gWhXXqiQ",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Introduction to Model Context Protocol",
+          "issuedAt": "Issued Jun 2026",
+          "link": "https://verify.skilljar.com/c/kjxpenk7kksi",
+          "issuedBy": "Anthropic",
+          "issuedByLink": "https://www.linkedin.com/company/74126343/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_400_400/company-logo_400_400/0/1719256729905/anthropicresearch_logo?e=1784764800&v=beta&t=Fd8iHZYtXuU5v_N1Smv5cF8kSU8XcZD8-lmH-90NwUg",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_400_400/company-logo_400_400/0/1719256729905/anthropicresearch_logo?e=1784764800&v=beta&t=Fd8iHZYtXuU5v_N1Smv5cF8kSU8XcZD8-lmH-90NwUg",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_200_200/company-logo_200_200/0/1719256413073/anthropicresearch_logo?e=1784764800&v=beta&t=k4tXzpRx43i4U8xSvAJ4bWXTtZiw7y5GNpjDUSPIWdI",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_100_100/company-logo_100_100/0/1719256989269/anthropicresearch_logo?e=1784764800&v=beta&t=qgGT88_FvGyHW5VGy6mQhsjoAQp1yENC5-9gWhXXqiQ",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Introduction to Model Context Protocol",
+          "issuedAt": "Issued Jun 2026",
+          "link": "https://verify.skilljar.com/c/kjxpenk7kksi",
+          "issuedBy": "Anthropic",
+          "issuedByLink": "https://www.linkedin.com/company/74126343/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_400_400/company-logo_400_400/0/1719256729905/anthropicresearch_logo?e=1784764800&v=beta&t=Fd8iHZYtXuU5v_N1Smv5cF8kSU8XcZD8-lmH-90NwUg",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_400_400/company-logo_400_400/0/1719256729905/anthropicresearch_logo?e=1784764800&v=beta&t=Fd8iHZYtXuU5v_N1Smv5cF8kSU8XcZD8-lmH-90NwUg",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_200_200/company-logo_200_200/0/1719256413073/anthropicresearch_logo?e=1784764800&v=beta&t=k4tXzpRx43i4U8xSvAJ4bWXTtZiw7y5GNpjDUSPIWdI",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFMhKgeR7EYAg/company-logo_100_100/company-logo_100_100/0/1719256989269/anthropicresearch_logo?e=1784764800&v=beta&t=qgGT88_FvGyHW5VGy6mQhsjoAQp1yENC5-9gWhXXqiQ",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "AWS Certified Cloud Practitioner",
+          "issuedAt": "Issued Dec 2024 · Expires Dec 2027",
+          "link": "https://www.credly.com/badges/336f2265-59a7-4721-b14a-4488ec4064bc/linked_in_profile",
+          "issuedBy": "Amazon Web Services (AWS)",
+          "issuedByLink": "https://www.linkedin.com/company/2382910/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFqdm1TZ-RZKQ/company-logo_400_400/B4EZgOay6gHEAg-/0/1752588562343/amazon_web_services_logo?e=1784764800&v=beta&t=y72eAxmEIUcS0rmbYOVG7-12XxeerJzRv-Hk8v1BFI0",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFqdm1TZ-RZKQ/company-logo_400_400/B4EZgOay6gHEAg-/0/1752588562343/amazon_web_services_logo?e=1784764800&v=beta&t=y72eAxmEIUcS0rmbYOVG7-12XxeerJzRv-Hk8v1BFI0",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFqdm1TZ-RZKQ/company-logo_200_200/B4EZgOay6gHEAQ-/0/1752588562343/amazon_web_services_logo?e=1784764800&v=beta&t=VfDJgb5itCRTOcpfMx2ALOt5ax79x30xVp5kdwnLsqs",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQFqdm1TZ-RZKQ/company-logo_100_100/B4EZgOay6gHEAY-/0/1752588562343/amazon_web_services_logo?e=1784764800&v=beta&t=WiQlz6zK919__JnRdZf5Bij_eKym7ibfR9Qg3zudH5U",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Neo4j Certified Professional",
+          "issuedAt": "Issued Aug 2024",
+          "link": "https://graphacademy.neo4j.com/c/1c95f3b3-4139-44a0-9a1e-743c8e5889c0/",
+          "issuedBy": "Neo4j",
+          "issuedByLink": "https://www.linkedin.com/company/828370/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_200_200/company-logo_200_200/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=W0by2mdiZZDsX3ANsqIEJeLBnUqHvSXXtbTn42wilA8",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_100_100/company-logo_100_100/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=ApAWR1PuumMzlpxTamhBkp4bGFDB4XwxKbehrNCNOd0",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Generative AI Professional Certification",
+          "issuedAt": "Issued Jun 2024",
+          "link": null,
+          "issuedBy": "Oracle",
+          "issuedByLink": "https://www.linkedin.com/company/1028/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQHYCgYovUuPtQ/company-logo_400_400/company-logo_400_400/0/1665755678957/oracle_logo?e=1784764800&v=beta&t=3U75bFuO_vRUvugN1VS1nbQoS6et_o2vLzB6vY-aKfM",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQHYCgYovUuPtQ/company-logo_400_400/company-logo_400_400/0/1665755678957/oracle_logo?e=1784764800&v=beta&t=3U75bFuO_vRUvugN1VS1nbQoS6et_o2vLzB6vY-aKfM",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQHYCgYovUuPtQ/company-logo_200_200/company-logo_200_200/0/1665755678957/oracle_logo?e=1784764800&v=beta&t=cBVSBjM3HkMnNxwBwgKxtBkl8zKkvXE66O0aU3rzt08",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4E0BAQHYCgYovUuPtQ/company-logo_100_100/company-logo_100_100/0/1665755678957/oracle_logo?e=1784764800&v=beta&t=DQrjRZyUFme9nYShqRGbNvWIicUfBABDoT3xxsA6aQU",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Cypher Fundamentals",
+          "issuedAt": "Issued Apr 2024",
+          "link": "https://graphacademy.neo4j.com/c/1b6cb167-70b6-4308-a40c-53d63dcbaa49/",
+          "issuedBy": "Neo4j",
+          "issuedByLink": "https://www.linkedin.com/company/828370/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_200_200/company-logo_200_200/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=W0by2mdiZZDsX3ANsqIEJeLBnUqHvSXXtbTn42wilA8",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_100_100/company-logo_100_100/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=ApAWR1PuumMzlpxTamhBkp4bGFDB4XwxKbehrNCNOd0",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Neo4j &amp; LLM Fundamentals",
+          "issuedAt": "Issued Apr 2024",
+          "link": "https://graphacademy.neo4j.com/c/1a56229b-80ec-4d06-8357-f02acdfb18da/",
+          "issuedBy": "Neo4j",
+          "issuedByLink": "https://www.linkedin.com/company/828370/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_200_200/company-logo_200_200/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=W0by2mdiZZDsX3ANsqIEJeLBnUqHvSXXtbTn42wilA8",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_100_100/company-logo_100_100/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=ApAWR1PuumMzlpxTamhBkp4bGFDB4XwxKbehrNCNOd0",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        },
+        {
+          "title": "Neo4j Fundamentals",
+          "issuedAt": "Issued Apr 2024",
+          "link": "https://graphacademy.neo4j.com/c/0a97c078-120d-4f79-8991-f42384eff9c9/",
+          "issuedBy": "Neo4j",
+          "issuedByLink": "https://www.linkedin.com/company/828370/",
+          "issuedByLogo": {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+            "sizes": [
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_400_400/company-logo_400_400/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=q3V8ejLNS4z0CHgZDifMrU8cAypX70R3dFy-8mcfOs4",
+                "width": 400,
+                "height": 400
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_200_200/company-logo_200_200/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=W0by2mdiZZDsX3ANsqIEJeLBnUqHvSXXtbTn42wilA8",
+                "width": 200,
+                "height": 200
+              },
+              {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG6P9i9HARJvw/company-logo_100_100/company-logo_100_100/0/1697806384366/neo4j_logo?e=1784764800&v=beta&t=ApAWR1PuumMzlpxTamhBkp4bGFDB4XwxKbehrNCNOd0",
+                "width": 100,
+                "height": 100
+              }
+            ]
+          }
+        }
+      ],
+      "projects": [
+        {
+          "title": "Web_Scraping_using_python",
+          "duration": null,
+          "startDate": null,
+          "endDate": null,
+          "description": "This code get a text file as input(input must be domine names) and provide url's relative to that domine name's scapped in google and bing and store in a csv file."
+        }
+      ],
+      "volunteering": [],
+      "receivedRecommendations": [],
+      "skills": [
+        {
+          "name": "English"
+        },
+        {
+          "name": "MCP (Multi Agent Protocol)",
+          "positions": [
+            "Introduction to Model Context Protocol",
+            "Introduction to Model Context Protocol"
+          ]
+        },
+        {
+          "name": "Model Context Protocol (MCP)",
+          "positions": [
+            "Introduction to Model Context Protocol",
+            "Introduction to Model Context Protocol",
+            "Model Context Protocol: Advanced Topics"
+          ]
+        },
+        {
+          "name": "n8n",
+          "positions": [
+            "2 experiences across Trusty Bytes and 1 other company"
+          ]
+        },
+        {
+          "name": "LangChain",
+          "positions": [
+            "2 experiences across Trusty Bytes and 1 other company"
+          ]
+        },
+        {
+          "name": "Langgraph",
+          "positions": [
+            "AI Engineer at Trusty Bytes"
+          ]
+        },
+        {
+          "name": "Generative AI Tools",
+          "positions": [
+            "2 experiences across Trusty Bytes and 1 other company"
+          ]
+        },
+        {
+          "name": "Vector Databases",
+          "positions": [
+            "Generative AI Professional Certification"
+          ]
+        },
+        {
+          "name": "Program Evaluation",
+          "positions": [
+            "AI Engineer at AgamX Technology Solutions GmbH"
+          ]
+        },
+        {
+          "name": "Power System Automation",
+          "positions": [
+            "AI Engineer at AgamX Technology Solutions GmbH"
+          ]
+        },
+        {
+          "name": "Automation",
+          "positions": [
+            "AI Engineer at Trusty Bytes"
+          ]
+        },
+        {
+          "name": "Web Scraping"
+        },
+        {
+          "name": "Big Data"
+        },
+        {
+          "name": "Cloud Computing",
+          "positions": [
+            "AWS Certified Cloud Practitioner"
+          ]
+        },
+        {
+          "name": "Artificial Intelligence (AI)",
+          "positions": [
+            "2 experiences across Trusty Bytes and 1 other company"
+          ]
+        },
+        {
+          "name": "Solution Architecture"
+        },
+        {
+          "name": "Graph Databases",
+          "positions": [
+            "Software Engineer at ConceptVines",
+            "Neo4j Certified Professional"
+          ]
+        },
+        {
+          "name": "Kubernetes",
+          "positions": [
+            "Software Engineer at ConceptVines"
+          ]
+        },
+        {
+          "name": "Fine Tuning",
+          "positions": [
+            "Software Engineer at ConceptVines"
+          ]
+        },
+        {
+          "name": "API Development",
+          "positions": [
+            "Full-Stack Developer-Intern at ConceptVines"
+          ]
+        },
+        {
+          "name": "Data Compression"
+        },
+        {
+          "name": "Data Structures"
+        },
+        {
+          "name": "Computer Engineering"
+        },
+        {
+          "name": "Software Solutions"
+        },
+        {
+          "name": "Microservices"
+        },
+        {
+          "name": "Defining Requirements"
+        },
+        {
+          "name": "Query Optimization"
+        },
+        {
+          "name": "Software Development"
+        },
+        {
+          "name": "Microsoft Power Apps",
+          "positions": [
+            "AI Engineer at Trusty Bytes"
+          ]
+        },
+        {
+          "name": "Microsoft Azure"
+        },
+        {
+          "name": "Flask",
+          "positions": [
+            "Software Engineer at ConceptVines"
+          ]
+        },
+        {
+          "name": "Python (Programming Language)",
+          "positions": [
+            "2 experiences across Trusty Bytes and 1 other company",
+            "Generative AI Professional Certification"
+          ]
+        },
+        {
+          "name": "React.js",
+          "positions": [
+            "2 experiences at ConceptVines"
+          ],
+          "endorsements": "1 endorsement"
+        },
+        {
+          "name": "Git",
+          "positions": [
+            "Full-Stack Developer-Intern at ConceptVines"
+          ]
+        },
+        {
+          "name": "Jenkins",
+          "positions": [
+            "Full-Stack Developer-Intern at ConceptVines"
+          ]
+        },
+        {
+          "name": "React Native",
+          "positions": [
+            "Full-Stack Developer-Intern at ConceptVines"
+          ]
+        },
+        {
+          "name": "Amazon Web Services (AWS)",
+          "positions": [
+            "Software Engineer at ConceptVines",
+            "AWS Certified Cloud Practitioner"
+          ]
+        },
+        {
+          "name": "Spring Boot",
+          "positions": [
+            "Full-Stack Developer-Intern at ConceptVines"
+          ],
+          "endorsements": "1 endorsement"
+        },
+        {
+          "name": "Core Java"
+        },
+        {
+          "name": "MySQL",
+          "positions": [
+            "Full-Stack Developer-Intern at ConceptVines"
+          ],
+          "assessments": "Passed LinkedIn Skill Assessment"
+        },
+        {
+          "name": "Tableau"
+        },
+        {
+          "name": "Databases"
+        },
+        {
+          "name": "Microsoft Office"
+        },
+        {
+          "name": "Microsoft PowerPoint"
+        },
+        {
+          "name": "Microsoft Excel"
+        },
+        {
+          "name": "Microsoft Power BI"
+        },
+        {
+          "name": "SQL "
+        },
+        {
+          "name": "HTML"
+        },
+        {
+          "name": "Critical Thinking"
+        },
+        {
+          "name": "Communication"
+        },
+        {
+          "name": "Problem Solving"
+        },
+        {
+          "name": "Analytical Skills"
+        },
+        {
+          "name": "Public Speaking"
+        },
+        {
+          "name": "Leadership"
+        },
+        {
+          "name": "RAG ",
+          "positions": [
+            "2 experiences across Trusty Bytes and 1 other company",
+            "Generative AI Professional Certification"
+          ]
+        }
+      ],
+      "publications": [],
+      "courses": [],
+      "patents": [],
+      "honorsAndAwards": [],
+      "languages": [
+        {
+          "name": "Deutsch",
+          "proficiency": "Professional working proficiency"
+        },
+        {
+          "name": "English",
+          "proficiency": "Professional working proficiency"
+        },
+        {
+          "name": "German",
+          "proficiency": "Professional working proficiency"
+        },
+        {
+          "name": "Tamil",
+          "proficiency": "Native or bilingual proficiency"
+        }
+      ],
+      "organizations": [],
+      "causes": [],
+      "featured": null,
+      "composeOptionType": "PREMIUM_INMAIL",
+      "moreProfiles": [
+        {
+          "id": "ACoAADlUWMkBxbkUsk2NIeyrQ1rDPLYJzxoVgzk",
+          "firstName": "VETRISELVAN",
+          "lastName": "E",
+          "position": "Software Engineer",
+          "publicIdentifier": "vetriselvan-e-06114622a",
+          "linkedinUrl": "https://www.linkedin.com/in/vetriselvan-e-06114622a"
+        },
+        {
+          "id": "ACoAAERkFsUB8gzSwKd1W8kMeoS7lvF4snD7l_A",
+          "firstName": "K",
+          "lastName": "Poovarasi",
+          "position": "Full Stack Developer | E-Commerce Developer | Python | React | SQL | Odoo | Wordpress",
+          "publicIdentifier": "k-poovarasi-599322280",
+          "linkedinUrl": "https://www.linkedin.com/in/k-poovarasi-599322280"
+        },
+        {
+          "id": "ACoAAAQeBeEBlvQCBRrqib6lkp-to2Wsu3pi5zY",
+          "firstName": "Sathish Kumar",
+          "lastName": "K",
+          "position": "AI Transformation Architect | Helping businesses save time & boost revenue with secure, profitable AI solutions | 20+ yrs enterprise architecture | Microsoft | Open Source | Chennai",
+          "publicIdentifier": "sathishkk",
+          "linkedinUrl": "https://www.linkedin.com/in/sathishkk"
+        },
+        {
+          "id": "ACoAAA0-L-IBmPmoHLZramvvR8huP7GuZflUo8E",
+          "firstName": "Ambarrish Khannaa ",
+          "lastName": "C R",
+          "position": "Vice President @TrustyBytes",
+          "publicIdentifier": "ambarrish-khannaa-cr",
+          "linkedinUrl": "https://www.linkedin.com/in/ambarrish-khannaa-cr"
+        },
+        {
+          "id": "ACoAADaea88BO9r-UPT2lTWx5jjqRfNPkAxuUKs",
+          "firstName": "Mohammad",
+          "lastName": "Izzathullah",
+          "position": "Gen AI Engineer | Available for Contract & Freelance Projects",
+          "publicIdentifier": "mohammad-izzathullah-327a74216",
+          "linkedinUrl": "https://www.linkedin.com/in/mohammad-izzathullah-327a74216"
+        },
+        {
+          "id": "ACoAAAUGt_oBVZtmNvN-bQvsl5kuPfgEZMwopUw",
+          "firstName": "Vignesh",
+          "lastName": "Prabagaran",
+          "position": "Founder | Scaling cultural adaptation in Enterprise Automation",
+          "publicIdentifier": "vigneshprabagaran",
+          "linkedinUrl": "https://www.linkedin.com/in/vigneshprabagaran"
+        },
+        {
+          "id": "ACoAAAE_oS0BZAN1JpPVz4xO2I2IFzPJ1ynMA5M",
+          "firstName": "Jyoti",
+          "lastName": "Basu",
+          "position": "Chief Solutions Architect @ AgamX",
+          "publicIdentifier": "jyotibasu",
+          "linkedinUrl": "https://www.linkedin.com/in/jyotibasu"
+        },
+        {
+          "id": "ACoAAAyaYnkBZ02tSZc7086azllCXMtTUyHXcgk",
+          "firstName": "Thomas",
+          "lastName": "Nüßler",
+          "position": "Exploring the unknown and learning is a never ending fun, not an obligation. ",
+          "publicIdentifier": "thomas-nuessler",
+          "linkedinUrl": "https://www.linkedin.com/in/thomas-nuessler"
+        },
+        {
+          "id": "ACoAADm7uI4B_7cUM4zKZqDZnMSNqWmdz_nRHvA",
+          "firstName": "SHEIK HASEENA",
+          "lastName": "S",
+          "position": "Associate Full Stack Developer",
+          "publicIdentifier": "sheikhaseena",
+          "linkedinUrl": "https://www.linkedin.com/in/sheikhaseena"
+        },
+        {
+          "id": "ACoAAD9yEf4B04xsA8qNHuMgeIQ9SBd28BRgGYA",
+          "firstName": "Melvin",
+          "lastName": "Manova S",
+          "position": "Tech Engineer (TSS) | Application Support | Incident & Problem Management | Production Systems",
+          "publicIdentifier": "melvin-manova-s-67a58b258",
+          "linkedinUrl": "https://www.linkedin.com/in/melvin-manova-s-67a58b258"
+        }
+      ],
+      "interests": [
+        {
+          "interestName": "Top Voices",
+          "elements": [
+            {
+              "title": "Brij Kishore Pandey",
+              "subtitle": "AI Architect & AI Engineer | Building Agentic Systems & Scalable AI Solutions",
+              "link": "https://www.linkedin.com/in/brijpandeyji",
+              "caption": "731,297 followers",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D4D03AQHVV2OIX_R-mg/profile-displayphoto-crop_800_800/B4DZmN52FJGwAI-/0/1759022375588?e=1784764800&v=beta&t=2M5ct2jTdBdfWPOQWJRTncrepaYM0K_-TEAgJQAW3gE"
+              }
+            },
+            {
+              "title": "Akshat Shrivastava",
+              "subtitle": "Founder@Wisdom Hatch | Full time Investor",
+              "link": "https://www.linkedin.com/in/akshatshrivastavainsead",
+              "caption": "795,802 followers",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D4D03AQFA1hATKqyNDQ/profile-displayphoto-shrink_800_800/profile-displayphoto-shrink_800_800/0/1676979866265?e=1784764800&v=beta&t=kLbD9rR3IedINfHjenKk5NHZiAoRCdXyqjcYpI-0xCg"
+              }
+            }
+          ]
+        },
+        {
+          "interestName": "Companies",
+          "elements": [
+            {
+              "title": "IBM",
+              "subtitle": null,
+              "link": "https://www.linkedin.com/company/1009/",
+              "caption": "19,675,843 followers",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D560BAQGiz5ecgpCtkA/company-logo_400_400/company-logo_400_400/0/1688684715866/ibm_logo?e=1784764800&v=beta&t=qibha1jC9ysyge_lTNxy5CPNhltuGRsLx73IXUl34x4"
+              }
+            },
+            {
+              "title": "Accenture",
+              "subtitle": null,
+              "link": "https://www.linkedin.com/company/1033/",
+              "caption": "14,837,357 followers",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D4D0BAQEgtOEcxlXMog/company-logo_400_400/B4DZfqEQWkHAAg-/0/1751978673981/accenture_logo?e=1784764800&v=beta&t=xg09KUEwC8jK0YFeqveXPG506oaMqC8yCpfIaIYPg5s"
+              }
+            }
+          ]
+        },
+        {
+          "interestName": "Groups",
+          "elements": [
+            {
+              "title": "AWS Certification & Training",
+              "subtitle": null,
+              "link": "https://www.linkedin.com/groups/13720251",
+              "caption": "655,388 members",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D4E07AQEsZxmugfdCRQ/group-logo_image-shrink_400x400/group-logo_image-shrink_400x400/0/1718987582090?e=1783688400&v=beta&t=QoJG5wdAKjLlR-zvwuR_1zuurL6P7ijb_Gdu-XJ4xTY"
+              }
+            },
+            {
+              "title": "SLANGE Art & Technology Consortium",
+              "subtitle": null,
+              "link": "https://www.linkedin.com/groups/142631",
+              "caption": "51,362 members",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D4D07AQF6mWpCi44mcA/group-logo_image-shrink_400x400/B4DZ4fjF.5HAAY-/0/1778645754577?e=1783688400&v=beta&t=GiosHiHNYQK85b21u7r-hGLPyToU6aPDG-xIuO4rDb8"
+              }
+            }
+          ]
+        },
+        {
+          "interestName": "Newsletters",
+          "elements": [
+            {
+              "title": "The AI Edit",
+              "subtitle": "Get the latest updates on how AI is transforming Finance around the globe on The AI Edit by Yubi",
+              "link": "https://www.linkedin.com/newsletters/7451967234270334976",
+              "caption": "Published monthly",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D5612AQGx9IFpgQmqbg/series-logo_image-shrink_300_300/B56Z20FH2JIkAQ-/0/1776842737366?e=1784764800&v=beta&t=IrP40pdZRVVj2tNNx7koe2uSKIrd19G4Eizol0taA8Q"
+              }
+            },
+            {
+              "title": "Return on Intelligence",
+              "subtitle": "Turning artificial intelligence into enterprise advantage.",
+              "link": "https://www.linkedin.com/newsletters/7261468703051993088",
+              "caption": "Published weekly",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/D4E12AQFF07yfIGfHUw/series-logo_image-shrink_300_300/series-logo_image-shrink_300_300/0/1731270354591?e=1784764800&v=beta&t=fTuqo1k0Em40cayR1bMK0PnmrT9UKW7jqSKEKXn0_e0"
+              }
+            }
+          ]
+        },
+        {
+          "interestName": "Schools",
+          "elements": [
+            {
+              "title": "Indian Institute of Technology, Bombay",
+              "subtitle": null,
+              "link": "https://www.linkedin.com/school/157266/",
+              "caption": "747,283 followers",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/C4D0BAQGmDoDCx_FYpA/company-logo_400_400/company-logo_400_400/0/1660636307357/indian_institute_of_technology_bombay_logo?e=1784764800&v=beta&t=EtcLCMpXujusOOzGgLxK-sqRR8HNSdSKZjQSxaXqCMA"
+              }
+            },
+            {
+              "title": "Indian Institute of Technology, Madras",
+              "subtitle": null,
+              "link": "https://www.linkedin.com/school/157267/",
+              "caption": "741,152 followers",
+              "image": {
+                "url": "https://media.licdn.com/dms/image/v2/C4D0BAQGqbSuxjLqtWQ/company-logo_400_400/company-logo_400_400/0/1659504006681/reachiitm_logo?e=1784764800&v=beta&t=2-7AsW7mfAn4kA5JlloHLbFVkmozLMIdUqZKprjATAY"
+              }
+            }
+          ]
+        }
+      ],
+      "originalQuery": {
+        "query": "https://www.linkedin.com/in/sudharsan2618"
+      }
+    }
+  }
+}

@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { CandidateSlideOut } from '../CandidateSlideOut';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate, enrichCandidate,
+  bulkEnrichJobCandidates, runJobMatch,
   type Candidate, type Pipeline,
 } from '@/lib/api';
 
@@ -71,9 +73,14 @@ function MatchBadge({ score }: { score: number }) {
 }
 
 export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
+  const router = useRouter();
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Bulk actions (enrich / run match) on the selected candidates.
+  const [bulkBusy, setBulkBusy] = useState<null | 'enrich' | 'match'>(null);
+  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
 
   const [candFilter, setCandFilter] = useState<CandFilter>('all');
   const [page, setPage] = useState(1);
@@ -177,6 +184,60 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       setActionError(e.message || 'Enrichment failed');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  // Poll the pipeline until this job's enrichStatus settles, refreshing rows.
+  const pollEnrich = useCallback(async () => {
+    for (let i = 0; i < 150; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      let p: Pipeline | null = null;
+      try { p = await fetchPipeline(pipelineId); } catch { continue; }
+      setPipeline(p);
+      const je = p.jobs.find((j) => j.jobId === jobId);
+      const st = je?.enrichStatus;
+      const c = je?.enrichCounts || {};
+      if (st === 'running' || st === 'queued') {
+        setBulkMsg(`Enriching… (Apollo ${c.apollo_enriched ?? 0} · Apify ${c.apify_enriched ?? 0})`);
+      }
+      if (st === 'completed') {
+        setBulkMsg(`Enriched ✓ — Apollo ${c.apollo_enriched ?? 0}, Apify ${c.apify_enriched ?? 0}${c.not_found ? `, not found ${c.not_found}` : ''}`);
+        await loadCandidates();
+        return;
+      }
+      if (st === 'failed') { setBulkMsg(`Enrichment failed: ${je?.enrichError || 'unknown error'}`); return; }
+    }
+    setBulkMsg('Enrichment is taking longer than expected — refresh to check.');
+  }, [pipelineId, jobId, loadCandidates]);
+
+  const onBulkEnrich = async () => {
+    if (selected.size === 0) return;
+    setBulkBusy('enrich');
+    setActionError(null);
+    setBulkMsg(`Queuing enrichment for ${selected.size} candidate(s)…`);
+    try {
+      await bulkEnrichJobCandidates(pipelineId, jobId, Array.from(selected));
+      await pollEnrich();
+    } catch (e: any) {
+      setActionError(e.message || 'Bulk enrichment failed');
+      setBulkMsg(null);
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+
+  const onRunMatch = async () => {
+    if (selected.size === 0) return;
+    setBulkBusy('match');
+    setActionError(null);
+    setBulkMsg(`Starting match for ${selected.size} candidate(s)…`);
+    try {
+      const { matchRunId } = await runJobMatch(pipelineId, jobId, Array.from(selected));
+      router.push(`/matching/${matchRunId}`);
+    } catch (e: any) {
+      setActionError(e.message || 'Failed to start match');
+      setBulkMsg(null);
+      setBulkBusy(null);
     }
   };
 
@@ -294,10 +355,55 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
           </button>
         ))}
         <div style={{ flex: 1 }} />
+        {selected.size > 0 && (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginRight: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 600 }}>
+              {selected.size} selected
+            </span>
+            <button
+              onClick={onBulkEnrich}
+              disabled={bulkBusy !== null}
+              title="Apollo /people/match → Apify deep profile for the selected candidates (background). Skips already-enriched."
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
+                borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                cursor: bulkBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--primary)',
+                background: '#FFF', color: 'var(--primary)', opacity: bulkBusy ? 0.6 : 1,
+              }}
+            >
+              <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
+              Enrich ({selected.size})
+            </button>
+            <button
+              onClick={onRunMatch}
+              disabled={bulkBusy !== null}
+              title="Score this job's JD against the selected candidates (auto-enriches any that aren't yet)."
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
+                borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                cursor: bulkBusy ? 'not-allowed' : 'pointer', border: 'none',
+                background: 'var(--primary)', color: '#FFF', opacity: bulkBusy ? 0.6 : 1,
+              }}
+            >
+              <Icon name={bulkBusy === 'match' ? 'loader' : 'target'} size={13} />
+              Run Match ({selected.size})
+            </button>
+          </div>
+        )}
         <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 500 }}>
           <span style={{ fontWeight: 700, color: 'var(--fg-primary)' }}>{total.toLocaleString()}</span> total candidates
         </span>
       </div>
+      {bulkMsg && (
+        <div style={{
+          padding: '8px 24px', fontSize: 12, color: 'var(--fg-secondary)',
+          background: '#F8FAFC', borderBottom: '1px solid var(--border-default)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          {bulkBusy && <Icon name="loader" size={13} />}
+          {bulkMsg}
+        </div>
+      )}
 
       {/* Candidates table */}
       <div style={{ flex: 1, overflow: 'auto', background: '#FFF' }}>
@@ -448,15 +554,26 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                       <MatchBadge score={c.matchScore} />
                     </td>
                     <td style={tdStyle}>
-                      <span style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 5,
-                        padding: '2px 8px', borderRadius: 9999, fontSize: 11, fontWeight: 600,
-                        background: c.isAccepted ? 'var(--status-success)1A' : 'var(--status-danger)1A',
-                        color: c.isAccepted ? 'var(--status-success)' : 'var(--status-danger)',
-                        border: `1px solid ${c.isAccepted ? 'var(--status-success)40' : 'var(--status-danger)40'}`,
-                      }}>
-                        <span style={{ width: 6, height: 6, borderRadius: 9999, background: 'currentColor', flexShrink: 0 }} />
-                        {c.isAccepted ? 'Accepted' : 'Rejected'}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5,
+                          padding: '2px 8px', borderRadius: 9999, fontSize: 11, fontWeight: 600,
+                          background: c.isAccepted ? 'var(--status-success)1A' : 'var(--status-danger)1A',
+                          color: c.isAccepted ? 'var(--status-success)' : 'var(--status-danger)',
+                          border: `1px solid ${c.isAccepted ? 'var(--status-success)40' : 'var(--status-danger)40'}`,
+                        }}>
+                          <span style={{ width: 6, height: 6, borderRadius: 9999, background: 'currentColor', flexShrink: 0 }} />
+                          {c.isAccepted ? 'Accepted' : 'Rejected'}
+                        </span>
+                        {c.isApifyEnriched && (
+                          <span title="Deep LinkedIn profile enriched (Apify)" style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 3,
+                            padding: '2px 7px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
+                            background: '#EEF2FF', color: '#4F46E5', border: '1px solid #C7D2FE',
+                          }}>
+                            <Icon name="sparkles" size={10} />Profile
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>

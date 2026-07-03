@@ -388,6 +388,8 @@ export function fetchCompany(id: string): Promise<CompanyDoc> {
 
 export type PipelineJobSearchStatus = 'queued' | 'running' | 'completed' | 'failed';
 
+export type PipelineJobEnrichStatus = 'queued' | 'running' | 'completed' | 'failed';
+
 export interface PipelineJob {
   jobId: string;
   jobTitle: string;
@@ -400,6 +402,10 @@ export interface PipelineJob {
   rejectedCount: number;
   appliedIndustryFallback?: boolean;
   searchError?: string | null;
+  /** Bulk-enrichment (Apollo→Apify) background status + counts. */
+  enrichStatus?: PipelineJobEnrichStatus | null;
+  enrichError?: string | null;
+  enrichCounts?: Record<string, number> | null;
 }
 
 export interface Pipeline {
@@ -492,6 +498,15 @@ export interface Candidate {
   /** Full untouched Apollo /people/match envelope — audit-grade. */
   enrichedRaw?: Record<string, unknown> | null;
   enrichedSource?: string | null;
+  /** Apify deep-profile enrichment (separate from the Apollo fields above). */
+  isApifyEnriched?: boolean;
+  apifyEnrichedAt?: string | null;
+  apifyEnrichmentStatus?: 'enriched' | 'not_found' | null;
+  apifyEnrichment?: {
+    profile?: Record<string, unknown> | null;
+    contact?: Record<string, unknown> | null;
+    source?: Record<string, unknown> | null;
+  } | null;
   runHistory: Array<{
     runAt: string; jobId: string; isRerun: boolean; appliedIndustryFallback: boolean;
   }>;
@@ -573,6 +588,27 @@ export function enrichCandidate(candidateId: string): Promise<Candidate> {
   return post(`/api/v1/pipelines/candidates/${candidateId}/enrich`, {});
 }
 
+/**
+ * Queue a background bulk enrichment (Apollo /people/match → Apify deep profile)
+ * for the selected candidates in a job. Poll the pipeline's job.enrichStatus.
+ */
+export function bulkEnrichJobCandidates(
+  pipelineId: string, jobId: string, candidateIds: string[],
+): Promise<{ success: boolean; queued: boolean }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds });
+}
+
+/**
+ * Start a background match run: score the job's JD against the selected
+ * candidates' enriched profiles (auto-enriching any that aren't yet). Returns a
+ * matchRunId to poll via fetchMatchRun.
+ */
+export function runJobMatch(
+  pipelineId: string, jobId: string, candidateIds: string[], returnTop?: number,
+): Promise<{ success: boolean; matchRunId: string }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/match`, { candidateIds, returnTop });
+}
+
 // ── Candidate Matching (CV ↔ JD engine) ─────────────────────────────────────
 
 export interface CvBatchStatus {
@@ -599,6 +635,8 @@ export interface CvListItem {
 
 export interface MatchedCandidate {
   candidateId: string;
+  /** "cv" (uploaded CV corpus) or "pipeline" (Apify-enriched candidate). */
+  source?: 'cv' | 'pipeline';
   fullName?: string | null;
   currentTitle?: string | null;
   location?: string | null;
@@ -668,10 +706,22 @@ export interface SavedMatchRun {
   candidatesConsidered: number;
   results: MatchedCandidate[];
   createdAt?: string | null;
+  /** Pipeline runs carry a lifecycle status + origin; CV runs are implicitly done. */
+  status?: 'running' | 'completed' | 'failed';
+  source?: 'cv' | 'pipeline';
+  pipelineId?: string;
+  jobId?: string;
+  requirements?: MatchResult['requirements'];
+  error?: string | null;
 }
 
 export function fetchMatchRuns(page = 1, limit = 20): Promise<{ total: number; items: SavedMatchRun[] }> {
   return get(`/api/v1/matching/runs?page=${page}&limit=${limit}`);
+}
+
+/** Fetch a single match run (poll this for a pipeline run's status → completed). */
+export function fetchMatchRun(matchRunId: string): Promise<SavedMatchRun> {
+  return get(`/api/v1/matching/run/${matchRunId}`);
 }
 
 /** Direct download URL for a candidate's CV (original file, or parsed .txt fallback). */

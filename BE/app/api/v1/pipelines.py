@@ -28,6 +28,7 @@ from pymongo.errors import DuplicateKeyError
 from app.database import get_database
 from app.services.candidate_pipeline import (
     add_job_to_pipeline,
+    enqueue_job_enrich,
     rerun_job_search,
 )
 
@@ -62,6 +63,17 @@ class PipelineAddJobSchema(BaseModel):
 class CandidatePatchSchema(BaseModel):
     isAccepted: Optional[bool] = None
     rejectionReason: Optional[str] = None
+
+
+class BulkEnrichSchema(BaseModel):
+    """Selected candidate ids to enrich (None/empty → all candidates in the job)."""
+    candidateIds: Optional[List[str]] = None
+
+
+class JobMatchSchema(BaseModel):
+    """Selected candidate ids to match against the job's JD."""
+    candidateIds: Optional[List[str]] = None
+    returnTop: Optional[int] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -345,6 +357,47 @@ async def rerun_job(pipeline_id: str, job_id: str):
         raise HTTPException(500, f"Error rerunning search: {e}")
 
 
+# ── POST /{id}/jobs/{jobId}/enrich (background Apollo→Apify bulk enrich) ──────
+
+
+@router.post("/{pipeline_id}/jobs/{job_id}/enrich")
+async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichSchema):
+    """Queue a background bulk enrichment (Apollo /people/match → Apify profile)
+    for the selected candidates (or all candidates in the job). Idempotent — each
+    stage skips candidates already enriched. Poll the pipeline for the job's
+    ``enrichStatus``."""
+    try:
+        result = await enqueue_job_enrich(pipeline_id, job_id, body.candidateIds)
+        return {"success": True, **result}
+    except ValueError as ve:
+        raise HTTPException(404, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Error queuing enrichment: {e}")
+
+
+# ── POST /{id}/jobs/{jobId}/match (background JD ↔ enriched-candidate match) ──
+
+
+@router.post("/{pipeline_id}/jobs/{job_id}/match")
+async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSchema):
+    """Start a background match run: score the job's JD against the selected
+    candidates' enriched profiles (auto-enriching any that aren't yet). Returns
+    a ``matchRunId`` to poll at ``GET /matching/run/{id}``."""
+    from app.services.pipeline_match_service import start_pipeline_match
+    try:
+        match_run_id = await start_pipeline_match(
+            pipeline_id=pipeline_id,
+            job_id=job_id,
+            candidate_ids=body.candidateIds,
+            return_top=body.returnTop,
+        )
+        return {"success": True, "matchRunId": match_run_id}
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Error starting match: {e}")
+
+
 # ── GET /{id}/jobs/{jobId}/candidates ────────────────────────────────────
 
 
@@ -434,136 +487,23 @@ async def patch_candidate(candidate_id: str, body: CandidatePatchSchema, db=Depe
 
 @router.post("/candidates/{candidate_id}/enrich")
 async def enrich_candidate(candidate_id: str, db=Depends(get_db)):
-    """Manual enrichment — calls Apollo /people/match for one person.
+    """Manual Apollo enrichment — calls Apollo /people/match for one person.
 
-    Storage policy:
-      1. ``enrichedRaw`` — the FULL untouched Apollo response (top-level wrapper
-         + every key of the ``person`` object). Audit-grade; never trimmed.
-      2. ``enrichedData`` — a small UI-friendly subset that mirrors what
-         /people/match actually returns. Apollo does NOT return education,
-         skills, summary, openToWork, or a candidate-level phone — those keys
-         live on the org or simply don't exist. We only project fields that
-         really appear in the payload.
+    Delegates to ``apollo_enrich.apollo_enrich_candidate`` (shared with the bulk
+    background job). Idempotent; stores the full envelope (``enrichedRaw``) + a
+    UI-friendly projection (``enrichedData``) and hydrates the top-level name /
+    location / LinkedIn URL.
     """
-    import asyncio
-    import requests as _req
-    from app.config import APOLLO_BASE_URL, settings as _settings
+    from app.services.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
     try:
         col = db["candidates"]
-        oid = ObjectId(candidate_id)
-        cand = await col.find_one({"_id": oid})
+        cand = await col.find_one({"_id": ObjectId(candidate_id)})
         if not cand:
             raise HTTPException(404, "Candidate not found")
-        if not cand.get("apolloId"):
-            raise HTTPException(400, "Candidate has no apolloId")
-
-        # Direct Apollo call so we can capture the FULL response envelope, not
-        # just the ``person`` slice that ApolloService._enrich_single returns.
-        def _call() -> dict | None:
-            resp = _req.post(
-                f"{APOLLO_BASE_URL}/people/match",
-                headers={
-                    "x-api-key": _settings.APOLLO_API_KEY,
-                    "Content-Type": "application/json",
-                    "Cache-Control": "no-cache",
-                },
-                json={"id": cand["apolloId"], "reveal_personal_emails": True},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json()
-
-        raw_envelope = await asyncio.to_thread(_call)
-        if not raw_envelope or not raw_envelope.get("person"):
-            raise HTTPException(502, "Apollo enrichment returned no data")
-
-        person = raw_envelope["person"]
-        org = person.get("organization") or {}
-        now = datetime.utcnow()
-
-        # ── Structured projection (fields Apollo actually returns) ──────────
-        emp_history_trimmed = [
-            {
-                "title": e.get("title"),
-                "organizationName": e.get("organization_name"),
-                "organizationId": e.get("organization_id"),
-                "startDate": e.get("start_date"),
-                "endDate": e.get("end_date"),
-                "current": bool(e.get("current")),
-            }
-            for e in (person.get("employment_history") or [])
-        ]
-        org_slim = {
-            "name": org.get("name"),
-            "primaryDomain": org.get("primary_domain"),
-            "industry": org.get("industry"),
-            "estimatedNumEmployees": org.get("estimated_num_employees"),
-            "foundedYear": org.get("founded_year"),
-            "hqCity": org.get("city"),
-            "hqCountry": org.get("country"),
-            "shortDescription": org.get("short_description"),
-            "logoUrl": org.get("logo_url"),
-            "linkedinUrl": org.get("linkedin_url"),
-            "websiteUrl": org.get("website_url"),
-        }
-        enriched_data = {
-            "email": person.get("email"),
-            "emailStatus": person.get("email_status"),
-            "personalEmails": person.get("personal_emails") or [],
-            "linkedinUrl": person.get("linkedin_url"),
-            "photoUrl": person.get("photo_url"),
-            "title": person.get("title"),
-            "headline": person.get("headline"),
-            "seniority": person.get("seniority"),
-            "functions": person.get("functions") or [],
-            "departments": person.get("departments") or [],
-            "location": person.get("formatted_address"),
-            "timeZone": person.get("time_zone"),
-            "employmentHistory": emp_history_trimmed,
-            "socials": {
-                "twitter": person.get("twitter_url"),
-                "github": person.get("github_url"),
-                "facebook": person.get("facebook_url"),
-            },
-            "organization": org_slim,
-        }
-
-        # ── Hydrate top-level fields with the authoritative data ────────────
-        # The free /mixed_people/api_search call only gives first_name (last
-        # name stays "Unknown") and a sparse location. Now that we have the
-        # full /people/match response, fill those in so the table view shows
-        # the real name + city/country without having to drill into the slideout.
-        top_level: Dict[str, Any] = {
-            "isEnriched": True,
-            "enrichedAt": now,
-            "enrichedData": enriched_data,
-            # Full audit payload — never trimmed.
-            "enrichedRaw": raw_envelope,
-            "enrichedSource": "apollo:/people/match",
-            "updatedAt": now,
-        }
-        if person.get("first_name"):
-            top_level["firstName"] = person["first_name"]
-        if person.get("last_name"):
-            top_level["lastName"] = person["last_name"]
-        if person.get("name"):
-            top_level["displayName"] = person["name"]
-        if person.get("formatted_address"):
-            top_level["location"] = person["formatted_address"]
-        if person.get("title"):
-            top_level["currentTitle"] = person["title"]
-        if person.get("headline"):
-            top_level["headline"] = person["headline"]
-        if person.get("linkedin_url"):
-            top_level["externalLinkedinUrl"] = person["linkedin_url"]
-        if org.get("name"):
-            top_level["currentCompany"] = org["name"]
-        if org.get("primary_domain"):
-            top_level["currentCompanyDomain"] = org["primary_domain"]
-
-        await col.update_one({"_id": oid}, {"$set": top_level})
-        out = await col.find_one({"_id": oid})
-        return _serialize_candidate(out)
+        fresh = await apollo_enrich_candidate(db, cand)
+        return _serialize_candidate(fresh)
+    except ApolloEnrichError as e:
+        raise HTTPException(502, str(e))
     except HTTPException:
         raise
     except Exception as e:

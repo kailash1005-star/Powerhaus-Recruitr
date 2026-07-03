@@ -496,3 +496,68 @@ async def _search_candidates_for_job(
             await _finish(pipeline_id, job_id, status="failed", searchError=str(exc)[:300])
         except Exception:
             pass
+
+
+# ── Background bulk enrichment (Apollo → Apify) ──────────────────────────────
+#
+# Reuses the same per-(pipeline, job) background pattern as the candidate search,
+# but tracks its own ``enrichStatus`` on the job entry so the UI can poll it
+# independently of the search.
+
+
+async def _set_enrich(pipeline_id: str, job_id: str, status: str, **extras) -> None:
+    pipelines_col = await get_collection("candidatePipelines")
+    fields: Dict[str, Any] = {
+        "jobs.$.enrichStatus": status,
+        "updatedAt": datetime.utcnow(),
+    }
+    for k, v in extras.items():
+        fields[f"jobs.$.{k}"] = v
+    await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+        {"$set": fields},
+    )
+
+
+async def enqueue_job_enrich(
+    pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Queue a background bulk-enrich for a job's (selected) candidates.
+
+    ``candidate_ids`` narrows to specific candidates; None enriches every
+    candidate in the job. Returns ``{"queued": True}``; raises ``ValueError``
+    ("job_not_found") if the job isn't in the pipeline.
+    """
+    pipelines_col = await get_collection("candidatePipelines")
+    now = datetime.utcnow()
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+        {"$set": {"jobs.$.enrichStatus": "queued", "jobs.$.enrichError": None, "updatedAt": now}},
+    )
+    if res.matched_count == 0:
+        raise ValueError("job_not_found")
+    asyncio.create_task(_run_job_enrich(pipeline_id, job_id, candidate_ids))
+    return {"queued": True}
+
+
+async def _run_job_enrich(
+    pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
+) -> None:
+    """Background worker: enrich the selected candidates through Apollo → Apify."""
+    from app.services.candidate_enrichment import bulk_enrich
+    try:
+        await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
+        if candidate_ids:
+            summary = await bulk_enrich(candidate_ids=candidate_ids)
+        else:
+            summary = await bulk_enrich(pipeline_id=pipeline_id, job_id=job_id)
+        await _set_enrich(
+            pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
+        )
+        logger.info("[Phase4] enrich %s/%s done: %s", pipeline_id, job_id, summary)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[Phase4] enrich %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)
+        try:
+            await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(exc)[:300])
+        except Exception:
+            pass
