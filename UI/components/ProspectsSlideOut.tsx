@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Icon } from './Icon';
 import { fetchJobProspects, enrichProspect, enrichProspectPhone, type JobProspect } from '@/lib/api';
 
@@ -58,19 +58,82 @@ export function ProspectsSlideOut({
   const [phoneEnrichingId, setPhoneEnrichingId] = useState<string | null>(null);
   const [phoneEnrichError, setPhoneEnrichError] = useState<string | null>(null);
   const [copiedPhone, setCopiedPhone] = useState<string | null>(null);
+  // Prospect ids we are auto-polling for an async (webhook-delivered) phone number.
+  const [pollingIds, setPollingIds] = useState<Set<string>>(new Set());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    setPollingIds(new Set());
+  }, []);
+
+  // Re-fetch the prospect list from the server (source of truth once the
+  // Apollo webhook has landed). Returns the fresh list so callers can inspect it.
+  const refreshProspects = useCallback(async (): Promise<JobProspect[]> => {
+    if (!jobId) return [];
+    const d = await fetchJobProspects(jobId);
+    setProspects(d.prospects);
+    return d.prospects;
+  }, [jobId]);
+
+  // Apollo delivers phone numbers asynchronously via webhook (status becomes
+  // "pending"). Instead of making the user hammer a "Retry" button — which
+  // re-triggers a fresh, credit-consuming Apollo call each time — poll the
+  // prospect list a few times so the revealed number appears on its own.
+  const pollForPhone = useCallback((prospectId: string) => {
+    setPollingIds((prev) => new Set(prev).add(prospectId));
+    if (pollRef.current) return; // a single shared interval drains all pending ids
+    let polls = 0;
+    pollRef.current = setInterval(async () => {
+      polls += 1;
+      try {
+        const fresh = await refreshProspects();
+        // Drop ids that now have a phone (or are no longer pending) from the poll set.
+        setPollingIds((prev) => {
+          const next = new Set(prev);
+          for (const p of fresh) {
+            if (p.prospectDetails?.phone || p.mobileEnrichmentStatus !== 'pending') {
+              next.delete(p._id);
+            }
+          }
+          if (next.size === 0 || polls >= 6) stopPolling();
+          return next;
+        });
+      } catch {
+        /* ignore transient errors; keep polling until the attempt cap */
+      }
+      if (polls >= 6) stopPolling();
+    }, 5000);
+  }, [refreshProspects, stopPolling]);
 
   useEffect(() => {
     if (!isOpen || !jobId) return;
+    stopPolling();
     setLoading(true);
     setProspects([]);
     fetchJobProspects(jobId)
       .then((d) => {
         setProspects(d.prospects);
         setActiveId(d.prospects[0]?._id ?? null);
+        // Resume polling for anything the server still reports as pending.
+        const stillPending = d.prospects.filter(
+          (p) => p.mobileEnrichmentStatus === 'pending' && !p.prospectDetails?.phone,
+        );
+        stillPending.forEach((p) => pollForPhone(p._id));
       })
       .catch(() => {})
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, jobId]);
+
+  // Stop polling when the panel closes or the component unmounts.
+  useEffect(() => {
+    if (!isOpen) stopPolling();
+    return stopPolling;
+  }, [isOpen, stopPolling]);
 
   const filtered = useMemo(() => {
     if (tab === 'All') return prospects;
@@ -134,6 +197,9 @@ export function ProspectsSlideOut({
               : x,
           ),
         );
+        // Apollo will deliver the number to the webhook shortly — auto-poll for
+        // it rather than making the user click Retry (which re-bills a credit).
+        pollForPhone(p._id);
       } else {
         setPhoneEnrichError('Apollo had no phone number on file for this prospect.');
       }
@@ -430,6 +496,7 @@ Best,
                         const phone = active.prospectDetails?.phone;
                         const mobileStatus = active.mobileEnrichmentStatus;
                         const isPhoneEnriching = phoneEnrichingId === active._id;
+                        const isPolling = pollingIds.has(active._id);
 
                         return (
                           <div style={{ border: '1px solid var(--border-card)', borderRadius: 10, overflow: 'hidden', marginBottom: 12 }}>
@@ -440,7 +507,7 @@ Best,
                                   <span style={{ fontWeight: 700, color: '#059669', background: '#ECFDF5', padding: '2px 8px', borderRadius: 4 }}>{phone}</span>
                                 ) : mobileStatus === 'pending' ? (
                                   <span style={{ fontWeight: 600, color: '#1D4ED8', background: '#EFF6FF', border: '1px solid #BFDBFE', padding: '2px 8px', borderRadius: 4, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    <Icon name="loader" size={11} /> Pending webhook
+                                    <Icon name="loader" size={11} /> {isPolling ? 'Auto-checking…' : 'Awaiting callback'}
                                   </span>
                                 ) : (
                                   <span style={{ fontWeight: 600, color: '#6B7280', background: '#F3F4F6', border: '1px solid #E5E7EB', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
@@ -482,18 +549,21 @@ Best,
                                   </button>
                                 )}
                                 {mobileStatus === 'pending' && !phone && (
+                                  // Free re-check: just refetch from the server (the webhook
+                                  // updates the DB). Does NOT re-trigger a credit-billing Apollo call.
                                   <button
-                                    onClick={() => handlePhoneEnrich(active)}
-                                    disabled={isPhoneEnriching}
+                                    onClick={() => { refreshProspects().catch(() => {}); pollForPhone(active._id); }}
+                                    disabled={isPolling}
+                                    title="Apollo delivers the number to our webhook within a few minutes. We check automatically — this just checks again now."
                                     style={{
-                                      fontSize: 12, fontWeight: 600, cursor: isPhoneEnriching ? 'wait' : 'pointer',
+                                      fontSize: 12, fontWeight: 600, cursor: isPolling ? 'wait' : 'pointer',
                                       border: '1px solid #BFDBFE', borderRadius: 6, padding: '5px 12px',
                                       background: '#EFF6FF', color: '#1D4ED8',
                                       display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'inherit',
                                     }}
                                   >
-                                    <Icon name={isPhoneEnriching ? 'loader' : 'refresh-cw'} size={13} />
-                                    {isPhoneEnriching ? 'Checking…' : 'Retry'}
+                                    <Icon name={isPolling ? 'loader' : 'refresh-cw'} size={13} />
+                                    {isPolling ? 'Checking…' : 'Check now'}
                                   </button>
                                 )}
                               </div>
