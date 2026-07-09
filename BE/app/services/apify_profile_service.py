@@ -45,6 +45,37 @@ logger = logging.getLogger(__name__)
 _COST_PER_PROFILE = 0.004
 
 
+def _run_to_dict(run: Any) -> Dict[str, Any]:
+    """Normalize an actor-run result to a plain dict.
+
+    ``apify-client`` < 2 returns the run info as a ``dict``; 2.x returns a
+    pydantic ``Run`` model (no ``.get``). Pinning is loose (``>=1.7.0``), so a
+    container may resolve either — normalize both to a dict with camelCase keys
+    matching the historical dict shape (``status``, ``defaultDatasetId``).
+    """
+    if not run:
+        return {}
+    if isinstance(run, dict):
+        return run
+    # pydantic v2 model → dict (by_alias gives the camelCase keys used below)
+    model_dump = getattr(run, "model_dump", None)
+    if callable(model_dump):
+        try:
+            data = model_dump(by_alias=True)
+            if isinstance(data, dict):
+                return data
+        except Exception:  # pragma: no cover - defensive
+            pass
+    # Last resort: pull the two fields we need off attributes (snake or camel).
+    return {
+        "status": getattr(run, "status", None),
+        "defaultDatasetId": (
+            getattr(run, "defaultDatasetId", None)
+            or getattr(run, "default_dataset_id", None)
+        ),
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Errors
 # ──────────────────────────────────────────────────────────────────────────────
@@ -184,14 +215,15 @@ class ApifyProfileService:
         except Exception as exc:  # network / actor-call failure
             raise ApifyRunFailed(f"Apify actor call failed: {exc}") from exc
 
-        status = (run or {}).get("status")
+        run_info = _run_to_dict(run)
+        status = run_info.get("status")
         if status != "SUCCEEDED":
             raise ApifyRunFailed(
                 f"Apify run status {status!r} (expected SUCCEEDED). "
                 "Transient — retry the batch."
             )
 
-        dataset_id = run.get("defaultDatasetId")
+        dataset_id = run_info.get("defaultDatasetId") or run_info.get("default_dataset_id")
         if not dataset_id:
             raise ApifyRunFailed("Apify run returned no defaultDatasetId.")
 
