@@ -1,0 +1,52 @@
+# Cloud Build config for the Powerhaus Recruitr backend.
+#
+# WHY THIS EXISTS: the default Google-managed build has NO layer cache, so every
+# push reinstalls torch/docling AND re-downloads the Docling models (the 18–20 min
+# you saw). Kaniko caches each layer in Artifact Registry, so builds where
+# requirements.txt (and the model-download step) are unchanged reuse those layers
+# and finish in a couple of minutes.
+#
+# TO ADOPT: point the Cloud Build trigger at this file
+#   (Trigger → Configuration → "Cloud Build configuration file" → /cloudbuild.yaml)
+# and confirm the substitutions below match your setup.
+#
+# The `gcloud run deploy` step sets ONLY --image, so all existing env vars, service
+# account, scaling, etc. on the service are preserved across deploys.
+
+substitutions:
+  _REGION: europe-west1
+  _REPO: cloud-run-source-deploy      # ← the Artifact Registry repo your images live in
+  _SERVICE: powerhaus-recruitr
+
+steps:
+  # ── Build with Kaniko + registry layer cache ──────────────────────────────
+  - name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=Dockerfile
+      - --context=dir:///workspace/BE            # Dockerfile does COPY . . from BE/
+      - --destination=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - --destination=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - --cache=true
+      - --cache-ttl=336h                          # keep cached layers 14 days
+      - --cache-repo=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}/cache
+      - --cache-copy-layers                       # also cache COPY layers
+      - --snapshot-mode=redo
+
+  # ── Deploy the freshly built image (env/config on the service is preserved) ──
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --quiet
+
+# A bigger builder VM parallelizes the pip install / model download on cold builds.
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 2400s

@@ -4,6 +4,15 @@ FROM python:3.12-slim AS builder
 WORKDIR /build
 
 COPY requirements.txt .
+
+# Install CPU-only PyTorch FIRST. Docling pulls torch transitively; if pip resolves
+# it from PyPI it grabs the ~2GB CUDA build, but Cloud Run has no GPU. The CPU wheel
+# is a fraction of the size — this cuts minutes off the build and hundreds of MB off
+# the image. Must precede the requirements install so torch is already satisfied when
+# Docling's dependencies resolve.
+RUN pip install --no-cache-dir --prefix=/install \
+        --index-url https://download.pytorch.org/whl/cpu torch
+
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # python-jobspy hard-pins numpy==1.26.3, which conflicts with the numpy>=2.0 that
