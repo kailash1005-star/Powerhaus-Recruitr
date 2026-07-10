@@ -1,13 +1,16 @@
 """
 Jobs API Endpoints
-GET  /api/v1/jobs                              - List all jobs (paginated, sortable)
+GET  /api/v1/jobs                              - List all jobs (paginated, sortable, ?q search)
+POST /api/v1/jobs                              - Create a manual job entry
 GET  /api/v1/jobs/{job_id}/prospects           - Prospects for a job's company
 POST /api/v1/jobs/prospects/{id}/enrich        - On-demand Apollo email enrichment
 """
 import asyncio
 from datetime import datetime
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from app.database import get_database
 from app.services.apollo_service import ApolloService
 from app.config import settings
@@ -30,6 +33,7 @@ async def list_jobs(
         description="Sort field: title|company|location|boardName|qualityStatus|createdAt",
     ),
     sort_order: str = Query("desc", description="Sort order: asc|desc"),
+    q: str = Query(None, description="Typeahead: matches title or location"),
     db=Depends(get_db),
 ):
     """
@@ -54,11 +58,16 @@ async def list_jobs(
         mongo_field = field_map.get(sort_by, "createdAt")
         sort_direction = 1 if sort_order == "asc" else -1
 
-        total = await jobs_col.count_documents({})
+        query = {}
+        if q:
+            regex = {"$regex": q.strip(), "$options": "i"}
+            query["$or"] = [{"title": regex}, {"location": regex}]
+
+        total = await jobs_col.count_documents(query)
         skip = (page - 1) * limit
 
         cursor = (
-            jobs_col.find()
+            jobs_col.find(query)
             .sort(mongo_field, sort_direction)
             .skip(skip)
             .limit(limit)
@@ -84,6 +93,51 @@ async def list_jobs(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching jobs: {str(e)}")
+
+
+# ── POST / (create manual job) ────────────────────────────────────────
+
+
+class ManualJobCreateSchema(BaseModel):
+    title: str
+    location: str = ""
+    companyId: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.post("")
+async def create_manual_job(body: ManualJobCreateSchema, db=Depends(get_db)):
+    """Create a manual job entry (not from a scraping run)."""
+    try:
+        jobs_col = db["jobs"]
+        now = datetime.utcnow()
+        doc = {
+            "title": body.title,
+            "location": body.location or "",
+            "boardName": "manual",
+            "qualityStatus": "good",
+            "jobDetails": {"description": body.description} if body.description else None,
+            "source": "manual",
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        # The `jobs` collection schema requires companyId to be a real ObjectId
+        # (not a string), so cast it — and only include it when valid.
+        if body.companyId:
+            try:
+                doc["companyId"] = ObjectId(body.companyId)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid companyId")
+        res = await jobs_col.insert_one(doc)
+        created = await jobs_col.find_one({"_id": res.inserted_id})
+        created["_id"] = str(created["_id"])
+        if created.get("companyId"):
+            created["companyId"] = str(created["companyId"])
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating job: {str(e)}")
 
 
 # ── GET /{job_id}/prospects ────────────────────────────────────────────

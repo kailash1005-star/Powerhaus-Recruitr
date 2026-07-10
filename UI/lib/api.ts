@@ -558,6 +558,34 @@ export function removeJobFromPipeline(pipelineId: string, jobId: string): Promis
   return del(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}`);
 }
 
+export interface JobSearchResult {
+  _id: string;
+  title: string;
+  location: string;
+  boardName?: string;
+  createdAt?: string;
+}
+
+export interface JobSearchResponse {
+  total: number; page: number; limit: number; pages: number;
+  jobs: JobSearchResult[];
+}
+
+export function searchJobs(q: string, page = 1, limit = 10): Promise<JobSearchResponse> {
+  return get(`/api/v1/jobs?q=${encodeURIComponent(q)}&page=${page}&limit=${limit}`);
+}
+
+export interface ManualJobPayload {
+  title: string;
+  location?: string;
+  companyId?: string;
+  description?: string;
+}
+
+export function createManualJob(payload: ManualJobPayload): Promise<JobSearchResult> {
+  return post('/api/v1/jobs', payload);
+}
+
 export function rerunPipelineJob(pipelineId: string, jobId: string): Promise<unknown> {
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/rerun`, {});
 }

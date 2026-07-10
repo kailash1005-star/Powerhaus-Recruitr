@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
+import { CreatePipelineModal } from '../CreatePipelineModal';
 import { fetchPipelines, deletePipeline, type Pipeline } from '@/lib/api';
 
 function fmtDate(d: string | null | undefined) {
@@ -30,6 +31,7 @@ export function PipelinesPage() {
   const [confirmDelete, setConfirmDelete] = useState<Pipeline | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
   const LIMIT = 20;
 
   const load = useCallback(async () => {
@@ -85,9 +87,22 @@ export function PipelinesPage() {
           “Add to candidate pipeline”.
         </span>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+        <span style={{ fontSize: 12, color: 'var(--fg-muted)', marginRight: 12 }}>
           {total} pipeline{total !== 1 ? 's' : ''}
         </span>
+        <button
+          onClick={() => setShowCreate(true)}
+          style={{
+            height: 34, padding: '0 14px', borderRadius: 8, fontSize: 13,
+            fontWeight: 600, cursor: 'pointer', border: 'none',
+            background: '#4F46E5', color: '#FFF', fontFamily: 'inherit',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <Icon name="plus" size={14} />
+          Create Pipeline
+        </button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
@@ -295,6 +310,12 @@ export function PipelinesPage() {
           </div>
         </div>
       )}
+
+      <CreatePipelineModal
+        isOpen={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreated={() => { setShowCreate(false); load(); }}
+      />
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }`}</style>
     </>

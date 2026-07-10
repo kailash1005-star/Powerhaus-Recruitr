@@ -126,6 +126,13 @@
    Semantic type roles. Use these instead of raw vars where you can.
    ────────────────────────────────────────────────────────────── */
 
+/* Global box model: every element sizes padding + border INSIDE its declared
+   width/height. The app leans on `width: 100%` + padding for inputs, cards and
+   list rows everywhere; without border-box the padding/border spill past the
+   container and produce stray horizontal scrollbars (modals, pipeline lists,
+   tables). Setting this once fixes the overflow app-wide. */
+*, *::before, *::after { box-sizing: border-box; }
+
 /* Reset + lock the window: the app is a fixed full-viewport shell (AppShell is
    position:fixed; inset:0), so the body must not keep its default 8px margin —
    those margins push the body's margin-box past the viewport and produce stray

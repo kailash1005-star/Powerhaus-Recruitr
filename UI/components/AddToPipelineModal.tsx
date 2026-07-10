@@ -251,8 +251,8 @@ export function AddToPipelineModal({ isOpen, onClose, job, companyDefaults, onAd
               opacity: (busy || (mode === 'existing' && !selectedId)) ? 0.6 : 1,
             }}
           >
-            {busy ? <Icon name="loader" size={14} /> : <Icon name="plus" size={14} />}
-            {mode === 'existing' ? 'Add to pipeline' : 'Create + add'}
+            {busy ? <Icon name="loader" size={14} /> : mode === 'existing' ? <Icon name="plus" size={14} /> : null}
+            {mode === 'existing' ? 'Add to pipeline' : 'Create'}
           </button>
         </div>
       </div>
