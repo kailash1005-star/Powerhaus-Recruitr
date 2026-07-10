@@ -2,9 +2,10 @@
 Startup self-checks for the matching engine.
 
 The #1 operational footgun is starting the backend with the WRONG Python (the
-global interpreter instead of the venv), which lacks Docling/numpy-2.x and makes
-CV uploads silently fail. These helpers detect that early and loudly, and let the
-API refuse uploads with a clear message instead of failing per-file in the dark.
+global interpreter instead of the venv), which lacks the parsing/numpy stack and
+makes CV uploads silently fail. These helpers detect that early and loudly, and
+let the API refuse uploads with a clear message instead of failing per-file in
+the dark.
 """
 from __future__ import annotations
 
@@ -14,8 +15,9 @@ import sys
 from app.config import settings
 
 # Modules the matching engine needs. pinecone is only required when that backend
-# is selected, so it is checked conditionally below.
-_CORE_MODULES = ["docling", "numpy", "multipart", "rapidfuzz", "openai"]
+# is selected, so it is checked conditionally below. (pypdf + docx are the
+# lightweight document parsers that replaced Docling.)
+_CORE_MODULES = ["pypdf", "docx", "numpy", "multipart", "rapidfuzz", "openai"]
 
 
 def matching_readiness() -> dict:

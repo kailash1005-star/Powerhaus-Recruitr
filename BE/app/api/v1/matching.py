@@ -32,7 +32,7 @@ async def get_db():
 
 def _require_matching_ready():
     """Fail fast with a clear message if the engine can't run (e.g. backend
-    started with the wrong Python and Docling is missing) — instead of letting
+    started with the wrong Python and parser deps are missing) — instead of letting
     every CV silently fail to parse."""
     status = matching_readiness()
     if not status["ready"]:
@@ -60,7 +60,7 @@ def _oid(id_str: str):
 async def _ingest_batch(db, files: List[tuple], batch_id: str):
     """Background worker: ingest each (filename, bytes) with bounded concurrency."""
     import asyncio
-    sem = asyncio.Semaphore(4)  # cap concurrent Docling/LLM work
+    sem = asyncio.Semaphore(4)  # cap concurrent parse/LLM work
 
     async def one(filename, data):
         async with sem:

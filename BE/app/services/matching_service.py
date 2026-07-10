@@ -23,7 +23,7 @@ from bson import Binary, ObjectId
 from rapidfuzz import fuzz
 
 from app.config import settings
-from app.services import docling_parsing_service as docling
+from app.services import document_parsing_service as docparser
 from app.services import embedding_service as embeddings
 from app.services import llm_extraction_service as llm
 from app.services.vector_store import get_vector_store
@@ -119,7 +119,7 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
         logger.warning("[Matching] could not store original file for %s: %s", filename, e)
 
     try:
-        markdown = await docling.parse_bytes(data, filename)
+        markdown = await docparser.parse_bytes(data, filename)
         if not markdown.strip():
             raise ValueError("no text extracted from document")
 
@@ -264,7 +264,7 @@ async def run_match(
 
     # 1. JD → markdown
     if jd_bytes:
-        jd_markdown = await docling.parse_bytes(jd_bytes, jd_filename)
+        jd_markdown = await docparser.parse_bytes(jd_bytes, jd_filename)
     elif jd_text:
         jd_markdown = jd_text.strip()
     else:
