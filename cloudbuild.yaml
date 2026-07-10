@@ -7,6 +7,11 @@
 #
 # The trigger is already pointed at this file. The deploy step sets ONLY --image,
 # so existing env vars / config on the Cloud Run service are preserved.
+#
+# NOTE on `$$`: Cloud Build resolves $NAME / ${NAME} as substitutions. SHELL
+# variables (like the IMAGE var below) must be written as $$IMAGE so a literal $
+# reaches bash. Built-in ($PROJECT_ID, $SHORT_SHA) and user (${_REGION}, ${_REPO},
+# ${_SERVICE}) substitutions use a single $.
 
 substitutions:
   _REGION: europe-west1
@@ -21,7 +26,7 @@ steps:
       - -c
       - |
         IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}"
-        docker pull "$IMAGE:latest" || true
+        docker pull "$$IMAGE:latest" || true
 
   # ── Build with an inline layer cache ───────────────────────────────────────
   - name: gcr.io/cloud-builders/docker
@@ -33,9 +38,9 @@ steps:
         IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}"
         DOCKER_BUILDKIT=1 docker build \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          --cache-from "$IMAGE:latest" \
-          -t "$IMAGE:$SHORT_SHA" \
-          -t "$IMAGE:latest" \
+          --cache-from "$$IMAGE:latest" \
+          -t "$$IMAGE:$SHORT_SHA" \
+          -t "$$IMAGE:latest" \
           -f BE/Dockerfile BE
 
   # ── Push both tags ─────────────────────────────────────────────────────────
@@ -46,8 +51,8 @@ steps:
       - |
         set -e
         IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}"
-        docker push "$IMAGE:$SHORT_SHA"
-        docker push "$IMAGE:latest"
+        docker push "$$IMAGE:$SHORT_SHA"
+        docker push "$$IMAGE:latest"
 
   # ── Deploy (only --image changes; service env/config is preserved) ─────────
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -58,7 +63,7 @@ steps:
         set -e
         IMAGE="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}"
         gcloud run deploy ${_SERVICE} \
-          --image="$IMAGE:$SHORT_SHA" \
+          --image="$$IMAGE:$SHORT_SHA" \
           --region=${_REGION} \
           --platform=managed \
           --quiet

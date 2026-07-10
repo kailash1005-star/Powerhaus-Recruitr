@@ -77,6 +77,9 @@ def build_mcp_toolsets() -> list:
                 url=settings.AGENT_MCP_LINKEDIN_HTTP_URL,
                 headers=headers,
                 tool_prefix="linkedin",
+                # Bound the connect so a cold/scaled-to-zero MCP fails fast and the
+                # caller can degrade to plain chat instead of hanging the whole turn.
+                timeout=20,
             )
         )
         logger.info("Agent MCP: LinkedIn via HTTP %s", settings.AGENT_MCP_LINKEDIN_HTTP_URL)
@@ -95,12 +98,17 @@ def build_mcp_toolsets() -> list:
     return servers
 
 
-def build_agent(model: str | None = None) -> Agent:
-    """Create a Pydantic AI agent for the given model string (provider-swappable)."""
+def build_agent(model: str | None = None, with_tools: bool = True) -> Agent:
+    """Create a Pydantic AI agent for the given model string (provider-swappable).
+
+    ``with_tools=False`` builds a plain-chat agent with NO MCP toolsets — used as
+    a fallback when the MCP server can't be reached, so a turn that doesn't need
+    LinkedIn tools (e.g. "hi") still answers instead of failing the whole run.
+    """
     model = (model or settings.AGENT_MODEL).strip()
     _ensure_provider_env(model)
     return Agent(
         model,
         system_prompt=(settings.AGENT_SYSTEM_PROMPT or DEFAULT_SYSTEM_PROMPT),
-        toolsets=build_mcp_toolsets(),
+        toolsets=build_mcp_toolsets() if with_tools else [],
     )
