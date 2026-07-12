@@ -299,7 +299,12 @@ async def outreach_draft(req: OutreachDraftRequest, db=Depends(get_db)):
         if not contact.get("email"):
             contact = {**contact, "email": (cand.get("enrichedData") or {}).get("email")}
     try:
-        draft = await email_service.generate_outreach_email(profile, req.roleTitle)
+        from app.services import cost_service
+        async with cost_service.cost_context(
+            cost_service.STAGE_OUTREACH, label=profile.get("fullName"),
+            candidateId=req.candidateId,
+        ):
+            draft = await email_service.generate_outreach_email(profile, req.roleTitle)
     except Exception as e:  # noqa: BLE001
         logger.exception("[Outreach] draft failed")
         raise HTTPException(status_code=500, detail=f"draft failed: {e}")

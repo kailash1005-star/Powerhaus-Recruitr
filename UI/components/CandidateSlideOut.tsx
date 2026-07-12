@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { Icon } from './Icon';
+import { ApifyProfileView } from './ApifyProfileView';
 import type { Candidate } from '@/lib/api';
 
 interface CandidateSlideOutProps {
@@ -183,7 +184,7 @@ export function CandidateSlideOut({
           {/* Right: detail */}
           <div style={{ flex: 1, overflowY: 'auto', background: '#FFF', position: 'relative' }}>
             {active ? (
-              <div style={{ padding: '32px 36px', maxWidth: 600, margin: '0 auto' }}>
+              <div style={{ padding: '24px 28px' }}>
                 {/* Avatar + name */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 18, marginBottom: 24 }}>
                   <div style={{ width: 72, height: 72, borderRadius: 9999, background: 'linear-gradient(135deg, #4F46E5, #7C3AED)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 700, color: '#FFF', border: '1px solid #E5E7EB', flexShrink: 0 }}>
@@ -493,6 +494,9 @@ export function CandidateSlideOut({
                     </button>
                   </div>
                 )}
+
+                {/* Apify deep LinkedIn profile (+ its background-fetch states) */}
+                <ApifyProfileView candidate={active} />
 
                 {/* Rejection reason */}
                 {!active.isAccepted && active.rejectionReason && (

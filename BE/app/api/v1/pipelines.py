@@ -17,6 +17,8 @@ Endpoints for the recruitment candidate-sourcing product:
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +33,8 @@ from app.services.candidate_pipeline import (
     enqueue_job_enrich,
     rerun_job_search,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -435,6 +439,32 @@ async def list_job_candidates(
         raise HTTPException(500, f"Error listing candidates: {e}")
 
 
+# ── GET /candidates/{id} (single — deep profile / enrich poll) ────────────
+
+
+@router.get("/candidates/{candidate_id}")
+async def get_candidate(candidate_id: str, db=Depends(get_db)):
+    """Fetch one candidate (full doc incl. Apollo + Apify enrichment).
+
+    Backs the matching-run slide-out (deep Apify profile) and the poll the
+    client runs after the manual enrich button to watch the Apify stage settle.
+    """
+    try:
+        col = db["candidates"]
+        try:
+            oid = ObjectId(candidate_id)
+        except Exception:
+            raise HTTPException(400, "Invalid candidate id")
+        doc = await col.find_one({"_id": oid})
+        if not doc:
+            raise HTTPException(404, "Candidate not found")
+        return _serialize_candidate(doc)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching candidate: {e}")
+
+
 # ── PATCH /candidates/{id} (accept/reject) ───────────────────────────────
 
 
@@ -485,22 +515,91 @@ async def patch_candidate(candidate_id: str, body: CandidatePatchSchema, db=Depe
 # ── POST /candidates/{id}/enrich ─────────────────────────────────────────
 
 
+async def _bg_apify_enrich(candidate_id: str) -> None:
+    """Background stage-2: pull the deep Apify LinkedIn profile for one candidate
+    after the Apollo stage. Detached from the request (fire-and-forget), so it
+    records a TERMINAL ``apifyEnrichmentStatus`` the client can stop polling on:
+
+      • ``enriched`` / ``not_found`` — set by ``enrich_candidates``.
+      • ``not_found``               — candidate had no usable LinkedIn URL, so
+                                       ``enrich_candidates`` skipped it silently;
+                                       normalize here so the UI doesn't hang.
+      • ``failed``                  — the Apify actor call itself errored.
+    """
+    from app.services.candidate_enrichment import enrich_candidates
+    from app.services import cost_service
+    db = await get_database()
+    col = db["candidates"]
+    oid = ObjectId(candidate_id)
+    ref = await col.find_one({"_id": oid}, {"pipelineId": 1, "sourceJobIds": 1, "displayName": 1})
+    ref = ref or {}
+    try:
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, label=ref.get("displayName"),
+            candidateId=candidate_id, pipelineId=ref.get("pipelineId"),
+            jobId=(ref.get("sourceJobIds") or [None])[0],
+        ):
+            await enrich_candidates(candidate_ids=[candidate_id])
+        doc = await col.find_one({"_id": oid}, {"apifyEnrichmentStatus": 1})
+        if (doc or {}).get("apifyEnrichmentStatus") == "pending":
+            await col.update_one(
+                {"_id": oid},
+                {"$set": {"apifyEnrichmentStatus": "not_found", "updatedAt": datetime.utcnow()}},
+            )
+    except Exception as e:  # noqa: BLE001 — a detached task must never crash the loop
+        logger.warning("[Enrich] background Apify stage failed for %s: %s", candidate_id, e)
+        try:
+            await col.update_one(
+                {"_id": oid},
+                {"$set": {
+                    "apifyEnrichmentStatus": "failed",
+                    "apifyEnrichmentError": str(e)[:300],
+                    "updatedAt": datetime.utcnow(),
+                }},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @router.post("/candidates/{candidate_id}/enrich")
 async def enrich_candidate(candidate_id: str, db=Depends(get_db)):
-    """Manual Apollo enrichment — calls Apollo /people/match for one person.
+    """Manual enrichment — Apollo /people/match (inline) then the deep Apify
+    LinkedIn profile (background).
 
-    Delegates to ``apollo_enrich.apollo_enrich_candidate`` (shared with the bulk
-    background job). Idempotent; stores the full envelope (``enrichedRaw``) + a
-    UI-friendly projection (``enrichedData``) and hydrates the top-level name /
-    location / LinkedIn URL.
+    Apollo runs synchronously (fast) and hydrates the verified email + the
+    authoritative LinkedIn URL Apify needs; the response returns immediately with
+    ``apifyEnrichmentStatus:"pending"`` and the Apify stage continues in the
+    background. The client polls ``GET /candidates/{id}`` until the status
+    settles (``enriched`` / ``not_found`` / ``failed``). Idempotent.
     """
     from app.services.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
     try:
         col = db["candidates"]
-        cand = await col.find_one({"_id": ObjectId(candidate_id)})
+        try:
+            oid = ObjectId(candidate_id)
+        except Exception:
+            raise HTTPException(400, "Invalid candidate id")
+        cand = await col.find_one({"_id": oid})
         if not cand:
             raise HTTPException(404, "Candidate not found")
-        fresh = await apollo_enrich_candidate(db, cand)
+
+        from app.services import cost_service
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, label=cand.get("displayName"),
+            candidateId=candidate_id, pipelineId=cand.get("pipelineId"),
+            jobId=(cand.get("sourceJobIds") or [None])[0],
+        ):
+            fresh = await apollo_enrich_candidate(db, cand)
+
+        # Kick off stage-2 (Apify) unless the deep profile is already present.
+        if not fresh.get("isApifyEnriched"):
+            await col.update_one(
+                {"_id": oid},
+                {"$set": {"apifyEnrichmentStatus": "pending", "updatedAt": datetime.utcnow()}},
+            )
+            fresh["apifyEnrichmentStatus"] = "pending"
+            asyncio.create_task(_bg_apify_enrich(candidate_id))
+
         return _serialize_candidate(fresh)
     except ApolloEnrichError as e:
         raise HTTPException(502, str(e))

@@ -545,12 +545,16 @@ async def _run_job_enrich(
 ) -> None:
     """Background worker: enrich the selected candidates through Apollo → Apify."""
     from app.services.candidate_enrichment import bulk_enrich
+    from app.services import cost_service
     try:
         await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
-        if candidate_ids:
-            summary = await bulk_enrich(candidate_ids=candidate_ids)
-        else:
-            summary = await bulk_enrich(pipeline_id=pipeline_id, job_id=job_id)
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+        ):
+            if candidate_ids:
+                summary = await bulk_enrich(candidate_ids=candidate_ids)
+            else:
+                summary = await bulk_enrich(pipeline_id=pipeline_id, job_id=job_id)
         await _set_enrich(
             pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
         )

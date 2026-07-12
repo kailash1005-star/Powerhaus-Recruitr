@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
@@ -8,7 +8,7 @@ import { Icon } from '../Icon';
 import { CandidateSlideOut } from '../CandidateSlideOut';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate, enrichCandidate,
-  bulkEnrichJobCandidates, runJobMatch,
+  fetchCandidate, bulkEnrichJobCandidates, runJobMatch,
   type Candidate, type Pipeline,
 } from '@/lib/api';
 
@@ -174,12 +174,38 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       ? { isAccepted: false, rejectionReason: 'Manual reject' }
       : { isAccepted: true, rejectionReason: null });
 
+  // Candidates whose background Apify stage we're currently polling (dedupe).
+  const apifyPollRef = useRef<Set<string>>(new Set());
+
+  // Poll a single candidate until the background Apify stage settles, refreshing
+  // its row (which the open slide-out reads through, so the deep profile appears
+  // live). Bounded so a stuck job can't poll forever.
+  const pollApify = useCallback((id: string) => {
+    if (apifyPollRef.current.has(id)) return;
+    apifyPollRef.current.add(id);
+    (async () => {
+      try {
+        for (let i = 0; i < 60; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          let fresh: Candidate;
+          try { fresh = await fetchCandidate(id); } catch { continue; }
+          setCandidates((prev) => prev.map((c) => (c._id === id ? fresh : c)));
+          if (fresh.apifyEnrichmentStatus && fresh.apifyEnrichmentStatus !== 'pending') break;
+        }
+      } finally {
+        apifyPollRef.current.delete(id);
+      }
+    })();
+  }, []);
+
   const onEnrich = async (id: string) => {
     setBusyId(id);
     setActionError(null);
     try {
       const updated = await enrichCandidate(id);
       setCandidates((prev) => prev.map((c) => (c._id === id ? updated : c)));
+      // Apollo done; the deep Apify profile continues in the background — poll it.
+      if (updated.apifyEnrichmentStatus === 'pending') pollApify(id);
     } catch (e: any) {
       setActionError(e.message || 'Enrichment failed');
     } finally {

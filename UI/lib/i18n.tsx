@@ -28,6 +28,7 @@ const en = {
   'nav.matching': 'Candidate Matching',
   'nav.outreach': 'Outreach',
   'nav.dashboards': 'Dashboards',
+  'nav.costs': 'Cost Analyser',
   'nav.settings': 'Settings',
   'nav.integrations': 'Integrations',
 
@@ -53,6 +54,7 @@ const de: Dict = {
   'nav.matching': 'Kandidaten-Matching',
   'nav.outreach': 'Ansprache',
   'nav.dashboards': 'Dashboards',
+  'nav.costs': 'Kostenanalyse',
   'nav.settings': 'Einstellungen',
   'nav.integrations': 'Integrationen',
 

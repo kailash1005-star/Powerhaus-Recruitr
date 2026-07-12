@@ -455,6 +455,50 @@ export interface CandidateOrganizationSlim {
   websiteUrl?: string | null;
 }
 
+// ── Apify deep-profile shape (candidate.apifyEnrichment.profile) ────────────
+// Mirrors BE candidate_merge.merge_enriched — snake_case sub-fields intact.
+export interface ApifyExperienceEntry {
+  title?: string;
+  company_name?: string;
+  location?: string;
+  employment_type?: string;
+  summary?: string;
+  description?: string;
+  skills?: string[];
+  starts_at?: string | null;
+  ends_at?: string | null;
+  is_current?: boolean;
+}
+
+export interface ApifyEducationEntry {
+  school_name?: string;
+  degree_name?: string;
+  field_of_study?: string;
+  starts_at?: string | null;
+  ends_at?: string | null;
+}
+
+export interface ApifyCertification { name?: string; authority?: string }
+export interface ApifyLanguage { name?: string; proficiency?: string }
+
+export interface ApifyProfile {
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  headline?: string;
+  summary?: string;
+  location?: string;
+  currentTitle?: string;
+  currentCompany?: string;
+  totalYears?: number | null;
+  skills?: string[];
+  titles?: string[];
+  experience?: ApifyExperienceEntry[];
+  education?: ApifyEducationEntry[];
+  certifications?: ApifyCertification[];
+  languages?: ApifyLanguage[];
+}
+
 export interface CandidateEnrichedData {
   email?: string | null;
   emailStatus?: string | null;
@@ -501,11 +545,13 @@ export interface Candidate {
   /** Apify deep-profile enrichment (separate from the Apollo fields above). */
   isApifyEnriched?: boolean;
   apifyEnrichedAt?: string | null;
-  apifyEnrichmentStatus?: 'enriched' | 'not_found' | null;
+  /** 'pending' while the background Apify stage runs; terminal otherwise. */
+  apifyEnrichmentStatus?: 'pending' | 'enriched' | 'not_found' | 'failed' | null;
+  apifyEnrichmentError?: string | null;
   apifyEnrichment?: {
-    profile?: Record<string, unknown> | null;
-    contact?: Record<string, unknown> | null;
-    source?: Record<string, unknown> | null;
+    profile?: ApifyProfile | null;
+    contact?: { email?: string | null; phone?: string | null; linkedin?: string | null; emailStatus?: string | null } | null;
+    source?: { apollo?: boolean; apify?: boolean } | null;
   } | null;
   runHistory: Array<{
     runAt: string; jobId: string; isRerun: boolean; appliedIndustryFallback: boolean;
@@ -610,6 +656,11 @@ export function patchCandidate(
   body: { isAccepted?: boolean; rejectionReason?: string | null },
 ): Promise<Candidate> {
   return patch(`/api/v1/pipelines/candidates/${candidateId}`, body);
+}
+
+/** Fetch a single candidate (full doc incl. Apollo + Apify enrichment). */
+export function fetchCandidate(candidateId: string): Promise<Candidate> {
+  return get(`/api/v1/pipelines/candidates/${candidateId}`);
 }
 
 export function enrichCandidate(candidateId: string): Promise<Candidate> {
@@ -741,6 +792,9 @@ export interface SavedMatchRun {
   jobId?: string;
   requirements?: MatchResult['requirements'];
   error?: string | null;
+  /** Live streaming progress for pipeline runs (per-candidate queue). */
+  progress?: { total: number; processed: number; considered: number } | null;
+  logs?: Array<{ ts?: string; message: string; level?: 'info' | 'warn' | 'error' }> | null;
 }
 
 export function fetchMatchRuns(page = 1, limit = 20): Promise<{ total: number; items: SavedMatchRun[] }> {
@@ -860,4 +914,139 @@ export interface EnrollResult {
 /** Track/enroll a contact into the outreach CRM (and Smartlead if configured). */
 export function enrollOutreach(payload: EnrollPayload): Promise<EnrollResult> {
   return post('/api/v1/outreach/enroll', payload);
+}
+
+// ── Cost Analyser ───────────────────────────────────────────────────────────
+
+export type CostRange = '7d' | '14d' | '30d' | '90d' | 'all';
+export type CostStage = 'job_search' | 'candidate_search' | 'matching' | 'outreach' | 'company_analysis';
+
+export interface CostServiceSlice { service: string; cost: number; fixed?: boolean }
+export interface CostStageSlice { stage: string; cost: number; count?: number }
+export interface CostSubscription {
+  service: string; monthlyUsd: number;
+  creditsUsed?: number | null; includedCredits?: number | null;
+  usdPerCredit?: number | null; utilizationPct?: number | null; configured?: boolean;
+}
+export interface CostInsight { type: string; severity: 'info' | 'warn'; title: string; body: string }
+
+export interface CostUnitEconomics {
+  sourced: number; enriched: number; rejected?: number; enrichedRejected?: number; matches: number;
+  perSourced?: number | null; perEnriched?: number | null; perMatch?: number | null;
+  wastedEnrichmentUsd?: number;
+}
+
+export interface CostLineItem {
+  groupKey: string;
+  stage?: string | null;
+  label?: string | null;
+  cost: number;
+  credits?: number;
+  byService: CostServiceSlice[];
+  refs?: Record<string, unknown>;
+  found?: number | null;
+  enriched?: number | null;
+  rejected?: number | null;
+  enrichedRejected?: number | null;
+  perEnriched?: number | null;
+}
+
+export interface CostOverview {
+  range: string;
+  operational: number;
+  operationalPrev?: number | null;
+  deltaPct?: number | null;
+  runRate?: number | null;
+  fixedMonthly: number;
+  billTotal: number;
+  apolloRate: number;
+  unitEconomics: CostUnitEconomics;
+  subscriptions: CostSubscription[];
+  byService: CostServiceSlice[];
+  byStage: CostStageSlice[];
+  daily: { date: string; cost: number }[];
+  insights: CostInsight[];
+  topSearches: CostLineItem[];
+}
+
+export interface CostGroup {
+  stage: string;
+  range: string;
+  total: number;
+  count: number;
+  creditsUsed: number;
+  apolloRate?: number;
+  enriched?: number;
+  enrichedRejected?: number;
+  perEnriched?: number | null;
+  insights?: CostInsight[];
+  items: CostLineItem[];
+}
+
+export interface CostEventRow {
+  service: string;
+  operation: string;
+  model?: string | null;
+  unit: string;
+  quantity: number | { in?: number; out?: number };
+  unitPriceUsd?: number | null;
+  costUsd: number;
+  allocated: boolean;
+  createdAt?: string | null;
+}
+
+export interface CostLineDetail {
+  groupKey: string;
+  stage?: string | null;
+  label?: string | null;
+  total: number;
+  apolloRate?: number;
+  found?: number | null;
+  enriched?: number | null;
+  rejected?: number | null;
+  enrichedRejected?: number | null;
+  byService: CostServiceSlice[];
+  events: CostEventRow[];
+  insights?: CostInsight[];
+  refs?: Record<string, unknown>;
+}
+
+export interface PriceBookEntry {
+  _id: string;
+  service: string;
+  model?: string | null;
+  kind: 'metered' | 'subscription';
+  unit?: string;
+  inUsdPer1M?: number;
+  outUsdPer1M?: number;
+  usdPerUnit?: number;
+  monthlyUsd?: number;
+  usdPerCredit?: number;
+  includedCredits?: number;
+  allocateBy?: string;
+  source?: string;
+}
+
+export function fetchCostOverview(range: CostRange = '30d'): Promise<CostOverview> {
+  return get(`/api/v1/cost/overview?range=${range}`);
+}
+
+export function fetchCostGroup(stage: CostStage, range: CostRange = '30d'): Promise<CostGroup> {
+  return get(`/api/v1/cost/group/${stage}?range=${range}`);
+}
+
+export function fetchCostLineItem(groupKey: string): Promise<CostLineDetail> {
+  return get(`/api/v1/cost/search/${encodeURIComponent(groupKey)}`);
+}
+
+export function fetchPriceBook(): Promise<{ items: PriceBookEntry[] }> {
+  return get('/api/v1/cost/price-book');
+}
+
+export function updatePriceEntry(body: {
+  service: string; model?: string | null;
+  monthlyUsd?: number; usdPerCredit?: number; includedCredits?: number;
+  inUsdPer1M?: number; outUsdPer1M?: number; usdPerUnit?: number; allocateBy?: string;
+}): Promise<PriceBookEntry> {
+  return patch('/api/v1/cost/price-book', body);
 }

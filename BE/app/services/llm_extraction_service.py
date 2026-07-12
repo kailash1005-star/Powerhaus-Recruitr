@@ -47,6 +47,8 @@ def _strip_fences(raw: str) -> str:
 
 def _chat_json(model: str, system: str, user: str, retries: int = 2) -> Dict[str, Any]:
     """Call the chat API expecting a JSON object back. Returns {} on hard failure."""
+    from app.services import cost_service
+
     client = _get_client()
     raw = ""
     for attempt in range(1, retries + 1):
@@ -60,6 +62,7 @@ def _chat_json(model: str, system: str, user: str, retries: int = 2) -> Dict[str
                     {"role": "user", "content": user},
                 ],
             )
+            cost_service.record_chat(completion, model=model, operation="extract")
             raw = _strip_fences(completion.choices[0].message.content or "")
             return json.loads(raw)
         except json.JSONDecodeError:

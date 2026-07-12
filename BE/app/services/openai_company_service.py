@@ -86,6 +86,12 @@ class OpenAICompanyService:
                         {"role": "user", "content": prompt},
                     ],
                 )
+                try:
+                    from app.services import cost_service
+                    cost_service.record_chat(completion, model=self._model,
+                                             service="openai", operation="company_classify")
+                except Exception:  # noqa: BLE001
+                    pass
                 raw = (completion.choices[0].message.content or "").strip()
                 if raw.startswith("```"):
                     raw = raw.split("\n", 1)[-1]
@@ -178,6 +184,12 @@ class OpenAICompanyService:
                         {"role": "user", "content": prompt},
                     ],
                 )
+                try:
+                    from app.services import cost_service
+                    cost_service.record_chat(completion, model=self._model,
+                                             service="openai", operation="company_classify")
+                except Exception:  # noqa: BLE001
+                    pass
                 raw = (completion.choices[0].message.content or "").strip()
                 if raw.startswith("```"):
                     raw = raw.split("\n", 1)[-1]

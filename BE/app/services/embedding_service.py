@@ -41,9 +41,12 @@ def embedding_version() -> str:
 
 
 def _embed_sync(texts: List[str]) -> List[List[float]]:
+    from app.services import cost_service
+
     client = _get_client()
     model = settings.EMBEDDING_MODEL
     out: List[List[float]] = []
+    total_tokens = 0
 
     for i in range(0, len(texts), _MAX_BATCH):
         batch = texts[i:i + _MAX_BATCH]
@@ -54,6 +57,10 @@ def _embed_sync(texts: List[str]) -> List[List[float]]:
             try:
                 resp = client.embeddings.create(model=model, input=safe)
                 out.extend([d.embedding for d in resp.data])
+                try:
+                    total_tokens += int(getattr(resp, "usage", None).total_tokens)
+                except Exception:  # noqa: BLE001
+                    pass
                 last_err = None
                 break
             except Exception as e:  # noqa: BLE001 - retry any transient API error
@@ -62,6 +69,12 @@ def _embed_sync(texts: List[str]) -> List[List[float]]:
                 time.sleep(min(2 ** attempt, 8))
         if last_err is not None:
             raise last_err
+
+    if total_tokens:
+        cost_service.record_event(
+            service="openai", operation="embed", model=model,
+            unit="token", quantity={"in": total_tokens, "out": 0},
+        )
     return out
 
 

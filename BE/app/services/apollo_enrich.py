@@ -45,6 +45,17 @@ def _people_match(apollo_id: str) -> Optional[Dict[str, Any]]:
         timeout=30,
     )
     resp.raise_for_status()
+    # Apollo /people/match consumes 1 credit (email). Apollo is a flat monthly
+    # subscription, so cost is $0 at the event — the credit is recorded for the
+    # dashboard to allocate the plan across searches by usage.
+    try:
+        from app.services import cost_service
+        cost_service.record_event(
+            service="apollo", operation="people_match",
+            unit="credit", quantity=1, vendor_ref=str(apollo_id),
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return resp.json()
 
 

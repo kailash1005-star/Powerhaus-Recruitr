@@ -239,6 +239,23 @@ class ApifyProfileService:
 
         found = {k for k in wanted if k in results}
         missing = [k for k in wanted if k not in found]
+
+        # Record the metered cost. Prefer Apify's own reported spend
+        # (usageTotalUsd) as the actual; fall back to per-profile price book.
+        try:
+            from app.services import cost_service
+            n_found = len(found)
+            if n_found:
+                vendor_usd = run_info.get("usageTotalUsd") or run_info.get("usage_total_usd")
+                cost_service.record_event(
+                    service="apify", operation="profile_scrape",
+                    unit="profile", quantity=n_found,
+                    cost_override=(float(vendor_usd) if vendor_usd else None),
+                    vendor_ref=str(run_info.get("id") or dataset_id),
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
         if missing:
             logger.warning(
                 "[Apify] %d/%d profiles returned no data (private/not-found): %s",

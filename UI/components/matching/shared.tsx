@@ -37,10 +37,25 @@ export function ScoreBar({ value }: { value: number }) {
 }
 
 // ── Candidate result card ─────────────────────────────────────────────────────
-export function CandidateCard({ c, rank, onReachOut }: { c: MatchedCandidate; rank: number; onReachOut: (c: MatchedCandidate) => void }) {
+export function CandidateCard({ c, rank, onReachOut, onOpen }: {
+  c: MatchedCandidate; rank: number;
+  onReachOut: (c: MatchedCandidate) => void;
+  /** When set (pipeline candidates), the card opens the deep-profile slide-over. */
+  onOpen?: (c: MatchedCandidate) => void;
+}) {
   const contact = c.contact || {};
+  const clickable = !!onOpen;
   return (
-    <div style={{ ...card, marginBottom: 14 }}>
+    <div
+      onClick={clickable ? () => onOpen!(c) : undefined}
+      style={{
+        ...card, marginBottom: 14,
+        cursor: clickable ? 'pointer' : 'default',
+        transition: 'box-shadow 120ms, border-color 120ms',
+      }}
+      onMouseEnter={clickable ? (e) => { (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 16px rgba(0,0,0,0.08)'; (e.currentTarget as HTMLElement).style.borderColor = 'var(--primary)'; } : undefined}
+      onMouseLeave={clickable ? (e) => { (e.currentTarget as HTMLElement).style.boxShadow = 'none'; (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-card)'; } : undefined}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
           <div style={{
@@ -48,7 +63,10 @@ export function CandidateCard({ c, rank, onReachOut }: { c: MatchedCandidate; ra
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700, flexShrink: 0,
           }}>{rank}</div>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>{c.fullName || 'Unnamed candidate'}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+              {c.fullName || 'Unnamed candidate'}
+              {clickable && <Icon name="arrow-up-right" size={14} style={{ color: 'var(--fg-muted)' }} />}
+            </div>
             <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
               {c.currentTitle || '—'}{c.location ? ` · ${c.location}` : ''}
             </div>
@@ -81,7 +99,7 @@ export function CandidateCard({ c, rank, onReachOut }: { c: MatchedCandidate; ra
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--status-danger)' }}>Gaps: {c.gaps.join('; ')}</div>
       )}
 
-      <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-default)', display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-default)', display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
         {contact.email && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="mail" size={14} style={{ color: 'var(--fg-muted)' }} />{contact.email}</span>}
         {contact.phone && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="phone" size={14} style={{ color: 'var(--fg-muted)' }} />{contact.phone}</span>}
         {!contact.email && !contact.phone && <span style={{ color: 'var(--fg-subtle)' }}>No contact details parsed</span>}

@@ -38,6 +38,13 @@ async def startup_db_client():
     """Connect to MongoDB and verify the matching engine is runnable."""
     log_matching_readiness()
     await connect_to_mongo()
+    # Seed + cache the cost price book for the Cost Analyser (never blocks startup).
+    try:
+        from app.services import cost_service
+        await cost_service.init_price_book()
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("[Cost] price book init skipped: %s", e)
  
  
 @app.on_event("shutdown")

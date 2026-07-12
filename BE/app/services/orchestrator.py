@@ -75,7 +75,9 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
 
         if run_naukri:
             print("[Orchestrator] Running Naukri scraper")
-            nk_stats = await scrape_and_store_naukri_jobs(run_oid, run_config, jobs_col)
+            from app.services import cost_service
+            async with cost_service.cost_context(cost_service.STAGE_JOB, runId=run_id):
+                nk_stats = await scrape_and_store_naukri_jobs(run_oid, run_config, jobs_col)
             total_scraped += nk_stats.get("total_scraped", 0)
             total_inserted += nk_stats.get("inserted", 0)
             total_duplicates += nk_stats.get("duplicates", 0)
@@ -106,25 +108,28 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
         # Merge user-added industries (treat both lists as the same target pool)
         all_target_industries = list({*(target_industries), *(custom_industries)})
 
-        phase2_stats = await _run_phase2(
-            run_oid=run_oid,
-            target_industries=all_target_industries,
-            jobs_col=jobs_col,
-            companies_col=companies_col,
-            runs_col=runs_col,
-        )
+        from app.services import cost_service
+        async with cost_service.cost_context(cost_service.STAGE_COMPANY, runId=run_id):
+            phase2_stats = await _run_phase2(
+                run_oid=run_oid,
+                target_industries=all_target_industries,
+                jobs_col=jobs_col,
+                companies_col=companies_col,
+                runs_col=runs_col,
+            )
         print(f"[Orchestrator] Phase 2 done — {phase2_stats}")
 
         # ──────────────────────────────────────────────────────────────
         # Phase 3 — Apollo prospect search for targeted companies
         # ──────────────────────────────────────────────────────────────
-        phase3_stats = await _run_phase3(
-            run_oid=run_oid,
-            jobs_col=jobs_col,
-            companies_col=companies_col,
-            prospects_col=prospects_col,
-            runs_col=runs_col,
-        )
+        async with cost_service.cost_context(cost_service.STAGE_JOB, runId=run_id):
+            phase3_stats = await _run_phase3(
+                run_oid=run_oid,
+                jobs_col=jobs_col,
+                companies_col=companies_col,
+                prospects_col=prospects_col,
+                runs_col=runs_col,
+            )
         print(f"[Orchestrator] Phase 3 done — {phase3_stats}")
 
         await runs_col.update_one(

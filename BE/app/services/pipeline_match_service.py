@@ -131,6 +131,8 @@ async def start_pipeline_match(
         "candidateIds": ids,
         "candidatesConsidered": 0,
         "results": [],
+        "logs": [],
+        "progress": {"total": len(ids), "processed": 0, "considered": 0},
         "params": {"returnTop": return_top or settings.MATCH_RETURN_TOP},
         "createdAt": now,
         "updatedAt": now,
@@ -143,6 +145,19 @@ async def start_pipeline_match(
     return match_run_id
 
 
+def _candidate_name(doc: Dict[str, Any]) -> str:
+    """Best display name for a candidate doc (for the live log)."""
+    name = (doc.get("displayName") or "").strip()
+    if name:
+        return name
+    fn = (doc.get("firstName") or "").strip()
+    ln = (doc.get("lastName") or "").strip()
+    if ln in ("—", "-", "–", "--"):
+        ln = ""
+    full = f"{fn} {ln}".strip()
+    return full or "Candidate"
+
+
 async def _run_pipeline_match(
     match_run_id: str,
     pipeline_id: str,
@@ -152,120 +167,177 @@ async def _run_pipeline_match(
     job_title: str,
     return_top: Optional[int],
 ) -> None:
-    """Background worker: enrich-if-needed, score, reason, persist."""
+    """Background worker — STREAMING.
+
+    Instead of batch-enriching then scoring the whole set at the end, each
+    candidate is pushed through a queue one at a time: enrich (skipped when
+    already enriched) → embed → score → reason, then its result + a run of log
+    lines are persisted immediately. The UI polls the run and renders each
+    candidate the moment it lands, ranked live, rather than waiting for the
+    batch to finish.
+    """
     db = await get_database()
     runs_col = db["match_runs"]
+    cands_col = db["candidates"]
     run_oid = ObjectId(match_run_id)
     return_top = return_top or settings.MATCH_RETURN_TOP
 
+    logs: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
+    total = len(candidate_ids)
+    processed = 0
+    considered = 0
+
+    async def flush(*, status: Optional[str] = None, extra: Optional[Dict[str, Any]] = None) -> None:
+        """Persist the current logs/results/progress snapshot (single writer, so a
+        whole-array $set is safe and keeps the UI's ranked view consistent)."""
+        update: Dict[str, Any] = {
+            "logs": logs,
+            "results": results,
+            "candidatesConsidered": considered,
+            "progress": {"total": total, "processed": processed, "considered": considered},
+            "updatedAt": _now(),
+        }
+        if status:
+            update["status"] = status
+        if extra:
+            update.update(extra)
+        await runs_col.update_one({"_id": run_oid}, {"$set": update})
+
+    async def log(message: str, level: str = "info", *, persist: bool = True) -> None:
+        logs.append({"ts": _now().isoformat() + "Z", "message": message, "level": level})
+        logger.info("[PipelineMatch] run %s · %s", match_run_id, message)
+        if persist:
+            await flush()
+
+    def _rank_results() -> None:
+        results.sort(key=lambda r: r["score"], reverse=True)
+        del results[return_top:]  # keep only the top-N as they accumulate
+
+    # Meter every billable call this run makes (embeddings, extraction,
+    # reasoning, Apollo enrichment, Apify) under the "matching" stage.
+    from app.services import cost_service
+    _cost_cm = cost_service.cost_context(
+        cost_service.STAGE_MATCHING, label=job_title,
+        matchRunId=match_run_id, pipelineId=pipeline_id, jobId=job_id)
+    await _cost_cm.__aenter__()
     try:
-        # 1. Auto-enrich any selected candidates that aren't Apify-enriched yet.
         from app.services.candidate_enrichment import bulk_enrich
-        await bulk_enrich(candidate_ids=candidate_ids)
 
-        # 2. Load the (now) enriched candidates.
-        cands_col = db["candidates"]
-        obj_ids = [ObjectId(cid) for cid in candidate_ids]
-        docs: List[Dict[str, Any]] = [
-            d async for d in cands_col.find({"_id": {"$in": obj_ids}})
-        ]
-        enriched = [
-            d for d in docs
-            if d.get("isApifyEnriched") and (d.get("apifyEnrichment") or {}).get("profile")
-        ]
+        await log(f"Starting match · {total} candidate(s) queued")
 
-        # 3. Parse + embed the JD.
+        # Parse + embed the JD once up front.
+        await log("Parsing job description…")
         requirements = await llm.parse_jd(jd_text)
         jd_vector = await embeddings.embed_text(jd_text[:8000])
+        must = requirements.get("mustHaveSkills") or []
+        await flush(extra={"requirements": requirements})
+        await log(
+            "Job description parsed"
+            + (f" · {len(must)} must-have skill(s)" if must else ""),
+        )
 
-        # 4. Embed + score each candidate.
-        scored: List[Dict[str, Any]] = []
-        for doc in enriched:
+        # Walk the queue one candidate at a time.
+        for cid in candidate_ids:
+            try:
+                doc = await cands_col.find_one({"_id": ObjectId(cid)})
+            except Exception:
+                doc = None
+            if not doc:
+                processed += 1
+                await log(f"✗ Candidate {cid} not found — skipped", level="warn")
+                continue
+
+            name = _candidate_name(doc)
+            already = bool(doc.get("isApifyEnriched") and (doc.get("apifyEnrichment") or {}).get("profile"))
+
+            if already:
+                await log(f"✓ {name} — already enriched, skipping enrichment")
+            else:
+                await log(f"Enriching {name} (Apollo → LinkedIn profile)…")
+                try:
+                    await bulk_enrich(candidate_ids=[cid])
+                except Exception as e:  # noqa: BLE001 — one bad enrich mustn't kill the run
+                    await log(f"⚠ {name} — enrichment error: {str(e)[:160]}", level="warn")
+                doc = await cands_col.find_one({"_id": ObjectId(cid)}) or doc
+
             enrichment = doc.get("apifyEnrichment") or {}
             profile = enrichment.get("profile") or {}
+            if not profile:
+                processed += 1
+                await log(f"✗ {name} — no LinkedIn profile found, excluded from scoring", level="warn")
+                continue
+            if not already:
+                await log(f"✓ {name} enriched")
+
+            # Embed → score → reason for this one candidate.
+            await log(f"Scoring {name}…", persist=False)
             contact = enrichment.get("contact") or {}
             embed_text = _embed_text_from_profile(profile, profile.get("summary") or "")
             vector = await embeddings.embed_text(embed_text)
             sim = _cosine(jd_vector, vector)
             score, subscores, gaps = _score_candidate(requirements, profile, sim)
-            scored.append({
-                "doc": doc, "profile": profile, "contact": contact,
-                "score": score, "subscores": subscores, "gaps": gaps,
-            })
-        scored.sort(key=lambda x: x["score"], reverse=True)
+            scored = {"gaps": gaps}
 
-        # 5. LLM reasoning for the top N.
-        reason_n = min(settings.MATCH_REASON_TOP_N, len(scored))
-        top = scored[:reason_n]
-        anonymized = [{
-            "id": str(s["doc"]["_id"]),
-            "currentTitle": s["profile"].get("currentTitle"),
-            "totalYears": s["profile"].get("totalYears"),
-            "skills": s["profile"].get("skills") or [],
-            "missingMustHave": s["gaps"],
-        } for s in top]
-
-        reasons_by_id: Dict[str, Dict[str, Any]] = {}
-        if anonymized:
+            rid: Dict[str, Any] = {}
             try:
-                resp = await llm.reason_candidates(requirements, anonymized)
+                resp = await llm.reason_candidates(requirements, [{
+                    "id": cid,
+                    "currentTitle": profile.get("currentTitle"),
+                    "totalYears": profile.get("totalYears"),
+                    "skills": profile.get("skills") or [],
+                    "missingMustHave": gaps,
+                }])
                 for item in (resp.get("candidates") or []):
-                    if item.get("id"):
-                        reasons_by_id[str(item["id"])] = item
+                    if str(item.get("id")) == cid:
+                        rid = item
+                        break
             except Exception:  # noqa: BLE001 — reasoning is best-effort
-                logger.warning("[PipelineMatch] reasoning failed; using deterministic reasons")
+                logger.warning("[PipelineMatch] reasoning failed for %s; using deterministic", cid)
 
-        # 6. Assemble final results (same shape the /matching UI renders).
-        results: List[Dict[str, Any]] = []
-        for s in top[:return_top]:
-            doc = s["doc"]
-            cid = str(doc["_id"])
-            profile = s["profile"]
-            contact = s["contact"]
-            rid = reasons_by_id.get(cid, {})
-            reasons = rid.get("reasons") or _fallback_reasons(requirements, profile, s)
+            reasons = rid.get("reasons") or _fallback_reasons(requirements, profile, scored)
             results.append({
                 "candidateId": cid,
                 "source": "pipeline",
                 "fullName": profile.get("fullName") or doc.get("displayName"),
                 "currentTitle": profile.get("currentTitle") or doc.get("currentTitle"),
                 "location": profile.get("location") or doc.get("location"),
-                "score": s["score"],
-                "subscores": s["subscores"],
+                "score": score,
+                "subscores": subscores,
                 "reasons": reasons,
-                "gaps": rid.get("gaps") or s["gaps"],
+                "gaps": rid.get("gaps") or gaps,
                 "contact": {
                     "email": contact.get("email"),
                     "phone": contact.get("phone"),
                     "linkedin": contact.get("linkedin") or doc.get("externalLinkedinUrl"),
                 },
             })
+            considered += 1
+            processed += 1
+            _rank_results()
+            await log(f"✓ {name} scored {score}")
 
-        await runs_col.update_one(
-            {"_id": run_oid},
-            {"$set": {
-                "status": "completed",
-                "requirements": requirements,
-                "candidatesConsidered": len(scored),
-                "results": results,
-                "modelVersions": {
-                    "extract": llm.extraction_version(),
-                    "embed": embeddings.embedding_version(),
-                    "reason": llm.reasoning_version(),
-                },
-                "updatedAt": _now(),
-            }},
-        )
+        await flush(status="completed", extra={
+            "modelVersions": {
+                "extract": llm.extraction_version(),
+                "embed": embeddings.embedding_version(),
+                "reason": llm.reasoning_version(),
+            },
+        })
+        await log(f"Done — matched {considered} of {total} candidate(s)")
         logger.info(
             "[PipelineMatch] run %s done — %d considered, top %d",
-            match_run_id, len(scored), len(results),
+            match_run_id, considered, len(results),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("[PipelineMatch] run %s failed: %s", match_run_id, exc, exc_info=True)
         try:
+            logs.append({"ts": _now().isoformat() + "Z", "message": f"Run failed: {str(exc)[:200]}", "level": "error"})
             await runs_col.update_one(
                 {"_id": run_oid},
-                {"$set": {"status": "failed", "error": str(exc)[:300], "updatedAt": _now()}},
+                {"$set": {"status": "failed", "error": str(exc)[:300], "logs": logs, "updatedAt": _now()}},
             )
         except Exception:
             pass
+    finally:
+        await _cost_cm.__aexit__(None, None, None)
