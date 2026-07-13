@@ -163,6 +163,12 @@ def _result_keys(item: Dict[str, Any]) -> List[str]:
     actor). The scraper echoes ``publicIdentifier`` + ``linkedinUrl`` and often
     the original ``id``/``profileId``; index by all of them so either kind of
     input matches.
+
+    The HarvestAPI actor also echoes the original input URL in ``query`` and
+    stores the member URN in ``objectUrn`` / ``profileUrn`` / ``memberUrn``.
+    We must index by those too, otherwise URN-based lookups from the search
+    actor silently fail (the actor scrapes the profile but the result can't be
+    matched back to the requested URN identifier).
     """
     keys: List[str] = []
 
@@ -178,6 +184,22 @@ def _result_keys(item: Dict[str, Any]) -> List[str]:
         if raw and _URN_RE.match(str(raw)):
             _add(str(raw))
     _add(normalize_identifier(item.get("linkedinUrl") or ""))
+
+    # The HarvestAPI actor echoes the original query URL (e.g.
+    # "https://www.linkedin.com/in/ACwAAGAJg5YB…") — extract its identifier
+    # so URN-based lookups match the result back to the requested candidate.
+    _add(normalize_identifier(item.get("query") or ""))
+
+    # URN fields returned by the actor (e.g. "urn:li:fsd_profile:ACwAA…" or
+    # "urn:li:member:12345"). Extract the AC… token if present.
+    for urn_field in ("objectUrn", "profileUrn", "memberUrn"):
+        urn_val = item.get(urn_field)
+        if urn_val:
+            # Strip the "urn:li:…:" prefix to get the bare identifier.
+            bare = str(urn_val).rsplit(":", 1)[-1]
+            if _URN_RE.match(bare):
+                _add(bare)
+
     return keys
 
 
@@ -307,6 +329,16 @@ class ApifyProfileService:
             raise ApifyRunFailed("Apify run returned no defaultDatasetId.")
 
         n_found_before = len(results)
+        # The HarvestAPI actor processes queries SEQUENTIALLY — item#1
+        # corresponds to chunk[0], item#2 to chunk[1], etc. We MUST use this
+        # positional correlation because:
+        #   • The search actor returns MEMBER URNs (ACw…)
+        #   • The profile scraper returns PROFILE URNs (ACo…) in ``id``
+        #   • These are DIFFERENT identifiers for the same person
+        #   • The actor does NOT echo back the original query URL
+        # So field-based matching (publicIdentifier, linkedinUrl, id) alone
+        # will never bridge the member-URN → profile-URN gap.
+        chunk_idx = 0
         for item in client.dataset(dataset_id).iterate_items():
             if not isinstance(item, dict):
                 continue
@@ -315,9 +347,17 @@ class ApifyProfileService:
             if item.get("error") and not item.get("publicIdentifier"):
                 if _is_quota_error(item.get("error")):
                     raise ApifyQuotaExceeded(f"Apify plan limit: {item.get('error')}")
+                chunk_idx += 1  # error row still occupies a query position
                 continue
+            # Index by every field-based key the item exposes (vanity slug,
+            # profile URN, linkedinUrl, etc.) — works for Apollo/slug lookups.
             for key in _result_keys(item):
                 results.setdefault(key, item)
+            # Positional correlation: map the ORIGINAL input identifier
+            # (the member URN the search actor gave us) to this result.
+            if chunk_idx < len(chunk):
+                results.setdefault(chunk[chunk_idx], item)
+            chunk_idx += 1
 
         # Meter only the profiles this chunk actually added.
         added = len(results) - n_found_before
