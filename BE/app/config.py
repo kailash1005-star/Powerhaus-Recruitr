@@ -76,8 +76,31 @@ class Settings(BaseSettings):
         default="Profile details no email ($4 per 1k)",
         description="Apify actor profileScraperMode enum value",
     )
+    # LinkedIn people-SEARCH actor (discovery). Finds candidates by filters
+    # (title/location/industry/seniority/…) and returns short profiles; we then
+    # deep-enrich each via the profile scraper above. Short mode = $0.1/page.
+    APIFY_SEARCH_ACTOR: str = Field(
+        default="harvestapi/linkedin-profile-search",
+        description="Apify actor id for the LinkedIn profile search",
+    )
+    APIFY_SEARCH_MODE: str = Field(
+        default="Short",
+        description='Apify search actor profileScraperMode — one of "Short", "Full", "Full + email search"',
+    )
+    # LinkedIn COMPANY details actor (Phase 2 industry/domain resolution). Replaces
+    # the fragile self-hosted linkedin_api company lookup with a managed
+    # account+proxy "no cookies" scraper at ~$0.004/company.
+    APIFY_COMPANY_ACTOR: str = Field(
+        default="harvestapi/linkedin-company",
+        description="Apify actor id for the LinkedIn company details scraper",
+    )
     # Hard cap on profiles per enrichment call — a runaway-cost guard.
     APIFY_ENRICH_MAX: int = Field(default=25, description="Max profiles enriched per call")
+    # Profiles per actor RUN. The scraper (and free plans especially) cap items
+    # per run — requesting more than the cap makes the actor refuse the WHOLE run
+    # and return zero profiles. We chunk a batch into runs of this size so a large
+    # request still yields partial data. Free Apify plan = 10 items/run.
+    APIFY_ENRICH_BATCH: int = Field(default=10, description="Profiles per Apify actor run (chunk size)")
     # Don't re-enrich (and re-pay for) the same profile within this many days.
     PROFILE_CACHE_TTL_DAYS: int = Field(default=30, description="Profile enrichment cache TTL (days)")
 

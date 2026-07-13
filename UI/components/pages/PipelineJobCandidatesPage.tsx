@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { CandidateSlideOut } from '../CandidateSlideOut';
+import { CandidateDiscoveryForm } from '../CandidateDiscoveryForm';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate, enrichCandidate,
   fetchCandidate, bulkEnrichJobCandidates, runJobMatch,
@@ -101,6 +102,11 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const [slideOpen, setSlideOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
+  // Discovery questionnaire (Apify LinkedIn search)
+  const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [discoverMsg, setDiscoverMsg] = useState<string | null>(null);
+  const autoOpenedRef = useRef(false);
+
   const jobEntry = useMemo(
     () => pipeline?.jobs.find((j) => j.jobId === jobId),
     [pipeline, jobId],
@@ -128,6 +134,55 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     setLoading(true);
     Promise.all([loadPipeline(), loadCandidates()]).finally(() => setLoading(false));
   }, [loadPipeline, loadCandidates]);
+
+  // A freshly-added job awaits the search questionnaire — open it once.
+  useEffect(() => {
+    if (!loading && jobEntry?.searchStatus === 'awaiting_input' && total === 0 && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      setDiscoverOpen(true);
+    }
+  }, [loading, jobEntry?.searchStatus, total]);
+
+  // Poll the job through search → auto-enrich after the questionnaire is run.
+  const pollDiscover = useCallback(async () => {
+    for (let i = 0; i < 200; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      let p: Pipeline | null = null;
+      try { p = await fetchPipeline(pipelineId); } catch { continue; }
+      setPipeline(p);
+      const je = p.jobs.find((j) => j.jobId === jobId);
+      const ss = je?.searchStatus;
+      const es = je?.enrichStatus;
+      const found = je?.candidateCount ?? 0;
+      if (ss === 'running') { setDiscoverMsg('Searching LinkedIn for candidates…'); continue; }
+      if (ss === 'failed') { setDiscoverMsg(`Search failed: ${je?.searchError || 'unknown error'}`); return; }
+      if (ss === 'completed') {
+        await loadCandidates();
+        if (es === 'queued' || es === 'running') { setDiscoverMsg(`Found ${found} candidate(s) · enriching profiles…`); continue; }
+        if (es === 'completed') {
+          const c = je?.enrichCounts || {};
+          const enr = c.enriched ?? 0;
+          const nf = c.not_found ?? 0;
+          setDiscoverMsg(
+            enr > 0
+              ? `Done — ${found} candidate(s); enriched ${enr}${nf ? `, ${nf} no profile` : ''} ✓`
+              : `Found ${found} candidate(s), but none could be enriched${nf ? ` (${nf} returned no profile)` : ''}.`,
+          );
+          await loadCandidates();
+          return;
+        }
+        if (es === 'failed') { setDiscoverMsg(`Found ${found} candidate(s); enrichment failed: ${je?.enrichError || ''}`); return; }
+        setDiscoverMsg(`Found ${found} candidate(s)…`);
+      }
+    }
+    setDiscoverMsg('This is taking longer than expected — refresh to check.');
+  }, [pipelineId, jobId, loadCandidates]);
+
+  const onDiscoverSubmitted = () => {
+    setDiscoverOpen(false);
+    setDiscoverMsg('Starting LinkedIn search…');
+    pollDiscover();
+  };
 
   const handleSort = (field: string) => {
     // Only match/added are server-sortable; others are no-ops.
@@ -363,7 +418,31 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg-primary)' }}>
           {jobEntry?.jobTitle || 'Candidates'}
         </span>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={() => setDiscoverOpen(true)}
+          title="Search LinkedIn for candidates with custom filters, then auto-enrich"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7, height: 34, padding: '0 14px',
+            borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+            border: 'none', background: 'var(--primary)', color: '#FFF',
+          }}
+        >
+          <Icon name="search" size={14} />
+          {total > 0 ? 'New search' : 'Discover candidates'}
+        </button>
       </div>
+
+      {discoverMsg && (
+        <div style={{
+          padding: '8px 24px', fontSize: 12.5, color: 'var(--fg-secondary)',
+          background: '#F5F3FF', borderBottom: '1px solid var(--border-default)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <Icon name="search" size={13} style={{ color: '#4F46E5' }} />
+          {discoverMsg}
+        </div>
+      )}
 
       {/* Filter strip */}
       <div style={{
@@ -749,6 +828,18 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         onEnrich={onEnrich}
         onToggleAccept={toggleAccept}
       />
+
+      {discoverOpen && (
+        <CandidateDiscoveryForm
+          pipelineId={pipelineId}
+          jobId={jobId}
+          jobTitle={jobEntry?.jobTitle || ''}
+          jobLocation={jobEntry?.jobLocation}
+          companyName={pipeline?.companyName || ''}
+          onClose={() => setDiscoverOpen(false)}
+          onSubmitted={onDiscoverSubmitted}
+        />
+      )}
 
       {actionError && (
         <div style={{

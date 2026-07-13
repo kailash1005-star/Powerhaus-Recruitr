@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from bson import ObjectId
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from app.database import get_collection
 from app.services.apollo_service import ApolloService
@@ -221,7 +222,9 @@ async def add_job_to_pipeline(pipeline_id: str, job_id: str) -> Dict[str, Any]:
         "jobTitle": job.get("title") or "",
         "jobLocation": job.get("location") or "",
         "addedAt": now,
-        "searchStatus": "queued",
+        # The user now drives discovery via the Apify search questionnaire, so we
+        # don't auto-run a search on add — the job waits for the user's filters.
+        "searchStatus": "awaiting_input",
         "lastSearchedAt": None,
         "candidateCount": 0,
         "acceptedCount": 0,
@@ -237,10 +240,7 @@ async def add_job_to_pipeline(pipeline_id: str, job_id: str) -> Dict[str, Any]:
     if result.modified_count == 0:
         raise ValueError("job_already_in_pipeline")
 
-    # Spawn the background search. We use asyncio.create_task so multiple jobs
-    # across pipelines run in true parallel — there's no global lock.
-    asyncio.create_task(_search_candidates_for_job(pipeline_id, job_id, is_rerun=False))
-    return {"queued": True}
+    return {"queued": False, "awaitingInput": True}
 
 
 async def rerun_job_search(pipeline_id: str, job_id: str) -> Dict[str, Any]:
@@ -563,5 +563,161 @@ async def _run_job_enrich(
         logger.error("[Phase4] enrich %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)
         try:
             await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(exc)[:300])
+        except Exception:
+            pass
+
+
+# ── Apify discovery: search questionnaire → candidates → auto-enrich ────────
+
+
+def _apify_score(profile: Dict[str, Any], search_query: str) -> Tuple[int, List[str]]:
+    """Cheap title-overlap score for a search profile (no extra API calls)."""
+    title = (profile.get("currentTitle") or "").lower()
+    target = (search_query or "").lower()
+    target_tokens = {t for t in re.split(r"\W+", target) if len(t) > 2}
+    title_tokens = {t for t in re.split(r"\W+", title) if len(t) > 2}
+    if not target_tokens:
+        return 50, ["apify_search"]
+    ratio = len(target_tokens & title_tokens) / len(target_tokens)
+    if ratio >= 0.8:
+        return 90, ["title_exact_match"]
+    if ratio >= 0.5:
+        return 70, ["title_partial_match"]
+    if ratio > 0:
+        return 45, ["title_token_overlap"]
+    return 30, ["apify_search"]
+
+
+def _build_apify_candidate_doc(
+    profile: Dict[str, Any], *, pipeline_id: str, search_query: str, now: datetime,
+) -> Dict[str, Any]:
+    """$setOnInsert fields for a candidate sourced from the Apify search actor.
+    ``apolloId`` holds the LinkedIn profile id so the (pipelineId, apolloId)
+    unique index still dedups; ``source`` marks it Apify-sourced."""
+    score, reasons = _apify_score(profile, search_query)
+    return {
+        "pipelineId": pipeline_id,
+        "apolloId": profile["profileId"],
+        "source": "apify_search",
+        "externalLinkedinUrl": profile.get("linkedinUrl") or "",
+        "firstName": profile.get("firstName") or "Unknown",
+        "lastName": profile.get("lastName") or "",
+        "displayName": profile.get("displayName") or f"{profile.get('firstName','')} {profile.get('lastName','')}".strip(),
+        "headline": "",
+        "currentTitle": profile.get("currentTitle") or "",
+        "currentCompany": profile.get("currentCompany") or "",
+        "currentCompanyDomain": "",
+        "location": profile.get("location") or "",
+        "photoUrl": profile.get("photoUrl") or "",
+        "matchScore": score,
+        "matchReasons": reasons,
+        "isAccepted": True,
+        "rejectionReason": None,
+        "decidedAt": None,
+        "isEnriched": False,
+        "enrichedAt": None,
+        "enrichedData": None,
+        "isApifyEnriched": False,
+        "runHistory": [{"runAt": now, "jobId": None, "isRerun": False, "appliedIndustryFallback": False}],
+        "createdAt": now,
+    }
+
+
+async def _claim_discover(pipeline_id: str, job_id: str) -> bool:
+    """Atomic → searchStatus 'running' from any non-running state. False if a
+    discovery is already in flight for this job."""
+    pipelines_col = await get_collection("candidatePipelines")
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id),
+         "jobs": {"$elemMatch": {"jobId": job_id, "searchStatus": {"$ne": "running"}}}},
+        {"$set": {"jobs.$.searchStatus": "running", "jobs.$.searchError": None,
+                  "jobs.$.lastSearchedAt": datetime.utcnow(), "updatedAt": datetime.utcnow()}},
+    )
+    return res.modified_count > 0
+
+
+async def enqueue_job_discover(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int = 25,
+) -> Dict[str, Any]:
+    """Kick off Apify search discovery for a job (background). Poll the job's
+    ``searchStatus`` then ``enrichStatus``."""
+    pipelines_col = await get_collection("candidatePipelines")
+    job_exists = await pipelines_col.find_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id}, {"_id": 1})
+    if not job_exists:
+        raise ValueError("job_not_found")
+    asyncio.create_task(_discover_candidates_for_job(pipeline_id, job_id, filters, max_items))
+    return {"queued": True}
+
+
+async def _discover_candidates_for_job(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+) -> None:
+    """Background: run the Apify search actor with the user's filters, store the
+    results as candidates, then auto-enrich every one via the profile scraper."""
+    from app.services.apify_search_service import get_apify_search_service, parse_short_profile
+    from app.services import cost_service
+
+    if not await _claim_discover(pipeline_id, job_id):
+        logger.info("[Discover] %s/%s already running — skip", pipeline_id, job_id)
+        return
+
+    try:
+        search_query = (filters.get("searchQuery") or "").strip()
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+        ):
+            service = get_apify_search_service()
+            items = await asyncio.to_thread(service.search, filters, max_items=max_items)
+
+        profiles = [p for p in (parse_short_profile(i) for i in items) if p and p.get("profileId")]
+
+        candidates_col = await get_collection("candidates")
+        now = datetime.utcnow()
+        cand_ids: List[str] = []
+        for p in profiles:
+            doc = _build_apify_candidate_doc(p, pipeline_id=pipeline_id, search_query=search_query, now=now)
+            try:
+                res = await candidates_col.update_one(
+                    {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]},
+                    {"$setOnInsert": doc,
+                     "$addToSet": {"sourceJobIds": job_id},
+                     "$set": {"updatedAt": now}},
+                    upsert=True,
+                )
+                if res.upserted_id:
+                    cand_ids.append(str(res.upserted_id))
+                else:
+                    ex = await candidates_col.find_one(
+                        {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]}, {"_id": 1})
+                    if ex:
+                        cand_ids.append(str(ex["_id"]))
+            except DuplicateKeyError:
+                continue
+
+        total = await candidates_col.count_documents(
+            {"pipelineId": pipeline_id, "sourceJobIds": job_id})
+        await _finish(pipeline_id, job_id, status="completed",
+                      candidateCount=total, lastSearchedAt=now, searchError=None)
+        logger.info("[Discover] %s/%s stored %d candidate(s)", pipeline_id, job_id, len(cand_ids))
+
+        # Auto-enrich every discovered candidate (Apify profile scraper only).
+        if cand_ids:
+            await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
+            from app.services.candidate_enrichment import enrich_candidates
+            try:
+                async with cost_service.cost_context(
+                    cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+                ):
+                    summary = await enrich_candidates(candidate_ids=cand_ids)
+                await _set_enrich(pipeline_id, job_id, "completed",
+                                  enrichCounts=summary, enrichError=None)
+                logger.info("[Discover] %s/%s enriched: %s", pipeline_id, job_id, summary)
+            except Exception as e:  # noqa: BLE001 — enrichment failure mustn't fail discovery
+                await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(e)[:300])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[Discover] %s/%s failed: %s", pipeline_id, job_id, exc, exc_info=True)
+        try:
+            await _finish(pipeline_id, job_id, status="failed", searchError=str(exc)[:300])
         except Exception:
             pass

@@ -21,7 +21,7 @@ from app.services.jobspy_service import scrape_and_store_jobs
 from app.services.naukri_service import scrape_and_store_naukri_jobs
 from app.services.openai_company_service import OpenAICompanyService
 from app.services.agent.prospect_sourcing_agent import source_prospects_for_company
-from app.services.linkedin_service import LinkedInCompanyService, get_linkedin_service
+from app.services.apify_company_service import ApifyCompanyService, get_apify_company_service
 
 logger = logging.getLogger(__name__)
 
@@ -191,16 +191,13 @@ async def _run_phase2(
         logger.error("[Phase2] Failed to init OpenAI client: %s", e)
         return stats
 
-    # Authenticate LinkedIn once (reuses cached session). LinkedIn is the source of
-    # truth for the company domain — Apollo's people search (Phase 3) filters by exact
-    # organization domain, so a GPT-guessed domain matched only ~10% of the time while
-    # the real LinkedIn domain matches ~90%. If LinkedIn is unavailable (captcha / no
-    # creds) we degrade gracefully to the OpenAI-guessed domain.
-    try:
-        linkedin_svc = get_linkedin_service()
-    except Exception as e:
-        logger.error("[Phase2] LinkedIn session unavailable (%s) — falling back to OpenAI domains", e)
-        linkedin_svc = None
+    # LinkedIn is the source of truth for the company domain — Apollo's people search
+    # (Phase 3) filters by exact organization domain, so a GPT-guessed domain matched
+    # only ~10% of the time while the real LinkedIn domain matches ~90%. Company data
+    # comes from the managed Apify actor (harvestapi/linkedin-company) instead of the
+    # captcha/ban-prone self-hosted linkedin_api login. If it's unavailable we degrade
+    # gracefully (companies are skipped, their jobs left untouched).
+    company_svc = get_apify_company_service()
 
     # Group accepted jobs by their LinkedIn companyUrl
     cursor = jobs_col.find(
@@ -219,19 +216,23 @@ async def _run_phase2(
     stats["uniqueCompanies"] = len(url_to_job_ids)
     print(f"[Phase2] {len(url_to_job_ids)} unique company URLs to resolve")
 
+    # Resolve every unique company in ONE (chunked) actor run rather than one run
+    # per company — far cheaper and avoids per-run overhead/caps.
+    company_info: Dict[str, Any] = {}
+    try:
+        company_info = await asyncio.to_thread(
+            company_svc.fetch_companies_info, list(url_to_job_ids.keys())
+        )
+    except Exception as e:
+        logger.error("[Phase2] Apify company lookup failed (%s) — skipping company resolution", e)
+
     for url, job_ids in url_to_job_ids.items():
-        slug = LinkedInCompanyService.get_slug(url)
+        slug = ApifyCompanyService.get_slug(url)
 
         # ── Authoritative company data from LinkedIn (industry, domain, size, etc.) ──
         # We rely entirely on LinkedIn's reported industry — no LLM company "recall"
         # from the URL, and no hardcoded industry keyword lists.
-        li = None
-        if linkedin_svc is not None:
-            try:
-                li = linkedin_svc.fetch_company_info(url)
-            except Exception as e:
-                logger.warning("[Phase2] LinkedIn lookup failed for %s: %s", url, e)
-                li = None
+        li = company_info.get(url)
 
         if not li:
             # Without LinkedIn data we can't determine the industry, so we can't judge

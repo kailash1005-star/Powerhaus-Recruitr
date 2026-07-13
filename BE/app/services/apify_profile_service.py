@@ -96,49 +96,88 @@ class ApifyRunFailed(ApifyEnrichmentError):
     """The actor run finished in a non-SUCCEEDED state (transient — retry once)."""
 
 
+class ApifyQuotaExceeded(ApifyEnrichmentError):
+    """The Apify account plan blocked the run/items (per-run item cap, total-run
+    cap, or credit limit). NOT transient — needs a plan upgrade, so it is
+    surfaced to the UI verbatim instead of being treated as 'profile not found'.
+    """
+
+
+# Substrings that mark a dataset "error" row as an account/plan block (as opposed
+# to a per-profile private/not-found error). Matched case-insensitively.
+_QUOTA_ERROR_MARKERS = (
+    "limited to", "upgrade to a paid plan", "item limit", "run limit",
+    "monthly usage", "usage limit", "not enough", "exceeded",
+)
+
+
+def _is_quota_error(msg: Any) -> bool:
+    m = str(msg or "").lower()
+    return any(marker in m for marker in _QUOTA_ERROR_MARKERS)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Identifier normalization (the key we index actor results by)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _SLUG_RE = re.compile(r"linkedin\.com/in/([^/?#]+)", re.I)
+# LinkedIn member-URN identifiers (from the profile-search actor) look like
+# ``ACoAA…`` / ``ACwAA…`` — a long base64url token. Unlike public vanity slugs
+# (which are case-insensitive), these are CASE-SENSITIVE, so we must not
+# lowercase them or the profile scraper won't resolve them.
+_URN_RE = re.compile(r"^AC[A-Za-z0-9_-]{16,}$")
 
 
 def normalize_identifier(url_or_slug: str) -> Optional[str]:
-    """Reduce a LinkedIn URL / bare slug to a lowercase public-identifier key.
+    """Reduce a LinkedIn URL / bare slug to a public-identifier key.
 
       https://www.linkedin.com/in/Sudharsan2618/            → 'sudharsan2618'
       http://linkedin.com/in/foo?x=1                         → 'foo'
       'Sudharsan2618'                                        → 'sudharsan2618'
       .../in/andreas-steverm%c3%bcer-474  → 'andreas-stevermüer-474'  (percent-decoded)
+      .../in/ACwAADXD9RAB…               → 'ACwAADXD9RAB…'  (URN — case preserved)
 
-    Non-ASCII slugs (umlauts, accents) arrive percent-encoded from Apollo; the
-    actor resolves the decoded form, so we ``unquote`` before returning.
+    Vanity slugs are lowercased (case-insensitive); member URNs keep their case.
     """
     if not url_or_slug:
         return None
     s = url_or_slug.strip()
+    raw: Optional[str]
     if "/" not in s and "." not in s:
-        return unquote(s).lower().rstrip("/") or None
-    m = _SLUG_RE.search(s)
-    if m:
-        return unquote(m.group(1)).lower().rstrip("/") or None
-    logger.warning("[Apify] could not normalize identifier: %s", url_or_slug)
-    return None
+        raw = unquote(s).rstrip("/") or None
+    else:
+        m = _SLUG_RE.search(s)
+        if not m:
+            logger.warning("[Apify] could not normalize identifier: %s", url_or_slug)
+            return None
+        raw = unquote(m.group(1)).rstrip("/") or None
+    if not raw:
+        return None
+    return raw if _URN_RE.match(raw) else raw.lower()
 
 
 def _result_keys(item: Dict[str, Any]) -> List[str]:
     """All identifier keys an actor item might be looked up by.
 
-    The actor echoes the profile under ``publicIdentifier`` and ``linkedinUrl``;
-    index by both (normalized) so callers can match on whatever they passed.
+    Callers may key by a vanity slug (Apollo) OR a member URN (profile-search
+    actor). The scraper echoes ``publicIdentifier`` + ``linkedinUrl`` and often
+    the original ``id``/``profileId``; index by all of them so either kind of
+    input matches.
     """
     keys: List[str] = []
+
+    def _add(v: Any) -> None:
+        if v and str(v) not in keys:
+            keys.append(str(v))
+
     pid = item.get("publicIdentifier")
     if pid:
-        keys.append(str(pid).lower())
-    for norm in (normalize_identifier(item.get("linkedinUrl") or ""),):
-        if norm and norm not in keys:
-            keys.append(norm)
+        _add(str(pid).lower())
+    # Raw URN-style ids (case preserved) the caller may have keyed on.
+    for raw in (item.get("id"), item.get("profileId"), item.get("profileIdInSearch")):
+        if raw and _URN_RE.match(str(raw)):
+            _add(str(raw))
+    _add(normalize_identifier(item.get("linkedinUrl") or ""))
     return keys
 
 
@@ -198,18 +237,58 @@ class ApifyProfileService:
                 f"APIFY_ENRICH_MAX={settings.APIFY_ENRICH_MAX}. Split the batch."
             )
 
+        client = self._client()
+
+        # Chunk into runs of APIFY_ENRICH_BATCH: the actor refuses a run whose
+        # item count exceeds the plan's per-run cap and returns ZERO profiles, so
+        # a single big run would yield nothing. Smaller runs let partial data
+        # through. A plan/quota block raises ApifyQuotaExceeded so the caller can
+        # tell the user "upgrade" instead of silently marking every profile
+        # not-found — but only if NO profile came back at all; partial success is
+        # returned as-is.
+        batch = max(1, int(settings.APIFY_ENRICH_BATCH or 10))
+        results: Dict[str, Dict[str, Any]] = {}
+        quota_msg: Optional[str] = None
+        for start in range(0, len(wanted), batch):
+            chunk = wanted[start:start + batch]
+            try:
+                self._run_chunk(client, chunk, results)
+            except ApifyQuotaExceeded as exc:
+                quota_msg = str(exc)
+                logger.warning("[Apify] plan/quota block at chunk %d: %s", start // batch, exc)
+                break  # further runs would hit the same cap
+
+        found = {k for k in wanted if k in results}
+        if not found and quota_msg:
+            # Nothing at all came back and the reason is a plan block → surface it.
+            raise ApifyQuotaExceeded(quota_msg)
+
+        missing = [k for k in wanted if k not in found]
+        if missing:
+            logger.warning(
+                "[Apify] %d/%d profiles returned no data (private/not-found%s): %s",
+                len(missing), len(wanted),
+                "; plan cap hit" if quota_msg else "", ", ".join(missing[:10]),
+            )
+        logger.info("[Apify] enriched %d/%d profiles", len(found), len(wanted))
+        return results
+
+    def _run_chunk(
+        self, client: Any, chunk: List[str], results: Dict[str, Dict[str, Any]]
+    ) -> None:
+        """Run the scraper for one chunk of ≤batch identifiers, folding the
+        returned profiles into ``results`` (keyed by every id they can match).
+        Raises ApifyQuotaExceeded if the run comes back as an account/plan block.
+        """
         run_input = {
             "profileScraperMode": settings.APIFY_PROFILE_MODE,
             # Pass full URLs; the actor accepts URLs or bare identifiers here.
-            "queries": [f"https://www.linkedin.com/in/{ident}" for ident in wanted],
+            "queries": [f"https://www.linkedin.com/in/{ident}" for ident in chunk],
         }
-
         logger.info(
             "[Apify] enriching %d profile(s) via %s (est. $%.3f)",
-            len(wanted), self._actor, len(wanted) * _COST_PER_PROFILE,
+            len(chunk), self._actor, len(chunk) * _COST_PER_PROFILE,
         )
-
-        client = self._client()
         try:
             run = client.actor(self._actor).call(run_input=run_input)
         except Exception as exc:  # network / actor-call failure
@@ -227,42 +306,33 @@ class ApifyProfileService:
         if not dataset_id:
             raise ApifyRunFailed("Apify run returned no defaultDatasetId.")
 
-        results: Dict[str, Dict[str, Any]] = {}
+        n_found_before = len(results)
         for item in client.dataset(dataset_id).iterate_items():
             if not isinstance(item, dict):
                 continue
-            # Skip actor "error" items (e.g. a private/blocked profile row).
+            # A bare error row with no profile identity is either an account/plan
+            # block (fatal → raise) or a per-profile private/not-found row (skip).
             if item.get("error") and not item.get("publicIdentifier"):
+                if _is_quota_error(item.get("error")):
+                    raise ApifyQuotaExceeded(f"Apify plan limit: {item.get('error')}")
                 continue
             for key in _result_keys(item):
                 results.setdefault(key, item)
 
-        found = {k for k in wanted if k in results}
-        missing = [k for k in wanted if k not in found]
-
-        # Record the metered cost. Prefer Apify's own reported spend
-        # (usageTotalUsd) as the actual; fall back to per-profile price book.
+        # Meter only the profiles this chunk actually added.
+        added = len(results) - n_found_before
         try:
             from app.services import cost_service
-            n_found = len(found)
-            if n_found:
+            if added > 0:
                 vendor_usd = run_info.get("usageTotalUsd") or run_info.get("usage_total_usd")
                 cost_service.record_event(
                     service="apify", operation="profile_scrape",
-                    unit="profile", quantity=n_found,
+                    unit="profile", quantity=added,
                     cost_override=(float(vendor_usd) if vendor_usd else None),
                     vendor_ref=str(run_info.get("id") or dataset_id),
                 )
         except Exception:  # noqa: BLE001
             pass
-
-        if missing:
-            logger.warning(
-                "[Apify] %d/%d profiles returned no data (private/not-found): %s",
-                len(missing), len(wanted), ", ".join(missing[:10]),
-            )
-        logger.info("[Apify] enriched %d/%d profiles", len(found), len(wanted))
-        return results
 
 
 # Process-wide default instance (cheap; holds only config).

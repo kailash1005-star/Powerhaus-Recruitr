@@ -386,7 +386,7 @@ export function fetchCompany(id: string): Promise<CompanyDoc> {
 
 // ── Candidate Pipelines ───────────────────────────────────────────────────────
 
-export type PipelineJobSearchStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type PipelineJobSearchStatus = 'awaiting_input' | 'queued' | 'running' | 'completed' | 'failed';
 
 export type PipelineJobEnrichStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -675,6 +675,50 @@ export function bulkEnrichJobCandidates(
   pipelineId: string, jobId: string, candidateIds: string[],
 ): Promise<{ success: boolean; queued: boolean }> {
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds });
+}
+
+/** Filters for the Apify LinkedIn-search discovery questionnaire. */
+export interface DiscoverFilters {
+  searchQuery?: string;
+  maxItems?: number;
+  locations?: string[];
+  currentJobTitles?: string[];
+  pastJobTitles?: string[];
+  currentCompanies?: string[];
+  pastCompanies?: string[];
+  schools?: string[];
+  industryIds?: string[];
+  firstNames?: string[];
+  lastNames?: string[];
+  companyHqLocations?: string[];
+  excludeLocations?: string[];
+  excludeCurrentCompanies?: string[];
+  excludePastCompanies?: string[];
+  excludeSchools?: string[];
+  excludeCurrentJobTitles?: string[];
+  excludePastJobTitles?: string[];
+  excludeIndustryIds?: string[];
+  excludeSeniorityLevel?: string;
+  excludeFunction?: string;
+  yearsOfExperience?: string;
+  yearsAtCurrentCompany?: string;
+  seniorityLevel?: string;
+  function?: string;
+  companyHeadcount?: string;
+  profileLanguages?: string[];
+  recentlyChangedJobs?: boolean;
+  recentlyPostedOnLinkedin?: boolean;
+}
+
+/**
+ * Run the Apify LinkedIn-search actor for a job with the questionnaire filters,
+ * store results as candidates, then auto-enrich each (background). Poll the
+ * pipeline's job.searchStatus → then job.enrichStatus.
+ */
+export function discoverJobCandidates(
+  pipelineId: string, jobId: string, filters: DiscoverFilters,
+): Promise<{ success: boolean; queued: boolean }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/discover`, filters);
 }
 
 /**

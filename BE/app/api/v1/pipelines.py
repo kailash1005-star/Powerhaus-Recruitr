@@ -30,6 +30,7 @@ from pymongo.errors import DuplicateKeyError
 from app.database import get_database
 from app.services.candidate_pipeline import (
     add_job_to_pipeline,
+    enqueue_job_discover,
     enqueue_job_enrich,
     rerun_job_search,
 )
@@ -78,6 +79,38 @@ class JobMatchSchema(BaseModel):
     """Selected candidate ids to match against the job's JD."""
     candidateIds: Optional[List[str]] = None
     returnTop: Optional[int] = None
+
+
+class DiscoverSchema(BaseModel):
+    """Apify LinkedIn-search filters from the discovery questionnaire.
+
+    All fields optional; list filters are arrays, enum filters single strings.
+    Unknown extra keys are passed through to the actor mapping.
+    """
+    model_config = {"extra": "allow"}
+    searchQuery: Optional[str] = None
+    maxItems: Optional[int] = 25
+    locations: Optional[List[str]] = None
+    currentJobTitles: Optional[List[str]] = None
+    pastJobTitles: Optional[List[str]] = None
+    currentCompanies: Optional[List[str]] = None
+    pastCompanies: Optional[List[str]] = None
+    schools: Optional[List[str]] = None
+    industryIds: Optional[List[str]] = None
+    firstNames: Optional[List[str]] = None
+    lastNames: Optional[List[str]] = None
+    companyHqLocations: Optional[List[str]] = None
+    excludeLocations: Optional[List[str]] = None
+    excludeCurrentCompanies: Optional[List[str]] = None
+    excludeCurrentJobTitles: Optional[List[str]] = None
+    yearsOfExperience: Optional[str] = None
+    yearsAtCurrentCompany: Optional[str] = None
+    seniorityLevel: Optional[str] = None
+    function: Optional[str] = None
+    companyHeadcount: Optional[str] = None
+    profileLanguage: Optional[str] = None
+    recentlyChangedJobs: Optional[bool] = None
+    recentlyPostedOnLinkedin: Optional[bool] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -359,6 +392,25 @@ async def rerun_job(pipeline_id: str, job_id: str):
         raise HTTPException(409 if code == "busy" else 400, code)
     except Exception as e:
         raise HTTPException(500, f"Error rerunning search: {e}")
+
+
+# ── POST /{id}/jobs/{jobId}/discover (Apify search questionnaire → enrich) ────
+
+
+@router.post("/{pipeline_id}/jobs/{job_id}/discover")
+async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverSchema):
+    """Run the Apify LinkedIn-search actor with the questionnaire filters, store
+    the results as candidates, then auto-enrich each via the profile scraper —
+    all in the background. Poll the job's ``searchStatus`` then ``enrichStatus``."""
+    try:
+        filters = body.model_dump(exclude_none=True)
+        max_items = int(filters.pop("maxItems", 25) or 25)
+        result = await enqueue_job_discover(pipeline_id, job_id, filters, max_items)
+        return {"success": True, **result}
+    except ValueError as ve:
+        raise HTTPException(404, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Error starting discovery: {e}")
 
 
 # ── POST /{id}/jobs/{jobId}/enrich (background Apollo→Apify bulk enrich) ──────

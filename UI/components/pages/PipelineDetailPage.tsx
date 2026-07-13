@@ -19,6 +19,7 @@ function fmtDate(d: string | null | undefined) {
 
 function SearchStatusBadge({ status }: { status: PipelineJobSearchStatus }) {
   const map: Record<PipelineJobSearchStatus, { bg: string; label: string; pulse?: boolean }> = {
+    awaiting_input: { bg: 'var(--fg-muted)',      label: 'Needs search' },
     queued:    { bg: 'var(--status-warning)', label: 'Queued',     pulse: true },
     running:   { bg: 'var(--status-success)', label: 'Searching',  pulse: true },
     completed: { bg: 'var(--status-info)',    label: 'Completed' },
@@ -163,8 +164,11 @@ export function PipelineDetailPage({ pipelineId }: Props) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {pipeline.jobs.map((j) => {
                   const isBusy = busyJob === j.jobId;
+                  const isAwaiting = j.searchStatus === 'awaiting_input';
                   const canRerun = j.searchStatus === 'completed' || j.searchStatus === 'failed';
-                  const canOpen = j.searchStatus === 'completed';
+                  // "awaiting_input" jobs open the candidates page too — that's
+                  // where the Apify search questionnaire auto-opens.
+                  const canOpen = j.searchStatus === 'completed' || isAwaiting;
                   return (
                     <div
                       key={j.jobId}
@@ -211,20 +215,22 @@ export function PipelineDetailPage({ pipelineId }: Props) {
                             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--status-danger)' }}>{j.rejectedCount}</div>
                             <div style={{ fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Rejected</div>
                           </div>
-                          <button
-                            disabled={!canRerun || isBusy}
-                            title={canRerun ? 'Re-run candidate search (appends new, skips already-rejected)' : 'Search in progress'}
-                            onClick={(e) => { e.stopPropagation(); onRerun(j.jobId); }}
-                            style={{
-                              height: 32, padding: '0 12px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                              cursor: canRerun && !isBusy ? 'pointer' : 'not-allowed',
-                              border: '1px solid var(--border-card)', background: '#FFF',
-                              color: canRerun ? 'var(--fg-primary)' : 'var(--fg-muted)',
-                              fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 5,
-                            }}
-                          >
-                            <Icon name={isBusy ? 'loader' : 'refresh-ccw'} size={12} /> Re-run
-                          </button>
+                          {!isAwaiting && (
+                            <button
+                              disabled={!canRerun || isBusy}
+                              title={canRerun ? 'Re-run candidate search (appends new, skips already-rejected)' : 'Search in progress'}
+                              onClick={(e) => { e.stopPropagation(); onRerun(j.jobId); }}
+                              style={{
+                                height: 32, padding: '0 12px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                                cursor: canRerun && !isBusy ? 'pointer' : 'not-allowed',
+                                border: '1px solid var(--border-card)', background: '#FFF',
+                                color: canRerun ? 'var(--fg-primary)' : 'var(--fg-muted)',
+                                fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 5,
+                              }}
+                            >
+                              <Icon name={isBusy ? 'loader' : 'refresh-ccw'} size={12} /> Re-run
+                            </button>
+                          )}
                           <button
                             title="Remove this job from the pipeline"
                             disabled={isBusy}
@@ -241,15 +247,18 @@ export function PipelineDetailPage({ pipelineId }: Props) {
                           <button
                             disabled={!canOpen}
                             onClick={(e) => { e.stopPropagation(); router.push(`/candidates/${pipelineId}/jobs/${j.jobId}`); }}
+                            title={isAwaiting ? 'Open the LinkedIn search questionnaire' : 'View candidates'}
                             style={{
-                              height: 32, padding: '0 14px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                              height: 32, padding: '0 14px', borderRadius: 6, fontSize: 13, fontWeight: 600,
                               cursor: canOpen ? 'pointer' : 'not-allowed', border: 'none',
                               background: canOpen ? 'var(--primary)' : 'var(--bg-app)',
                               color: canOpen ? '#FFF' : 'var(--fg-muted)',
                               fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 6,
                             }}
                           >
-                            View candidates <Icon name="chevron-right" size={14} />
+                            {isAwaiting
+                              ? <><Icon name="search" size={14} /> Search candidates</>
+                              : <>View candidates <Icon name="chevron-right" size={14} /></>}
                           </button>
                         </div>
                       </div>
