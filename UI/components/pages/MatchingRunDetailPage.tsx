@@ -169,13 +169,16 @@ export function MatchingRunDetailPage({ runId }: Props) {
             // Pipeline runs stream a per-candidate queue with a live log; CV runs don't.
             const streaming = !!(run && (run.source === 'pipeline' || (run.logs?.length ?? 0) > 0 || run.progress));
 
+            // Temporarily hide the run log stream — flip back to true to restore.
+            const SHOW_LOGS = false;
+
             return (
               <>
                 {/* Live streaming log (pipeline) */}
-                {streaming && running && run && <LogStream run={run} running />}
+                {SHOW_LOGS && streaming && running && run && <LogStream run={run} running />}
 
                 {/* Collapsed log once done */}
-                {streaming && !running && run && (run.logs?.length ?? 0) > 0 && (
+                {SHOW_LOGS && streaming && !running && run && (run.logs?.length ?? 0) > 0 && (
                   <details style={{ marginBottom: 16 }}>
                     <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--fg-secondary)' }}>
                       View run log ({run.logs!.length} lines)
@@ -186,8 +189,8 @@ export function MatchingRunDetailPage({ runId }: Props) {
                   </details>
                 )}
 
-                {/* Non-streaming (CV) loading spinner */}
-                {!streaming && running && (
+                {/* Loading spinner while running (logs hidden) */}
+                {(!SHOW_LOGS ? running : !streaming && running) && (
                   <div style={{ textAlign: 'center', padding: 50, color: 'var(--fg-muted)' }}>
                     <Icon name="loader" size={24} />
                     <div style={{ marginTop: 12, fontSize: 14 }}>Loading match run…</div>

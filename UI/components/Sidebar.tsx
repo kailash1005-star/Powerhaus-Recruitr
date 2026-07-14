@@ -43,7 +43,8 @@ const NAV_GROUPS: NavGroup[] = [
     labelKey: 'group.monitor',
     items: [
       { href: '/dashboards', icon: 'bar-chart-3', labelKey: 'nav.dashboards' },
-      { href: '/cost', icon: 'wallet', labelKey: 'nav.costs', matchPrefix: '/cost' },
+      // Temporarily hidden — revert to restore the Costs nav item
+      // { href: '/cost', icon: 'wallet', labelKey: 'nav.costs', matchPrefix: '/cost' },
     ],
   },
   {
