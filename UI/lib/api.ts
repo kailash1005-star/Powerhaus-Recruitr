@@ -526,6 +526,11 @@ export interface Candidate {
   firstName: string;
   lastName: string;
   displayName?: string;
+  /** The 800px original as stored by the Apify search. */
+  photoUrl?: string | null;
+  /** Avatar-sized variant (~200px), derived server-side — the smaller sizes are
+   *  signed separately and cannot be derived from `photoUrl` client-side. */
+  photoThumbUrl?: string | null;
   headline?: string;
   currentTitle?: string;
   currentCompany?: string;
@@ -925,6 +930,9 @@ export interface MatchedCandidate {
   currentTitle?: string | null;
   location?: string | null;
   sourceFileName?: string | null;
+  /** LinkedIn photo (pipeline candidates only). Public but signed and expiring —
+   *  treat a dead link as normal and fall back to initials. */
+  photoUrl?: string | null;
   score: number;
   subscores: Record<string, number>;
   /** Absent on runs scored before the breakdown existed. */

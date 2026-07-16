@@ -32,6 +32,7 @@ from app.config import settings
 from app.database import get_database
 from app.services import embedding_service as embeddings
 from app.services import llm_extraction_service as llm
+from app.services import profile_photo
 from app.services import role_spec_service
 from app.services.matching_service import (
     BASE_WEIGHTS,
@@ -323,6 +324,10 @@ async def _run_pipeline_match(
                 "fullName": profile.get("fullName") or doc.get("displayName"),
                 "currentTitle": profile.get("currentTitle") or doc.get("currentTitle"),
                 "location": profile.get("location") or doc.get("location"),
+                # Avatar-sized and public, but the URL is signed and expires in a
+                # few weeks — the UI falls back to initials rather than showing a
+                # broken image on an old run.
+                "photoUrl": profile_photo.pick(doc, min_px=200),
                 "score": score,
                 "subscores": subscores,
                 "breakdown": breakdown,

@@ -155,6 +155,11 @@ def _serialize_pipeline(doc: dict) -> dict:
 
 def _serialize_candidate(doc: dict) -> dict:
     doc["_id"] = str(doc["_id"])
+    # The avatar-sized variant. `photoUrl` stays as stored (the 800px crop) so the
+    # existing contract is unchanged; this is the one a 40px circle should load.
+    from app.services import profile_photo
+
+    doc["photoThumbUrl"] = profile_photo.pick(doc, min_px=200)
     return doc
 
 

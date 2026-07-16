@@ -16,6 +16,10 @@
   --bg-nav-active:     #F0F0F0;   /* active nav item */
   --bg-chip:           #F3F4F6;   /* status pills, neutral chips */
   --bg-muted:          #FAFAFA;   /* card secondary fill */
+  /* Navy-biased neutral — a summary band reads as elevated against the white app
+     ground without introducing a hue that competes with --primary. */
+  --band:              #F4F6FA;   /* run-summary / stats band fill */
+  --band-line:         #DFE4EF;   /* its hairlines and column rules */
 
   /* ── Foreground ────────────────────────────────────────────── */
   --fg-primary:        #111827;   /* page titles, body emphasis */
@@ -155,6 +159,26 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
 html, body { font-family: var(--font-sans); color: var(--fg-primary); -webkit-font-smoothing: antialiased; }
+
+/* ── Candidate matching results ────────────────────────────────
+   Classes, not inline styles: these layouts have to collapse at
+   narrow widths, and inline styles cannot carry a media query.
+   ───────────────────────────────────────────────────────────── */
+.match-card { display: grid; grid-template-columns: minmax(0, 1fr) 152px; }
+.match-evidence { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+.match-evidence > * + * { border-left: 1px solid var(--border-card); }
+
+@media (max-width: 1000px) {
+  .match-evidence { grid-template-columns: 1fr; }
+  .match-evidence > * + * { border-left: 0; border-top: 1px solid var(--border-card); }
+}
+@media (max-width: 720px) {
+  .match-card { grid-template-columns: 1fr; }
+  .match-rail {
+    border-left: 0; border-top: 1px solid var(--border-card);
+    flex-direction: row; align-items: center; justify-content: space-between; text-align: left;
+  }
+}
 
 .t-page-title    { font-size: var(--text-18); font-weight: var(--w-semibold); color: var(--fg-primary); letter-spacing: var(--tracking-tight); }
 .t-section-label { font-size: var(--text-10); font-weight: var(--w-medium); color: var(--fg-subtle); text-transform: uppercase; letter-spacing: var(--tracking-widest); }

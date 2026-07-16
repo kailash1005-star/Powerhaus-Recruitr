@@ -199,10 +199,12 @@ BASE_WEIGHTS: Dict[str, float] = {
     "location": 0.08,
 }
 
+# Recruiter-facing names. "Semantic similarity" is what the maths is called, not
+# what it means to someone reading it beside a candidate's name.
 COMPONENT_LABELS: Dict[str, str] = {
-    "semantic": "Semantic similarity",
-    "skillCoverage": "Must-have skill coverage",
-    "experience": "Years of experience",
+    "semantic": "Profile fit",
+    "skillCoverage": "Must-have skills",
+    "experience": "Experience",
     "location": "Location",
 }
 
@@ -457,8 +459,11 @@ def _score_candidate(
     score = round(min(base, ceiling), 1)
 
     notes = {
-        "semantic": (f"Cosine similarity {sim:.3f} between the job-description embedding and this "
-                     f"CV's embedding. This is the only component that reads the whole document."),
+        # Recruiter-facing copy. The raw similarity stays on the breakdown as
+        # `similarity` for auditing, but "cosine"/"embedding" mean nothing to the
+        # person reading this next to a candidate's name.
+        "semantic": ("How closely this whole profile reads against the whole role — the only "
+                     "part of the score that weighs the entire document rather than a checklist."),
         "skillCoverage": (
             f"{sum(e['credit'] for e in skill_evidence):g} of {len(must)} must-have skill(s) credited."
             if must else "The job description lists no must-have skills — not scored."

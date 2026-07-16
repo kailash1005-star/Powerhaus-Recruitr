@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { Icon } from './Icon';
+import { Avatar } from './Avatar';
 import { ApifyProfileView } from './ApifyProfileView';
 import type { Candidate } from '@/lib/api';
 
@@ -147,9 +148,13 @@ export function CandidateSlideOut({
                     >
                       {/* Avatar */}
                       <div style={{ position: 'relative', flexShrink: 0 }}>
-                        <div style={{ width: 40, height: 40, borderRadius: 9999, background: 'linear-gradient(135deg, #6B7280, #4B5563)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700, color: '#FFF', border: '1px solid #E5E7EB' }}>
-                          {(c.firstName?.[0] ?? '?')}{(cleanLastName(c.lastName)[0] ?? '')}
-                        </div>
+                        <Avatar
+                          src={c.photoThumbUrl || c.photoUrl}
+                          name={fullName(c)}
+                          firstName={c.firstName}
+                          lastName={cleanLastName(c.lastName)}
+                          size={40}
+                        />
                         <div style={{ position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 9999, border: '2px solid #FFF', background: c.isAccepted ? 'var(--status-success)' : 'var(--status-danger)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <Icon name={c.isAccepted ? 'check' : 'x'} size={8} style={{ color: '#FFF' }} />
                         </div>
@@ -187,9 +192,13 @@ export function CandidateSlideOut({
               <div style={{ padding: '24px 28px' }}>
                 {/* Avatar + name */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 18, marginBottom: 24 }}>
-                  <div style={{ width: 72, height: 72, borderRadius: 9999, background: 'linear-gradient(135deg, #4F46E5, #7C3AED)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 700, color: '#FFF', border: '1px solid #E5E7EB', flexShrink: 0 }}>
-                    {(active.firstName?.[0] ?? '?')}{(cleanLastName(active.lastName)[0] ?? '')}
-                  </div>
+                  <Avatar
+                    src={active.photoThumbUrl || active.photoUrl}
+                    name={fullName(active)}
+                    firstName={active.firstName}
+                    lastName={cleanLastName(active.lastName)}
+                    size={72}
+                  />
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
                       <h2 style={{ fontSize: 22, fontWeight: 700, color: 'var(--fg-primary)', margin: 0 }}>

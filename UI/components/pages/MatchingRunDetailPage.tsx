@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
-import { CandidateCard, EmailModal, card, label, fmtRunDate } from '../matching/shared';
+import { CandidateCard, EmailModal, card, fmtRunDate } from '../matching/shared';
 import { MatchProfileSlideOut } from '../matching/MatchProfileSlideOut';
 import { fetchMatchRun, type SavedMatchRun, type MatchedCandidate } from '@/lib/api';
 
@@ -72,67 +72,87 @@ function LogStream({ run, running }: { run: SavedMatchRun; running: boolean }) {
   );
 }
 
-/** Run-level summary: what the engine was asked for, and how it spends 100 points. */
-function ScoringSummary({ run }: { run: SavedMatchRun }) {
+/** Recruiter-facing names, keyed by component. Owned here rather than read from
+ *  `component.label` so runs stored before the copy was fixed — which still carry
+ *  "Semantic similarity" — render in plain language too. */
+const DIM_LABEL: Record<string, string> = {
+  semantic: 'profile fit',
+  skillCoverage: 'must-have skills',
+  experience: 'experience',
+  location: 'location',
+};
+
+/** Run-level headline.
+ *
+ * The figures are the OUTCOME of the run, not the model's weights. A recruiter
+ * opening this asks "did we find anyone?" — the previous version answered "here is
+ * how the score is weighted", which is the machine's business, not theirs. The
+ * weighting survives as one quiet line underneath: context, not headline.
+ */
+function RunSummary({ run }: { run: SavedMatchRun }) {
   const analysis = run.analysis;
   const all = analysis?.candidates || [];
   const excluded = analysis?.excluded || [];
   if (!all.length) return null;
 
-  const capped = all.filter((c) => c.breakdown?.cappedBy).length;
-  const reasoned = all.filter((c) => c.reasoning === 'llm').length;
+  const strong = all.filter((c) => c.score >= 75).length;
+  const look = all.filter((c) => c.score >= 60 && c.score < 75).length;
+  const below = all.filter((c) => c.score < 60).length;
   // Applicability is a property of the JD, so any candidate's breakdown answers it.
   const components = all[0]?.breakdown?.components || [];
 
+  const stat = (n: number, k: string, s: string, dim = false) => (
+    <div style={{ padding: '18px 26px 16px', borderLeft: '1px solid var(--band-line)', minWidth: 0 }}>
+      <div style={{
+        fontFamily: 'var(--font-mono)', fontSize: 34, fontWeight: 600, lineHeight: 1,
+        letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums',
+        color: dim ? 'var(--fg-subtle)' : 'var(--primary)',
+      }}>{n}</div>
+      <div style={{
+        fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em',
+        color: 'var(--fg-muted)', marginTop: 9,
+      }}>{k}</div>
+      <div style={{ fontSize: 12, color: 'var(--fg-subtle)', marginTop: 3 }}>{s}</div>
+    </div>
+  );
+
   return (
-    <div style={{ ...card, marginBottom: 16, padding: 16 }}>
-      <div style={{ ...label, marginBottom: 10 }}>How this run scored</div>
+    <div style={{
+      background: 'var(--band)', borderTop: '1px solid var(--band-line)',
+      borderBottom: '1px solid var(--band-line)', margin: '0 0 22px',
+    }}>
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+      }}>
+        {stat(strong, 'Strong matches', 'Worth contacting today')}
+        {stat(look, 'Worth a look', 'Some requirements unproven')}
+        {stat(below, 'Below the bar', 'Missing must-have skills', true)}
+        {stat(all.length, 'Reviewed in full', 'Every candidate sourced', true)}
+      </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        {components.map((c) => (
-          <div
-            key={c.key}
-            title={c.note}
-            style={{
-              flex: '1 1 150px', padding: '8px 10px', borderRadius: 8,
-              border: '1px solid var(--border-default)',
-              background: c.applicable ? '#FFF' : 'var(--bg-app)',
-              opacity: c.applicable ? 1 : 0.6,
-            }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-primary)' }}>{c.label}</div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: c.applicable ? 'var(--fg-primary)' : 'var(--fg-muted)', lineHeight: 1.2 }}>
-              {c.applicable ? `${(c.weight * 100).toFixed(1)}%` : 'excluded'}
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-              {c.applicable
-                ? (Math.abs(c.weight - c.baseWeight) > 0.001 ? `nominal ${(c.baseWeight * 100).toFixed(0)}% · reweighted` : 'of the final score')
-                : 'not stated in the JD'}
-            </div>
-          </div>
+      <div style={{
+        padding: '11px 0 12px', fontSize: 11.5, color: 'var(--fg-subtle)',
+        borderTop: '1px solid var(--band-line)',
+      }}>
+        Scoring weight —{' '}
+        {components.filter((c) => c.applicable).map((c, i, arr) => (
+          <span key={c.key}>
+            <strong style={{ color: 'var(--fg-muted)', fontWeight: 600 }}>
+              {DIM_LABEL[c.key] ?? c.label} {Math.round(c.weight * 100)}%
+            </strong>
+            {i < arr.length - 1 ? ' · ' : ''}
+          </span>
         ))}
+        {components.some((c) => !c.applicable) && (
+          <>{' · '}{components.filter((c) => !c.applicable)
+              .map((c) => (DIM_LABEL[c.key] ?? c.label).toLowerCase()).join(', ')} not scored,
+          this role names none.</>
+        )}
+        {excluded.length > 0 && (
+          <> · <strong style={{ color: '#9A3412', fontWeight: 600 }}>{excluded.length}</strong> could not be
+          enriched, so were never scored.</>
+        )}
       </div>
-
-      <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
-        Scored <strong style={{ color: 'var(--fg-secondary)' }}>{all.length}</strong> candidate(s)
-        {reasoned > 0 && <> · LLM reasoning on the top <strong style={{ color: 'var(--fg-secondary)' }}>{reasoned}</strong></>}
-        {capped > 0 && <> · <strong style={{ color: '#92400E' }}>{capped}</strong> capped by missing must-have skills</>}
-        {excluded.length > 0 && <> · <strong style={{ color: 'var(--status-danger)' }}>{excluded.length}</strong> excluded before scoring</>}
-        {analysis?.scoringVersion && <> · <span style={{ fontFamily: 'ui-monospace, monospace' }}>{analysis.scoringVersion}</span></>}
-      </div>
-
-      {excluded.length > 0 && (
-        <details style={{ marginTop: 8 }}>
-          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--fg-secondary)' }}>
-            {excluded.length} candidate(s) never reached scoring
-          </summary>
-          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
-            {excluded.map((e) => (
-              <li key={e.candidateId}><strong>{e.fullName || e.candidateId}</strong> — {e.reason}</li>
-            ))}
-          </ul>
-        </details>
-      )}
     </div>
   );
 }
@@ -194,17 +214,20 @@ export function MatchingRunDetailPage({ runId }: Props) {
         showSearch={false}
       />
 
-      <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
-        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+      {/* Full-bleed: the old 900px centred column wasted most of a desktop screen
+          and squeezed the evidence panel into a scroller. */}
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ maxWidth: 1560, margin: '0 auto', padding: '22px 28px 60px' }}>
 
           {/* Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 24, flexWrap: 'wrap' }}>
             <div>
-              <h2 style={{ fontSize: 20, fontWeight: 700, color: 'var(--fg-primary)', margin: 0 }}>{title}</h2>
-              <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
+              <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--fg-primary)', margin: 0, textWrap: 'balance' }}>{title}</h2>
+              <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 5 }}>
                 {fmtRunDate(run?.createdAt)}
-                {run?.candidatesConsidered ? ` · ${run.candidatesConsidered} scored` : ''}
-                {topResults.length ? (showAll && canShowAll ? ` · showing all ${results.length}` : ` · showing top ${topResults.length}`) : ''}
+                {run?.candidatesConsidered ? (
+                  <> · <strong style={{ color: 'var(--fg-secondary)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{run.candidatesConsidered}</strong> candidates scored</>
+                ) : ''}
                 {run?.source === 'pipeline' ? ' · from candidate pipeline' : ''}
               </div>
             </div>
@@ -212,10 +235,17 @@ export function MatchingRunDetailPage({ runId }: Props) {
 
           {/* Must-have chips */}
           {run?.requirements?.mustHaveSkills && run.requirements.mustHaveSkills.length > 0 && (
-            <div style={{ marginBottom: 14, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Must-have:</span>
+            <div style={{ margin: '16px 0 18px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{
+                fontSize: 11, fontWeight: 600, color: 'var(--fg-subtle)',
+                textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 2,
+              }}>Must have</span>
               {run.requirements.mustHaveSkills.map((s) => (
-                <span key={s} style={{ fontSize: 12, padding: '3px 9px', borderRadius: 9999, background: '#EFF6FF', color: 'var(--status-info)', fontWeight: 600 }}>{s}</span>
+                <span key={s} style={{
+                  fontSize: 12, fontWeight: 500, padding: '3px 9px', borderRadius: 5,
+                  background: 'var(--bg-chip)', color: 'var(--fg-secondary)',
+                  border: '1px solid var(--border-card)',
+                }}>{s}</span>
               ))}
             </div>
           )}
@@ -272,23 +302,25 @@ export function MatchingRunDetailPage({ runId }: Props) {
                   <div style={{ ...card, color: 'var(--status-danger)' }}>{error || 'This match run failed.'}</div>
                 )}
 
-                {/* Where the 100 points went, before any individual candidate */}
-                {!running && run && <ScoringSummary run={run} />}
+                {/* What the run found, before any individual candidate */}
+                {!running && run && <RunSummary run={run} />}
 
                 {/* Results — partial while running (arrive on the spot), final when done */}
-                {results.map((c, i) => (
-                  <CandidateCard key={c.candidateId} c={c} rank={i + 1}
-                    onReachOut={(cand) => setEmailTarget({ candidate: cand, roleTitle: title })}
-                    onOpen={c.source === 'pipeline' ? (cand) => setProfileTarget(cand) : undefined} />
-                ))}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {results.map((c, i) => (
+                    <CandidateCard key={c.candidateId} c={c} rank={i + 1}
+                      onReachOut={(cand) => setEmailTarget({ candidate: cand, roleTitle: title })}
+                      onOpen={c.source === 'pipeline' ? (cand) => setProfileTarget(cand) : undefined} />
+                  ))}
+                </div>
 
                 {/* The rest of the ranking — the evidence for what the top-N beat */}
                 {!running && canShowAll && (
                   <button
                     onClick={() => setShowAll((s) => !s)}
                     style={{
-                      width: '100%', padding: '12px 16px', borderRadius: 10, cursor: 'pointer',
-                      border: '1px dashed var(--border-card)', background: '#FFF',
+                      width: '100%', marginTop: 22, padding: 13, borderRadius: 9, cursor: 'pointer',
+                      border: '1px dashed var(--border-strong)', background: '#FFF',
                       fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--primary)',
                       display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
                     }}
@@ -301,7 +333,7 @@ export function MatchingRunDetailPage({ runId }: Props) {
                 )}
 
                 {!running && !canShowAll && topResults.length > 0 && (
-                  <div style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', padding: '8px 0' }}>
+                  <div style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', padding: '16px 0 0' }}>
                     This run was scored before per-candidate analysis was recorded, so only its
                     top {topResults.length} were kept. Re-run the match to see the full ranking.
                   </div>

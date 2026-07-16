@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Icon } from '../Icon';
+import { Avatar } from '../Avatar';
 import { ApifyProfileView } from '../ApifyProfileView';
 import { ScoreBar } from './shared';
 import { fetchCandidate, type Candidate, type MatchedCandidate } from '@/lib/api';
@@ -75,11 +76,12 @@ export function MatchProfileSlideOut({ matched, roleTitle, onClose }: {
       >
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '16px 20px', borderBottom: '1px solid var(--border-default)' }}>
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <Icon name="user" size={18} style={{ color: '#4F46E5' }} />
-          </div>
+          {/* The person, not a generic user glyph — the panel is about them. */}
+          <Avatar src={matched?.photoUrl} name={matched?.fullName} size={40} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>Candidate profile</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>
+              {matched?.fullName || 'Candidate profile'}
+            </div>
             <div style={{ fontSize: 12, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {roleTitle ? `Match for ${roleTitle}` : 'Enriched profile from Apify'}
             </div>
