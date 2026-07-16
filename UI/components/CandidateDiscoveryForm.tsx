@@ -2,7 +2,10 @@
 
 import { useState } from 'react';
 import { Icon } from './Icon';
-import { discoverJobCandidates, type DiscoverFilters } from '@/lib/api';
+import {
+  discoverJobCandidates, suggestJobFilters,
+  type DiscoverFilters, type SearchBrief, type SearchStrategy,
+} from '@/lib/api';
 
 interface Props {
   pipelineId: string;
@@ -43,9 +46,14 @@ const HEADCOUNT: Opt[] = [
 ];
 // profileLanguages enum (names sent verbatim to the actor).
 const LANGUAGES = ['Arabic', 'English', 'Spanish', 'Portuguese', 'Chinese', 'French', 'Italian', 'Russian', 'German', 'Dutch', 'Turkish', 'Tagalog', 'Polish', 'Korean', 'Japanese', 'Malay', 'Norwegian', 'Danish', 'Romanian', 'Swedish', 'Bahasa Indonesia', 'Czech'];
+const WORK_MODELS: Opt[] = [
+  { v: '', t: 'Not specified' }, { v: 'onsite', t: 'Onsite' }, { v: 'hybrid', t: 'Hybrid' }, { v: 'remote', t: 'Remote' },
+];
 
 const label: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--fg-secondary)', marginBottom: 6, display: 'block' };
 const field: React.CSSProperties = { width: '100%', height: 38, padding: '0 11px', borderRadius: 8, border: '1px solid var(--border-card)', fontSize: 14, fontFamily: 'inherit', background: '#FFF', boxSizing: 'border-box', color: 'var(--fg-primary)' };
+const card: React.CSSProperties = { background: '#FFF', border: '1px solid var(--border-card)', borderRadius: 12, padding: 20 };
+const cardTitle: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: 'var(--fg-primary)', marginBottom: 16 };
 
 function TagInput({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
   const [text, setText] = useState('');
@@ -69,24 +77,66 @@ function TagInput({ value, onChange, placeholder }: { value: string[]; onChange:
   );
 }
 
+/** The AI's one-line justification for a field, shown under its input. */
+function Why({ text }: { text?: string }) {
+  if (!text) return null;
+  return (
+    <div style={{ display: 'flex', gap: 5, marginTop: 5, fontSize: 11.5, lineHeight: 1.45, color: 'var(--fg-muted)' }}>
+      <Icon name="sparkles" size={11} style={{ color: '#7C3AED', flexShrink: 0, marginTop: 2 }} />
+      <span>{text}</span>
+    </div>
+  );
+}
+
 export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocation, companyName, onClose, onSubmitted }: Props) {
+  // 'brief' = tell the AI about the role; 'filters' = review what it proposed.
+  const [step, setStep] = useState<'brief' | 'filters'>('brief');
+  const [brief, setBrief] = useState<SearchBrief>({});
+  const [strategy, setStrategy] = useState<SearchStrategy | null>(null);
   const [f, setF] = useState<DiscoverFilters>({
     searchQuery: jobTitle || '',
     maxItems: 25,
     currentJobTitles: jobTitle ? [jobTitle] : [],
     locations: jobLocation ? [jobLocation] : [],
+    autoBroaden: true,
   });
   const [advanced, setAdvanced] = useState(false);
+  const [thinking, setThinking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const set = <K extends keyof DiscoverFilters>(k: K, v: DiscoverFilters[K]) => setF((p) => ({ ...p, [k]: v }));
+  const setB = <K extends keyof SearchBrief>(k: K, v: SearchBrief[K]) => setBrief((p) => ({ ...p, [k]: v }));
+
+  // field name → the AI's reason for it, for the inline Why() hints.
+  const why = (name: string) => strategy?.rationale.find((r) => r.field === name)?.why;
+
+  /** Ask the Strategist to propose filters, then move to review. */
+  const analyze = async () => {
+    setThinking(true); setError(null);
+    try {
+      const { strategy: s } = await suggestJobFilters(pipelineId, jobId, brief);
+      setStrategy(s);
+      // The proposal replaces the literal prefill, but maxItems/autoBroaden are
+      // the recruiter's controls, not the AI's — carry them over.
+      setF((p) => ({ ...p, ...s.filters, maxItems: p.maxItems, autoBroaden: p.autoBroaden }));
+      setStep('filters');
+    } catch (e: any) {
+      setError(e?.message || 'Could not generate suggestions — you can still search manually.');
+    } finally {
+      setThinking(false);
+    }
+  };
 
   const submit = async () => {
     if (!f.searchQuery?.trim() && !(f.currentJobTitles?.length)) { setError('Add a search query or a current job title.'); return; }
     setBusy(true); setError(null);
     try {
-      await discoverJobCandidates(pipelineId, jobId, f);
+      // Send the brief + ladder so the Broadener can recover from a zero-result
+      // search with the role's intent in hand, not just the bare filters.
+      await discoverJobCandidates(pipelineId, jobId, {
+        ...f, brief, broadeningLadder: strategy?.broadeningLadder,
+      });
       onSubmitted();
     } catch (e: any) {
       setError(e?.message || 'Failed to start discovery');
@@ -100,15 +150,21 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
     </select>
   );
 
+  const errorBox = error && (
+    <div style={{ padding: '11px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 13, color: '#B91C1C' }}>{error}</div>
+  );
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'var(--bg-app, #F5F6FA)', zIndex: 100, display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '16px 24px', borderBottom: '1px solid var(--border-default)', background: '#FFF', flexShrink: 0 }}>
         <div style={{ width: 40, height: 40, borderRadius: 10, background: '#EEF2FF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Icon name="search" size={18} style={{ color: '#4F46E5' }} />
+          <Icon name={step === 'brief' ? 'sparkles' : 'search'} size={18} style={{ color: '#4F46E5' }} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>Discover candidates</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>
+            {step === 'brief' ? 'Tell the AI about this role' : 'Review the search'}
+          </div>
           <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>LinkedIn search for <b>{jobTitle}</b>{companyName ? ` · ${companyName}` : ''}</div>
         </div>
         <button onClick={onClose} style={{ width: 34, height: 34, border: 'none', background: 'transparent', borderRadius: 8, cursor: 'pointer', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="x" size={20} /></button>
@@ -117,100 +173,257 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
       {/* Body */}
       <div style={{ flex: 1, overflow: 'auto', padding: '24px' }}>
         <div style={{ maxWidth: 780, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {/* Essentials */}
-          <div style={{ background: '#FFF', border: '1px solid var(--border-card)', borderRadius: 12, padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-primary)', marginBottom: 16 }}>Search</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginBottom: 14 }}>
-              <div>
-                <label style={label}>Search query (fuzzy)</label>
-                <input value={f.searchQuery || ''} onChange={(e) => set('searchQuery', e.target.value)} placeholder="e.g. AI Engineer" style={field} />
-              </div>
-              <div>
-                <label style={label}>Max profiles</label>
-                <input type="number" min={1} max={100} value={f.maxItems ?? 25} onChange={(e) => set('maxItems', Math.max(1, Math.min(100, parseInt(e.target.value) || 25)))} style={field} />
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              <div><label style={label}>Current job titles</label><TagInput value={f.currentJobTitles || []} onChange={(v) => set('currentJobTitles', v)} placeholder="Type + Enter" /></div>
-              <div><label style={label}>Locations</label><TagInput value={f.locations || []} onChange={(v) => set('locations', v)} placeholder="e.g. Chennai" /></div>
-            </div>
-          </div>
 
-          {/* Filters */}
-          <div style={{ background: '#FFF', border: '1px solid var(--border-card)', borderRadius: 12, padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-primary)', marginBottom: 16 }}>Filters</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              <div><label style={label}>Years of experience</label>{sel('yearsOfExperience', YEARS)}</div>
-              <div><label style={label}>Seniority level</label>{sel('seniorityLevel', SENIORITY)}</div>
-              <div><label style={label}>Function</label>{sel('function', FUNCTIONS)}</div>
-              <div><label style={label}>Company headcount</label>{sel('companyHeadcount', HEADCOUNT)}</div>
-            </div>
-            <div style={{ display: 'flex', gap: 20, marginTop: 16, flexWrap: 'wrap' }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--fg-secondary)', cursor: 'pointer' }}>
-                <input type="checkbox" checked={!!f.recentlyChangedJobs} onChange={(e) => set('recentlyChangedJobs', e.target.checked || undefined)} /> Recently changed jobs
-              </label>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--fg-secondary)', cursor: 'pointer' }}>
-                <input type="checkbox" checked={!!f.recentlyPostedOnLinkedin} onChange={(e) => set('recentlyPostedOnLinkedin', e.target.checked || undefined)} /> Recently posted on LinkedIn
-              </label>
-            </div>
-          </div>
-
-          {/* Advanced */}
-          <div style={{ background: '#FFF', border: '1px solid var(--border-card)', borderRadius: 12, padding: 20 }}>
-            <button onClick={() => setAdvanced((a) => !a)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700, color: 'var(--fg-primary)', padding: 0, width: '100%' }}>
-              <Icon name={advanced ? 'chevron-down' : 'chevron-right'} size={16} /> Advanced &amp; exclusions
-            </button>
-            {advanced && (
-              <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                <div><label style={label}>Current companies</label><TagInput value={f.currentCompanies || []} onChange={(v) => set('currentCompanies', v)} placeholder="Company name" /></div>
-                <div><label style={label}>Past companies</label><TagInput value={f.pastCompanies || []} onChange={(v) => set('pastCompanies', v)} placeholder="Company name" /></div>
-                <div><label style={label}>Past job titles</label><TagInput value={f.pastJobTitles || []} onChange={(v) => set('pastJobTitles', v)} placeholder="Title" /></div>
-                <div><label style={label}>Schools</label><TagInput value={f.schools || []} onChange={(v) => set('schools', v)} placeholder="School" /></div>
-                <div><label style={label}>Years at current company</label>{sel('yearsAtCurrentCompany', YEARS)}</div>
-                <div><label style={label}>Company HQ locations</label><TagInput value={f.companyHqLocations || []} onChange={(v) => set('companyHqLocations', v)} placeholder="Location" /></div>
-                <div><label style={label}>Industry IDs</label><TagInput value={f.industryIds || []} onChange={(v) => set('industryIds', v)} placeholder="LinkedIn industry id" /></div>
-                <div><label style={label}>Exclude locations</label><TagInput value={f.excludeLocations || []} onChange={(v) => set('excludeLocations', v)} placeholder="Location" /></div>
-                <div><label style={label}>Exclude current companies</label><TagInput value={f.excludeCurrentCompanies || []} onChange={(v) => set('excludeCurrentCompanies', v)} placeholder="Company" /></div>
-                <div><label style={label}>Exclude past companies</label><TagInput value={f.excludePastCompanies || []} onChange={(v) => set('excludePastCompanies', v)} placeholder="Company" /></div>
-                <div><label style={label}>Exclude current titles</label><TagInput value={f.excludeCurrentJobTitles || []} onChange={(v) => set('excludeCurrentJobTitles', v)} placeholder="Title" /></div>
-                <div><label style={label}>Exclude past titles</label><TagInput value={f.excludePastJobTitles || []} onChange={(v) => set('excludePastJobTitles', v)} placeholder="Title" /></div>
-                <div><label style={label}>Exclude schools</label><TagInput value={f.excludeSchools || []} onChange={(v) => set('excludeSchools', v)} placeholder="School" /></div>
-                <div><label style={label}>Exclude industry IDs</label><TagInput value={f.excludeIndustryIds || []} onChange={(v) => set('excludeIndustryIds', v)} placeholder="LinkedIn industry id" /></div>
-                <div><label style={label}>Exclude seniority</label>{sel('excludeSeniorityLevel', SENIORITY)}</div>
-                <div><label style={label}>Exclude function</label>{sel('excludeFunction', FUNCTIONS)}</div>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <label style={label}>Profile languages</label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
-                    {LANGUAGES.map((lng) => {
-                      const on = (f.profileLanguages || []).includes(lng);
-                      return (
-                        <button
-                          key={lng} type="button"
-                          onClick={() => set('profileLanguages', on ? (f.profileLanguages || []).filter((x) => x !== lng) : [...(f.profileLanguages || []), lng])}
-                          style={{ padding: '5px 11px', borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', border: on ? '1px solid var(--primary)' : '1px solid var(--border-card)', background: on ? 'var(--accent-soft, #EEF0FE)' : '#FFF', color: on ? 'var(--primary)' : 'var(--fg-secondary)' }}
-                        >{lng}</button>
-                      );
-                    })}
+          {step === 'brief' ? (
+            <>
+              <div style={{ ...card, background: 'linear-gradient(180deg,#FAFAFF,#FFF)', borderColor: '#DDD6FE' }}>
+                <div style={{ display: 'flex', gap: 11 }}>
+                  <Icon name="sparkles" size={16} style={{ color: '#7C3AED', flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--fg-secondary)' }}>
+                    A job title like <b>{jobTitle}</b> is written in employer language — often nobody on LinkedIn
+                    actually carries it as their title, which is why searches come back empty. The AI reads the job
+                    description and translates it into the titles real people use, then proposes the filters.
+                    <div style={{ marginTop: 7, color: 'var(--fg-muted)' }}>
+                      Everything below is optional. Anything you add makes the suggestions sharper.
+                    </div>
                   </div>
                 </div>
               </div>
-            )}
-          </div>
 
-          {error && <div style={{ padding: '11px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 13, color: '#B91C1C' }}>{error}</div>}
+              <div style={card}>
+                <div style={cardTitle}>The role</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+                  <div>
+                    <label style={label}>Seniority you want</label>
+                    <input value={brief.seniorityHint || ''} onChange={(e) => setB('seniorityHint', e.target.value)} placeholder="e.g. Senior, or Head of" style={field} />
+                  </div>
+                  <div>
+                    <label style={label}>Minimum years of experience</label>
+                    <input type="number" min={0} max={40} value={brief.minYears ?? ''} onChange={(e) => setB('minYears', e.target.value ? parseFloat(e.target.value) : undefined)} placeholder="e.g. 6" style={field} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                  <div><label style={label}>Must-have skills</label><TagInput value={brief.mustHaveSkills || []} onChange={(v) => setB('mustHaveSkills', v)} placeholder="e.g. SAP FICO" /></div>
+                  <div><label style={label}>Nice-to-have skills</label><TagInput value={brief.niceToHaveSkills || []} onChange={(v) => setB('niceToHaveSkills', v)} placeholder="Type + Enter" /></div>
+                </div>
+              </div>
+
+              <div style={card}>
+                <div style={cardTitle}>Where to look</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+                  <div>
+                    <label style={label}>Target companies (poach from)</label>
+                    <TagInput value={brief.targetCompanies || []} onChange={(v) => setB('targetCompanies', v)} placeholder="Competitor name" />
+                  </div>
+                  <div>
+                    <label style={label}>Companies to avoid</label>
+                    <TagInput value={brief.excludeCompanies || []} onChange={(v) => setB('excludeCompanies', v)} placeholder="Company name" />
+                  </div>
+                  <div><label style={label}>Target industries</label><TagInput value={brief.targetIndustries || []} onChange={(v) => setB('targetIndustries', v)} placeholder="e.g. Manufacturing" /></div>
+                  <div><label style={label}>Languages required</label><TagInput value={brief.languages || []} onChange={(v) => setB('languages', v)} placeholder="e.g. German" /></div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'end' }}>
+                  <div>
+                    <label style={label}>Work model</label>
+                    <select value={brief.workModel || ''} onChange={(e) => setB('workModel', e.target.value as any)} style={{ ...field, cursor: 'pointer' }}>
+                      {WORK_MODELS.map((o) => <option key={o.v} value={o.v}>{o.t}</option>)}
+                    </select>
+                  </div>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--fg-secondary)', cursor: 'pointer', height: 38 }}>
+                    <input type="checkbox" checked={!!brief.openToRelocation} onChange={(e) => setB('openToRelocation', e.target.checked || undefined)} />
+                    Candidates may relocate
+                  </label>
+                </div>
+              </div>
+
+              <div style={card}>
+                <div style={cardTitle}>Anything else?</div>
+                <textarea
+                  value={brief.notes || ''} onChange={(e) => setB('notes', e.target.value)}
+                  placeholder="Context the job description doesn't capture — e.g. 'the last hire came from a Big 4 consultancy', or 'avoid pure support profiles'."
+                  style={{ ...field, height: 84, padding: '10px 11px', resize: 'vertical', lineHeight: 1.5 }}
+                />
+              </div>
+
+              {errorBox}
+            </>
+          ) : (
+            <>
+              {/* What the AI concluded */}
+              {strategy && strategy.confidence > 0 && (
+                <div style={{ ...card, background: 'linear-gradient(180deg,#FAFAFF,#FFF)', borderColor: '#DDD6FE' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 11 }}>
+                    <Icon name="sparkles" size={15} style={{ color: '#7C3AED' }} />
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-primary)', flex: 1 }}>{strategy.interpretedRole}</div>
+                    <span title="How confident the AI is in these filters" style={{ fontSize: 11.5, fontWeight: 700, padding: '3px 9px', borderRadius: 999, background: strategy.confidence >= 0.7 ? '#DCFCE7' : strategy.confidence >= 0.4 ? '#FEF3C7' : '#FEE2E2', color: strategy.confidence >= 0.7 ? '#166534' : strategy.confidence >= 0.4 ? '#92400E' : '#991B1B' }}>
+                      {Math.round(strategy.confidence * 100)}% confident
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--fg-secondary)' }}>{strategy.titleReasoning}</div>
+                  {strategy.warnings.length > 0 && (
+                    <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {strategy.warnings.map((w, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 7, fontSize: 12.5, lineHeight: 1.5, color: '#92400E' }}>
+                          <Icon name="alert-triangle" size={12} style={{ flexShrink: 0, marginTop: 3 }} /> {w}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {strategy.broadeningLadder.length > 0 && (
+                    <details style={{ marginTop: 13 }}>
+                      <summary style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--primary)', cursor: 'pointer' }}>
+                        If this finds nobody, the AI will try {strategy.broadeningLadder.length} broader searches
+                      </summary>
+                      <ol style={{ margin: '10px 0 0', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {strategy.broadeningLadder.map((s) => (
+                          <li key={s.step} style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--fg-muted)' }}>{s.detail || s.action}</li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {strategy && strategy.confidence === 0 && (
+                <div style={{ padding: '11px 14px', borderRadius: 8, background: '#FEF3C7', border: '1px solid #FDE68A', fontSize: 13, lineHeight: 1.5, color: '#92400E' }}>
+                  {strategy.titleReasoning} Review the filters below before searching.
+                </div>
+              )}
+
+              {/* Essentials */}
+              <div style={card}>
+                <div style={cardTitle}>Search</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginBottom: 14 }}>
+                  <div>
+                    <label style={label}>Search query (fuzzy)</label>
+                    <input value={f.searchQuery || ''} onChange={(e) => set('searchQuery', e.target.value)} placeholder="e.g. AI Engineer" style={field} />
+                    <Why text={why('searchQuery')} />
+                  </div>
+                  <div>
+                    <label style={label}>Max profiles</label>
+                    <input type="number" min={1} max={100} value={f.maxItems ?? 25} onChange={(e) => set('maxItems', Math.max(1, Math.min(100, parseInt(e.target.value) || 25)))} style={field} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                  <div>
+                    <label style={label}>Current job titles</label>
+                    <TagInput value={f.currentJobTitles || []} onChange={(v) => set('currentJobTitles', v)} placeholder="Type + Enter" />
+                    <Why text={why('currentJobTitles')} />
+                  </div>
+                  <div>
+                    <label style={label}>Locations</label>
+                    <TagInput value={f.locations || []} onChange={(v) => set('locations', v)} placeholder="e.g. Chennai" />
+                    <Why text={why('locations')} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Filters */}
+              <div style={card}>
+                <div style={cardTitle}>Filters</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                  <div><label style={label}>Years of experience</label>{sel('yearsOfExperience', YEARS)}<Why text={why('yearsOfExperience')} /></div>
+                  <div><label style={label}>Seniority level</label>{sel('seniorityLevel', SENIORITY)}<Why text={why('seniorityLevel')} /></div>
+                  <div><label style={label}>Function</label>{sel('function', FUNCTIONS)}<Why text={why('function')} /></div>
+                  <div><label style={label}>Company headcount</label>{sel('companyHeadcount', HEADCOUNT)}<Why text={why('companyHeadcount')} /></div>
+                </div>
+                <div style={{ display: 'flex', gap: 20, marginTop: 16, flexWrap: 'wrap' }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--fg-secondary)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!f.recentlyChangedJobs} onChange={(e) => set('recentlyChangedJobs', e.target.checked || undefined)} /> Recently changed jobs
+                  </label>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--fg-secondary)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!f.recentlyPostedOnLinkedin} onChange={(e) => set('recentlyPostedOnLinkedin', e.target.checked || undefined)} /> Recently posted on LinkedIn
+                  </label>
+                </div>
+              </div>
+
+              {/* Agentic recovery */}
+              <div style={{ ...card, padding: '16px 20px' }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={f.autoBroaden !== false} onChange={(e) => set('autoBroaden', e.target.checked)} style={{ marginTop: 3 }} />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>Keep trying if the search finds nobody</div>
+                    <div style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--fg-muted)', marginTop: 3 }}>
+                      Instead of returning an empty list, the AI relaxes the filters and searches again — up to 3 times,
+                      stopping as soon as it finds candidates. Each retry is a paid search, so it stops early once the
+                      filters are broad enough that zero means nobody's there.
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              {/* Advanced */}
+              <div style={card}>
+                <button onClick={() => setAdvanced((a) => !a)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700, color: 'var(--fg-primary)', padding: 0, width: '100%' }}>
+                  <Icon name={advanced ? 'chevron-down' : 'chevron-right'} size={16} /> Advanced &amp; exclusions
+                </button>
+                {advanced && (
+                  <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    <div><label style={label}>Current companies</label><TagInput value={f.currentCompanies || []} onChange={(v) => set('currentCompanies', v)} placeholder="Company name" /><Why text={why('currentCompanies')} /></div>
+                    <div><label style={label}>Past companies</label><TagInput value={f.pastCompanies || []} onChange={(v) => set('pastCompanies', v)} placeholder="Company name" /></div>
+                    <div><label style={label}>Past job titles</label><TagInput value={f.pastJobTitles || []} onChange={(v) => set('pastJobTitles', v)} placeholder="Title" /><Why text={why('pastJobTitles')} /></div>
+                    <div><label style={label}>Schools</label><TagInput value={f.schools || []} onChange={(v) => set('schools', v)} placeholder="School" /></div>
+                    <div><label style={label}>Years at current company</label>{sel('yearsAtCurrentCompany', YEARS)}</div>
+                    <div><label style={label}>Company HQ locations</label><TagInput value={f.companyHqLocations || []} onChange={(v) => set('companyHqLocations', v)} placeholder="Location" /></div>
+                    <div><label style={label}>Industry IDs</label><TagInput value={f.industryIds || []} onChange={(v) => set('industryIds', v)} placeholder="LinkedIn industry id" /></div>
+                    <div><label style={label}>Exclude locations</label><TagInput value={f.excludeLocations || []} onChange={(v) => set('excludeLocations', v)} placeholder="Location" /></div>
+                    <div><label style={label}>Exclude current companies</label><TagInput value={f.excludeCurrentCompanies || []} onChange={(v) => set('excludeCurrentCompanies', v)} placeholder="Company" /></div>
+                    <div><label style={label}>Exclude past companies</label><TagInput value={f.excludePastCompanies || []} onChange={(v) => set('excludePastCompanies', v)} placeholder="Company" /></div>
+                    <div><label style={label}>Exclude current titles</label><TagInput value={f.excludeCurrentJobTitles || []} onChange={(v) => set('excludeCurrentJobTitles', v)} placeholder="Title" /><Why text={why('excludeCurrentJobTitles')} /></div>
+                    <div><label style={label}>Exclude past titles</label><TagInput value={f.excludePastJobTitles || []} onChange={(v) => set('excludePastJobTitles', v)} placeholder="Title" /></div>
+                    <div><label style={label}>Exclude schools</label><TagInput value={f.excludeSchools || []} onChange={(v) => set('excludeSchools', v)} placeholder="School" /></div>
+                    <div><label style={label}>Exclude industry IDs</label><TagInput value={f.excludeIndustryIds || []} onChange={(v) => set('excludeIndustryIds', v)} placeholder="LinkedIn industry id" /></div>
+                    <div><label style={label}>Exclude seniority</label>{sel('excludeSeniorityLevel', SENIORITY)}</div>
+                    <div><label style={label}>Exclude function</label>{sel('excludeFunction', FUNCTIONS)}</div>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <label style={label}>Profile languages</label>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+                        {LANGUAGES.map((lng) => {
+                          const on = (f.profileLanguages || []).includes(lng);
+                          return (
+                            <button
+                              key={lng} type="button"
+                              onClick={() => set('profileLanguages', on ? (f.profileLanguages || []).filter((x) => x !== lng) : [...(f.profileLanguages || []), lng])}
+                              style={{ padding: '5px 11px', borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', border: on ? '1px solid var(--primary)' : '1px solid var(--border-card)', background: on ? 'var(--accent-soft, #EEF0FE)' : '#FFF', color: on ? 'var(--primary)' : 'var(--fg-secondary)' }}
+                            >{lng}</button>
+                          );
+                        })}
+                      </div>
+                      <Why text={why('profileLanguages')} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {errorBox}
+            </>
+          )}
         </div>
       </div>
 
       {/* Footer */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 24px', borderTop: '1px solid var(--border-default)', background: '#FFF', flexShrink: 0 }}>
         <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>
-          Finds up to <b>{f.maxItems ?? 25}</b> LinkedIn profiles, then auto-enriches each (deep profile). Runs in the background.
+          {step === 'brief'
+            ? 'Reading the job description costs nothing and finds no candidates yet — you review everything before the search runs.'
+            : <>Finds up to <b>{f.maxItems ?? 25}</b> LinkedIn profiles, then auto-enriches each (deep profile). Runs in the background.</>}
         </div>
         <div style={{ flex: 1 }} />
-        <button onClick={onClose} style={{ height: 40, padding: '0 18px', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer', border: '1px solid var(--border-card)', background: '#FFF', color: 'var(--fg-secondary)', fontFamily: 'inherit' }}>Cancel</button>
-        <button onClick={submit} disabled={busy} style={{ height: 40, padding: '0 22px', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', border: 'none', background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 8, opacity: busy ? 0.7 : 1 }}>
-          <Icon name={busy ? 'loader' : 'search'} size={16} /> {busy ? 'Starting…' : 'Run search'}
-        </button>
+        {step === 'brief' ? (
+          <>
+            <button onClick={() => setStep('filters')} disabled={thinking} style={{ height: 40, padding: '0 18px', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: thinking ? 'not-allowed' : 'pointer', border: '1px solid var(--border-card)', background: '#FFF', color: 'var(--fg-secondary)', fontFamily: 'inherit' }}>Skip, I'll filter myself</button>
+            <button onClick={analyze} disabled={thinking} style={{ height: 40, padding: '0 22px', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: thinking ? 'not-allowed' : 'pointer', border: 'none', background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 8, opacity: thinking ? 0.7 : 1 }}>
+              <Icon name={thinking ? 'loader' : 'sparkles'} size={16} /> {thinking ? 'Reading the role…' : 'Suggest filters'}
+            </button>
+          </>
+        ) : (
+          <>
+            <button onClick={() => setStep('brief')} disabled={busy} style={{ height: 40, padding: '0 18px', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer', border: '1px solid var(--border-card)', background: '#FFF', color: 'var(--fg-secondary)', fontFamily: 'inherit' }}>Back</button>
+            <button onClick={submit} disabled={busy} style={{ height: 40, padding: '0 22px', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', border: 'none', background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 8, opacity: busy ? 0.7 : 1 }}>
+              <Icon name={busy ? 'loader' : 'search'} size={16} /> {busy ? 'Starting…' : 'Run search'}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

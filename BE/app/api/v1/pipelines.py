@@ -10,6 +10,7 @@ Endpoints for the recruitment candidate-sourcing product:
   POST   /pipelines/{id}/jobs                      — add job, spawn background search
   DELETE /pipelines/{id}/jobs/{jobId}              — remove job + its sole candidates
   POST   /pipelines/{id}/jobs/{jobId}/rerun        — re-run candidate search for a job
+  POST   /pipelines/{id}/jobs/{jobId}/suggest-filters — AI-proposed search filters
   GET    /pipelines/{id}/jobs/{jobId}/candidates   — paginated candidates for a job
 
   PATCH  /candidates/{id}                          — accept/reject (+ reason)
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +34,7 @@ from app.services.candidate_pipeline import (
     add_job_to_pipeline,
     enqueue_job_discover,
     enqueue_job_enrich,
+    recount_pipeline,
     rerun_job_search,
 )
 
@@ -81,6 +84,25 @@ class JobMatchSchema(BaseModel):
     returnTop: Optional[int] = None
 
 
+class SuggestFiltersSchema(BaseModel):
+    """The recruiter's optional brief for the Strategist.
+
+    Every field is a hint, not a requirement — the job title, location, company
+    and JD are read from the database. Filling these in sharpens the proposal.
+    """
+    seniorityHint: Optional[str] = None
+    mustHaveSkills: Optional[List[str]] = None
+    niceToHaveSkills: Optional[List[str]] = None
+    minYears: Optional[float] = None
+    targetIndustries: Optional[List[str]] = None
+    targetCompanies: Optional[List[str]] = None
+    excludeCompanies: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
+    workModel: Optional[str] = None
+    openToRelocation: Optional[bool] = None
+    notes: Optional[str] = None
+
+
 class DiscoverSchema(BaseModel):
     """Apify LinkedIn-search filters from the discovery questionnaire.
 
@@ -90,6 +112,14 @@ class DiscoverSchema(BaseModel):
     model_config = {"extra": "allow"}
     searchQuery: Optional[str] = None
     maxItems: Optional[int] = 25
+    # ── Agentic search (not actor filters — stripped before the actor call) ──
+    # When true, a zero-result search is retried with agent-broadened filters
+    # instead of returning an empty list.
+    autoBroaden: Optional[bool] = True
+    # The brief from suggest-filters, so the Broadener knows the role's intent.
+    brief: Optional[SuggestFiltersSchema] = None
+    # The Strategist's pre-planned fallbacks, echoed back from suggest-filters.
+    broadeningLadder: Optional[List[Dict[str, Any]]] = None
     locations: Optional[List[str]] = None
     currentJobTitles: Optional[List[str]] = None
     pastJobTitles: Optional[List[str]] = None
@@ -358,19 +388,9 @@ async def remove_job(pipeline_id: str, job_id: str, db=Depends(get_db)):
             {"$pull": {"sourceJobIds": job_id}, "$set": {"updatedAt": now}},
         )
 
-        # 4. Roll up pipeline totals
-        total = await candidates.count_documents({"pipelineId": pipeline_id})
-        accepted = await candidates.count_documents({"pipelineId": pipeline_id, "isAccepted": True})
-        rejected = await candidates.count_documents({"pipelineId": pipeline_id, "isAccepted": False})
-        await pipelines.update_one(
-            {"_id": oid},
-            {"$set": {
-                "totalCandidates": total,
-                "acceptedCount": accepted,
-                "rejectedCount": rejected,
-                "updatedAt": now,
-            }},
-        )
+        # 4. Roll up pipeline totals + the surviving jobs' counts (step 3 detached
+        #    this job from candidates that other jobs also surfaced).
+        await recount_pipeline(pipeline_id)
         return {"success": True, "deleted_candidates": deleted.deleted_count}
     except HTTPException:
         raise
@@ -397,15 +417,57 @@ async def rerun_job(pipeline_id: str, job_id: str):
 # ── POST /{id}/jobs/{jobId}/discover (Apify search questionnaire → enrich) ────
 
 
+@router.post("/{pipeline_id}/jobs/{job_id}/suggest-filters")
+async def suggest_job_filters(
+    pipeline_id: str, job_id: str, body: SuggestFiltersSchema | None = None,
+):
+    """AI-propose the LinkedIn search filters for a job (prefill).
+
+    Reads the job title, JD and company from the database, layers on the
+    recruiter's optional brief, and returns a ``SearchStrategy``: the filters
+    real profiles actually match, why each was chosen, a broadening ladder, and a
+    confidence score.
+
+    Reasoning only — one LLM call, no vendor spend, no candidates sourced. Never
+    fails the request: with no LLM key (or on an agent error) it returns the
+    literal job-title prefill with ``confidence: 0`` and a warning.
+    """
+    from app.services.sourcing import build_brief, propose_strategy
+
+    try:
+        hints = body.model_dump(exclude_none=True) if body else {}
+        brief = await build_brief(pipeline_id, job_id, hints)
+    except ValueError as ve:
+        raise HTTPException(404, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Error building the search brief: {e}")
+
+    strategy = await propose_strategy(brief)
+    return {"success": True, "strategy": strategy.model_dump(mode="json")}
+
+
 @router.post("/{pipeline_id}/jobs/{job_id}/discover")
 async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverSchema):
     """Run the Apify LinkedIn-search actor with the questionnaire filters, store
     the results as candidates, then auto-enrich each via the profile scraper —
-    all in the background. Poll the job's ``searchStatus`` then ``enrichStatus``."""
+    all in the background. Poll the job's ``searchStatus`` then ``enrichStatus``.
+
+    When ``autoBroaden`` is set, a zero-result search doesn't just report zero:
+    the Broadener agent relaxes the filters and retries (bounded by
+    ``SOURCING_MAX_BROADEN_ATTEMPTS``). Every attempt is recorded on the job's
+    ``searchAttempts`` for the UI to show.
+    """
     try:
-        filters = body.model_dump(exclude_none=True)
-        max_items = int(filters.pop("maxItems", 25) or 25)
-        result = await enqueue_job_discover(pipeline_id, job_id, filters, max_items)
+        payload = body.model_dump(exclude_none=True)
+        # Strip the agentic controls — everything left is an actor filter.
+        max_items = int(payload.pop("maxItems", 25) or 25)
+        auto_broaden = bool(payload.pop("autoBroaden", True))
+        hints = payload.pop("brief", None)
+        ladder = payload.pop("broadeningLadder", None)
+        result = await enqueue_job_discover(
+            pipeline_id, job_id, payload, max_items,
+            auto_broaden=auto_broaden, hints=hints, ladder=ladder,
+        )
         return {"success": True, **result}
     except ValueError as ve:
         raise HTTPException(404, str(ve))
@@ -457,24 +519,157 @@ async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSche
 # ── GET /{id}/jobs/{jobId}/candidates ────────────────────────────────────
 
 
+# ── Column filtering ──────────────────────────────────────────────────────
+# The candidates table filters per column, combined with AND across columns and
+# OR within one column (checking Infosys + BearingPoint means "either"). Applied
+# server-side because the table is paginated: filtering the fetched page only
+# would give wrong totals and hide matches on other pages.
+
+# Filter key → the candidate field it targets. Used by both the list query and
+# the facet aggregation, so the two can never disagree about what a filter means.
+_FACET_FIELDS = {"companies": "currentCompany", "locations": "location", "status": "isAccepted"}
+
+
+def _candidate_query(
+    pipeline_id: str, job_id: str, *,
+    name: Optional[str] = None,
+    role: Optional[str] = None,
+    companies: Optional[List[str]] = None,
+    locations: Optional[List[str]] = None,
+    status: Optional[List[str]] = None,
+    match_min: Optional[int] = None,
+    match_max: Optional[int] = None,
+    exclude: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build the Mongo query for the candidates table.
+
+    `exclude` drops one filter key from the query. The facet aggregation uses it
+    so each column's option counts reflect the OTHER columns' filters but not its
+    own — otherwise ticking one company would collapse that column's own list to
+    a single option, and you could never widen the selection.
+    """
+    query: Dict[str, Any] = {"pipelineId": pipeline_id, "sourceJobIds": job_id}
+
+    # Free text: case-insensitive "contains". The value is escaped — an
+    # unescaped user string is a regex, so a stray "(" would 500 the endpoint.
+    if name and exclude != "name":
+        query["displayName"] = {"$regex": re.escape(name.strip()), "$options": "i"}
+    if role and exclude != "role":
+        query["currentTitle"] = {"$regex": re.escape(role.strip()), "$options": "i"}
+
+    if companies and exclude != "companies":
+        query["currentCompany"] = {"$in": companies}
+    if locations and exclude != "locations":
+        query["location"] = {"$in": locations}
+
+    if status and exclude != "status":
+        # Both ticked is the same as no filter — don't emit $in:[true,false],
+        # which would wrongly drop candidates that have no decision yet.
+        wanted = {s.lower() for s in status}
+        if wanted == {"accepted"}:
+            query["isAccepted"] = True
+        elif wanted == {"rejected"}:
+            query["isAccepted"] = False
+
+    if exclude != "match":
+        bounds = {}
+        if match_min is not None:
+            bounds["$gte"] = match_min
+        if match_max is not None:
+            bounds["$lte"] = match_max
+        if bounds:
+            query["matchScore"] = bounds
+
+    return query
+
+
+@router.get("/{pipeline_id}/jobs/{job_id}/candidates/facets")
+async def job_candidate_facets(
+    pipeline_id: str,
+    job_id: str,
+    name: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    companies: Optional[List[str]] = Query(None),
+    locations: Optional[List[str]] = Query(None),
+    status: Optional[List[str]] = Query(None),
+    match_min: Optional[int] = Query(None),
+    match_max: Optional[int] = Query(None),
+    db=Depends(get_db),
+):
+    """Distinct values + counts for each filterable column, honouring the other
+    columns' active filters. Powers the checkboxes in the header dropdowns.
+
+    One `$facet` aggregation: each branch re-filters the job's candidates with
+    every filter except its own column's.
+    """
+    try:
+        col = db["candidates"]
+        args = dict(name=name, role=role, companies=companies, locations=locations,
+                    status=status, match_min=match_min, match_max=match_max)
+
+        def branch(key: str, field: str) -> List[Dict[str, Any]]:
+            # $facet branches all start from the same input, so each re-applies
+            # its own $match rather than sharing an earlier one.
+            return [
+                {"$match": _candidate_query(pipeline_id, job_id, exclude=key, **args)},
+                {"$group": {"_id": f"${field}", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1, "_id": 1}},
+                {"$limit": 500},
+            ]
+
+        pipeline = [
+            {"$match": {"pipelineId": pipeline_id, "sourceJobIds": job_id}},
+            {"$facet": {key: branch(key, field) for key, field in _FACET_FIELDS.items()}},
+        ]
+        result = await col.aggregate(pipeline).to_list(1)
+        raw = result[0] if result else {}
+
+        def values(key: str) -> List[Dict[str, Any]]:
+            out = []
+            for b in raw.get(key, []):
+                v = b["_id"]
+                # Blank company/location carries no meaning as a filter option.
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    continue
+                out.append({"value": v, "count": b["count"]})
+            return out
+
+        return {
+            "companies": values("companies"),
+            "locations": values("locations"),
+            # isAccepted groups to true/false — relabel for the UI.
+            "status": [
+                {"value": "accepted" if b["_id"] else "rejected", "count": b["count"]}
+                for b in raw.get("status", []) if b["_id"] is not None
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error building candidate facets: {e}")
+
+
 @router.get("/{pipeline_id}/jobs/{job_id}/candidates")
 async def list_job_candidates(
     pipeline_id: str,
     job_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
-    quality: Optional[str] = Query(None, description="all|accepted|rejected"),
+    name: Optional[str] = Query(None, description="Candidate name contains"),
+    role: Optional[str] = Query(None, description="Current role contains"),
+    companies: Optional[List[str]] = Query(None, description="Current company is any of"),
+    locations: Optional[List[str]] = Query(None, description="Location is any of"),
+    status: Optional[List[str]] = Query(None, description="accepted and/or rejected"),
+    match_min: Optional[int] = Query(None, ge=0, le=100),
+    match_max: Optional[int] = Query(None, ge=0, le=100),
     sort_by: str = Query("matchScore", description="matchScore|createdAt"),
     sort_order: str = Query("desc"),
     db=Depends(get_db),
 ):
     try:
         col = db["candidates"]
-        query: Dict[str, Any] = {"pipelineId": pipeline_id, "sourceJobIds": job_id}
-        if quality == "accepted":
-            query["isAccepted"] = True
-        elif quality == "rejected":
-            query["isAccepted"] = False
+        query = _candidate_query(
+            pipeline_id, job_id, name=name, role=role, companies=companies,
+            locations=locations, status=status, match_min=match_min, match_max=match_max,
+        )
         total = await col.count_documents(query)
         skip = (page - 1) * limit
         direction = 1 if sort_order == "asc" else -1
@@ -540,21 +735,11 @@ async def patch_candidate(candidate_id: str, body: CandidatePatchSchema, db=Depe
 
         await col.update_one({"_id": oid}, {"$set": update})
 
-        # Roll up pipeline totals + per-job counts
+        # Roll up pipeline totals + per-job counts. This used to update only the
+        # pipeline, leaving the per-job accepted/rejected stale after a decision.
         pipeline_id = cand.get("pipelineId")
         if pipeline_id:
-            total = await col.count_documents({"pipelineId": pipeline_id})
-            accepted = await col.count_documents({"pipelineId": pipeline_id, "isAccepted": True})
-            rejected = await col.count_documents({"pipelineId": pipeline_id, "isAccepted": False})
-            await pipelines.update_one(
-                {"_id": ObjectId(pipeline_id)},
-                {"$set": {
-                    "totalCandidates": total,
-                    "acceptedCount": accepted,
-                    "rejectedCount": rejected,
-                    "updatedAt": datetime.utcnow(),
-                }},
-            )
+            await recount_pipeline(pipeline_id)
 
         out = await col.find_one({"_id": oid})
         return _serialize_candidate(out)

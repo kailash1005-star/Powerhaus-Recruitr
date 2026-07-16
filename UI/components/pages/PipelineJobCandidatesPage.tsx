@@ -7,23 +7,41 @@ import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { CandidateSlideOut } from '../CandidateSlideOut';
 import { CandidateDiscoveryForm } from '../CandidateDiscoveryForm';
+import { CandidateColumnFilter } from '../CandidateColumnFilter';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate, enrichCandidate,
-  fetchCandidate, bulkEnrichJobCandidates, runJobMatch,
-  type Candidate, type Pipeline,
+  fetchCandidate, bulkEnrichJobCandidates, runJobMatch, fetchCandidateFacets,
+  type Candidate, type Pipeline, type CandidateFilters, type CandidateFacets,
 } from '@/lib/api';
 
 interface Props { pipelineId: string; jobId: string }
 
-type CandFilter = 'all' | 'accepted' | 'rejected';
-
-const FILTER_OPTIONS: { key: CandFilter; label: string }[] = [
-  { key: 'all', label: 'All Candidates' },
-  { key: 'accepted', label: 'Accepted' },
-  { key: 'rejected', label: 'Rejected' },
-];
-
 const ROWS_OPTIONS = [25, 50, 100];
+
+const EMPTY_FACETS: CandidateFacets = { companies: [], locations: [], status: [] };
+
+const STATUS_LABEL: Record<string, string> = { accepted: 'Accepted', rejected: 'Rejected' };
+
+/** Human summary of one active filter, for the chips above the table. */
+function describeFilter(key: keyof CandidateFilters, f: CandidateFilters): string | null {
+  switch (key) {
+    case 'name':      return f.name ? `Candidate contains "${f.name}"` : null;
+    case 'role':      return f.role ? `Role contains "${f.role}"` : null;
+    case 'companies': return f.companies?.length ? `Company: ${f.companies.join(', ')}` : null;
+    case 'locations': return f.locations?.length ? `Location: ${f.locations.join(', ')}` : null;
+    case 'status':    return f.status?.length ? `Status: ${f.status.map((s) => STATUS_LABEL[s]).join(', ')}` : null;
+    case 'matchMin':
+    case 'matchMax': {
+      const { matchMin: lo, matchMax: hi } = f;
+      if (lo == null && hi == null) return null;
+      // One chip covers the pair; only the low end renders it.
+      if (key === 'matchMax' && lo != null) return null;
+      if (lo != null && hi != null) return `Match ${lo}–${hi}`;
+      return lo != null ? `Match ≥ ${lo}` : `Match ≤ ${hi}`;
+    }
+    default: return null;
+  }
+}
 
 // Backend only supports sorting by these two fields.
 const SORT_FIELDS: Record<string, 'matchScore' | 'createdAt'> = {
@@ -83,7 +101,10 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const [bulkBusy, setBulkBusy] = useState<null | 'enrich' | 'match'>(null);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
 
-  const [candFilter, setCandFilter] = useState<CandFilter>('all');
+  // Per-column filters (AND across columns). Server-side: the table is paginated,
+  // so filtering only the fetched page would report wrong totals and miss rows.
+  const [filters, setFilters] = useState<CandidateFilters>({});
+  const [facets, setFacets] = useState<CandidateFacets>(EMPTY_FACETS);
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(50);
   const [pages, setPages] = useState(1);
@@ -120,7 +141,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     try {
       const sortBy = sortField ? SORT_FIELDS[sortField] : undefined;
       const c = await fetchPipelineCandidates(
-        pipelineId, jobId, page, rowsPerPage, candFilter, sortBy, sortOrder,
+        pipelineId, jobId, page, rowsPerPage, filters, sortBy, sortOrder,
       );
       setCandidates(c.candidates);
       setPages(c.pages);
@@ -128,20 +149,75 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     } catch (e: any) {
       setActionError(e.message || 'Failed to load candidates');
     }
-  }, [pipelineId, jobId, page, rowsPerPage, candFilter, sortField, sortOrder]);
+  }, [pipelineId, jobId, page, rowsPerPage, filters, sortField, sortOrder]);
+
+  // Facet counts follow the filters (each column's options honour the others').
+  const loadFacets = useCallback(async () => {
+    try {
+      setFacets(await fetchCandidateFacets(pipelineId, jobId, filters));
+    } catch (e) {
+      console.error(e);  // Options going missing must not break the table.
+    }
+  }, [pipelineId, jobId, filters]);
 
   useEffect(() => {
     setLoading(true);
     Promise.all([loadPipeline(), loadCandidates()]).finally(() => setLoading(false));
   }, [loadPipeline, loadCandidates]);
 
-  // A freshly-added job awaits the search questionnaire — open it once.
+  useEffect(() => { loadFacets(); }, [loadFacets]);
+
+  /** Apply a column's filter: merge, reset to page 1, drop stale selections. */
+  const setFilter = useCallback((patch: Partial<CandidateFilters>) => {
+    setFilters((prev) => {
+      const next: CandidateFilters = { ...prev, ...patch };
+      // Strip empties so `activeFilters` and the request stay clean.
+      (Object.keys(next) as (keyof CandidateFilters)[]).forEach((k) => {
+        const v = next[k];
+        if (v == null || v === '' || (Array.isArray(v) && v.length === 0)) delete next[k];
+      });
+      return next;
+    });
+    setPage(1);
+    // Selection is keyed by row; rows about to change means it can't survive.
+    setSelected(new Set());
+  }, []);
+
+  const activeFilters = useMemo(
+    () => (Object.keys(filters) as (keyof CandidateFilters)[])
+      .map((k) => ({ key: k, label: describeFilter(k, filters) }))
+      .filter((x): x is { key: keyof CandidateFilters; label: string } => x.label !== null),
+    [filters],
+  );
+
+  const clearFilter = useCallback((key: keyof CandidateFilters) => {
+    // Match is one chip over two keys — clearing it must drop both bounds.
+    if (key === 'matchMin' || key === 'matchMax') {
+      setFilter({ matchMin: undefined, matchMax: undefined });
+    } else {
+      setFilter({ [key]: undefined } as Partial<CandidateFilters>);
+    }
+  }, [setFilter]);
+
+  // Open the questionnaire on arrival when either:
+  //   • the job is freshly added and still awaiting its first search, or
+  //   • we arrived from the pipeline's "New search" button (?search=1).
+  // Once only — reopening on every poll would fight the user closing it.
   useEffect(() => {
-    if (!loading && jobEntry?.searchStatus === 'awaiting_input' && total === 0 && !autoOpenedRef.current) {
+    if (loading || autoOpenedRef.current) return;
+    // Read the flag off the URL directly rather than via useSearchParams: that
+    // hook forces the whole page under a Suspense boundary (Next's CSR bailout),
+    // which renders this route blank. We only need a one-shot read on mount.
+    const requested = new URLSearchParams(window.location.search).get('search') === '1';
+    const awaitingFirstSearch = jobEntry?.searchStatus === 'awaiting_input' && total === 0;
+    if (requested || awaitingFirstSearch) {
       autoOpenedRef.current = true;
       setDiscoverOpen(true);
+      // ?search=1 is a one-shot instruction, not state — drop it so a refresh or
+      // a Back into this page doesn't reopen the form over the results.
+      if (requested) router.replace(`/candidates/${pipelineId}/jobs/${jobId}`, { scroll: false });
     }
-  }, [loading, jobEntry?.searchStatus, total]);
+  }, [loading, jobEntry?.searchStatus, total, router, pipelineId, jobId]);
 
   // Poll the job through search → auto-enrich after the questionnaire is run.
   const pollDiscover = useCallback(async () => {
@@ -450,15 +526,44 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         padding: '12px 24px', borderBottom: '1px solid var(--border-default)',
         background: 'var(--bg-app)', flexWrap: 'wrap',
       }}>
-        {FILTER_OPTIONS.map((f) => (
-          <button
-            key={f.key}
-            onClick={() => { setCandFilter(f.key); setPage(1); setSelected(new Set()); }}
-            style={chipStyle(candFilter === f.key)}
-          >
-            {f.label}
-          </button>
-        ))}
+        {/* Active column filters. The old All/Accepted/Rejected tabs are gone —
+            Status is now a column filter like every other. */}
+        {activeFilters.length === 0 ? (
+          <span style={{ fontSize: 12.5, color: 'var(--fg-muted)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Icon name="filter" size={12} />
+            Filter any column from its header
+          </span>
+        ) : (
+          <>
+            {activeFilters.map(({ key, label }) => (
+              <span
+                key={key}
+                title={label}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: 320,
+                  padding: '4px 8px 4px 10px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                  background: 'var(--accent-soft, #EEF0FE)', color: 'var(--primary)',
+                  border: '1px solid var(--primary)',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+                <button
+                  onClick={() => clearFilter(key)}
+                  title="Remove this filter"
+                  style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--primary)', display: 'inline-flex', padding: 0, flexShrink: 0 }}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={() => { setFilters({}); setPage(1); setSelected(new Set()); }}
+              style={{ ...chipStyle(false), padding: '4px 10px', fontSize: 12.5 }}
+            >
+              Clear all
+            </button>
+          </>
+        )}
         <div style={{ flex: 1 }} />
         {selected.size > 0 && (
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginRight: 8 }}>
@@ -542,9 +647,30 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                     style={{ cursor: 'pointer' }}
                   />
                 </th>
-                <th style={{ ...thStyle, width: 240 }}>Candidate</th>
-                <th style={{ ...thStyle, width: 180 }}>Current Company</th>
-                <th style={{ ...thStyle, width: 200 }}>Current Role</th>
+                <th style={{ ...thStyle, width: 240 }}>
+                  <CandidateColumnFilter
+                    label="Candidate" kind="text" active={!!filters.name}
+                    text={filters.name}
+                    onText={(v) => setFilter({ name: v || undefined })}
+                    onClear={() => clearFilter('name')}
+                  />
+                </th>
+                <th style={{ ...thStyle, width: 180 }}>
+                  <CandidateColumnFilter
+                    label="Current Company" kind="options" active={!!filters.companies?.length}
+                    options={facets.companies} selected={filters.companies}
+                    onOptions={(v) => setFilter({ companies: v })}
+                    onClear={() => clearFilter('companies')}
+                  />
+                </th>
+                <th style={{ ...thStyle, width: 200 }}>
+                  <CandidateColumnFilter
+                    label="Current Role" kind="text" active={!!filters.role}
+                    text={filters.role}
+                    onText={(v) => setFilter({ role: v || undefined })}
+                    onClear={() => clearFilter('role')}
+                  />
+                </th>
                 <th
                   style={{ ...thStyle, width: 100, cursor: 'pointer' }}
                   onClick={() => handleSort('added')}
@@ -554,17 +680,41 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                     <SortIcon active={sortField === 'added'} order={sortOrder} />
                   </span>
                 </th>
-                <th style={{ ...thStyle, width: 150 }}>Location</th>
-                <th
-                  style={{ ...thStyle, width: 90, cursor: 'pointer' }}
-                  onClick={() => handleSort('match')}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                    Match
+                <th style={{ ...thStyle, width: 150 }}>
+                  <CandidateColumnFilter
+                    label="Location" kind="options" active={!!filters.locations?.length}
+                    options={facets.locations} selected={filters.locations}
+                    onOptions={(v) => setFilter({ locations: v })}
+                    onClear={() => clearFilter('locations')}
+                  />
+                </th>
+                <th style={{ ...thStyle, width: 110 }}>
+                  {/* Sorting stays on the label; the funnel stops the click so
+                      opening the filter doesn't also flip the sort order. */}
+                  <span
+                    style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}
+                    onClick={() => handleSort('match')}
+                  >
+                    <CandidateColumnFilter
+                      label="Match" kind="range"
+                      active={filters.matchMin != null || filters.matchMax != null}
+                      min={filters.matchMin} max={filters.matchMax}
+                      onRange={(lo, hi) => setFilter({ matchMin: lo, matchMax: hi })}
+                      onClear={() => clearFilter('matchMin')}
+                    />
                     <SortIcon active={sortField === 'match'} order={sortOrder} />
                   </span>
                 </th>
-                <th style={{ ...thStyle, width: 110 }}>Status</th>
+                <th style={{ ...thStyle, width: 110 }}>
+                  <CandidateColumnFilter
+                    label="Status" kind="options" active={!!filters.status?.length}
+                    align="right"
+                    options={facets.status} selected={filters.status}
+                    optionLabel={(v) => STATUS_LABEL[v] || v}
+                    onOptions={(v) => setFilter({ status: v as ('accepted' | 'rejected')[] })}
+                    onClear={() => clearFilter('status')}
+                  />
+                </th>
                 <th style={{ ...thStyle, width: 200, textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>

@@ -118,6 +118,31 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(default="", description="Google Gemini API key (for google-gla: models)")
     OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API key (for openrouter: models)")
 
+    # ── Agentic candidate sourcing (Strategist + Broadener) ─────────────
+    # Two Pydantic AI agents that turn a job into LinkedIn search filters:
+    #   • Strategist (smart) — reads the JD + recruiter brief ONCE and proposes
+    #     the filters a real person would actually match, plus a broadening
+    #     ladder to fall back on. Reasoning only, no tools, no vendor spend.
+    #   • Broadener (fast) — called only when a search returns zero, to relax the
+    #     filters for the next attempt. Runs up to MAX_BROADEN_ATTEMPTS times.
+    # Both take a Pydantic AI model string, so providers swap the same way
+    # AGENT_MODEL does.
+    SOURCING_STRATEGY_MODEL: str = Field(
+        default="openai:gpt-4o",
+        description="Pydantic AI model for the search Strategist (one call per prefill)",
+    )
+    SOURCING_BROADEN_MODEL: str = Field(
+        default="openai:gpt-4o-mini",
+        description="Pydantic AI model for the Broadener (one call per zero-result retry)",
+    )
+    # Hard cost guard: a zero-result search triggers at most this many broadened
+    # retries. Each retry is a fresh Apify search page (~$0.10) plus enrichment of
+    # whatever it finds, so this bounds the worst-case spend per discovery run.
+    SOURCING_MAX_BROADEN_ATTEMPTS: int = Field(
+        default=3,
+        description="Max agent-broadened retries after a zero-result candidate search",
+    )
+
     # ── MCP tool servers the agent connects to ──────────────────────────
     # The agent's tools come from MCP server(s). Point it at the LinkedIn MCP
     # server we built. Prefer HTTP (run it as a service) OR stdio (spawn it).

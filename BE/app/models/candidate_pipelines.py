@@ -30,6 +30,10 @@ class PipelineJobModel(BaseModel):
     rejectedCount: int = 0
     appliedIndustryFallback: bool = False
     searchError: Optional[str] = None
+    # One entry per executed search, including the agent-broadened retries a
+    # zero-result search triggers — the timeline the UI shows to explain what the
+    # agent tried and why. See services/sourcing/models.py::SearchAttempt.
+    searchAttempts: List[dict] = Field(default_factory=list)
 
 
 class CandidatePipelinesModel(BaseModel):

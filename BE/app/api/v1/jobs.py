@@ -116,11 +116,14 @@ async def create_manual_job(body: ManualJobCreateSchema, db=Depends(get_db)):
             "location": body.location or "",
             "boardName": "manual",
             "qualityStatus": "good",
-            "jobDetails": {"description": body.description} if body.description else None,
             "source": "manual",
             "createdAt": now,
             "updatedAt": now,
         }
+        # The `jobs` schema validates jobDetails as bsonType "object"; a null
+        # value fails validation, so only include it when there's a description.
+        if body.description:
+            doc["jobDetails"] = {"description": body.description}
         # The `jobs` collection schema requires companyId to be a real ObjectId
         # (not a string), so cast it — and only include it when valid.
         if body.companyId:

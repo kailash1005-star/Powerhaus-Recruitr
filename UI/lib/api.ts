@@ -632,8 +632,54 @@ export function createManualJob(payload: ManualJobPayload): Promise<JobSearchRes
   return post('/api/v1/jobs', payload);
 }
 
+/**
+ * LEGACY — no callers. Runs the old Apollo people-search with the job title
+ * verbatim and no review step, which is what returned poor/zero results.
+ *
+ * Re-searching a job now goes through the AI discovery flow instead: the
+ * pipeline's "New search" button routes to the job's candidates page with
+ * `?search=1`, which opens the questionnaire → suggestJobFilters →
+ * discoverJobCandidates. Don't wire this back up without that reason.
+ */
 export function rerunPipelineJob(pipelineId: string, jobId: string): Promise<unknown> {
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/rerun`, {});
+}
+
+/**
+ * Per-column filters for the candidates table. Combined with AND across columns
+ * and OR within one column (two companies means "either"). Empty/omitted = no
+ * filter on that column.
+ */
+export interface CandidateFilters {
+  /** Candidate name contains (case-insensitive). */
+  name?: string;
+  /** Current role contains (case-insensitive). */
+  role?: string;
+  companies?: string[];
+  locations?: string[];
+  status?: ('accepted' | 'rejected')[];
+  matchMin?: number;
+  matchMax?: number;
+}
+
+/** Distinct values + counts per filterable column, for the header dropdowns. */
+export interface CandidateFacets {
+  companies: { value: string; count: number }[];
+  locations: { value: string; count: number }[];
+  status: { value: 'accepted' | 'rejected'; count: number }[];
+}
+
+/** Serialize filters to query params; repeated keys for multi-value columns. */
+function filterParams(f: CandidateFilters = {}): URLSearchParams {
+  const p = new URLSearchParams();
+  if (f.name?.trim()) p.set('name', f.name.trim());
+  if (f.role?.trim()) p.set('role', f.role.trim());
+  f.companies?.forEach((v) => p.append('companies', v));
+  f.locations?.forEach((v) => p.append('locations', v));
+  f.status?.forEach((v) => p.append('status', v));
+  if (f.matchMin != null) p.set('match_min', String(f.matchMin));
+  if (f.matchMax != null) p.set('match_max', String(f.matchMax));
+  return p;
 }
 
 export function fetchPipelineCandidates(
@@ -641,14 +687,27 @@ export function fetchPipelineCandidates(
   jobId: string,
   page = 1,
   limit = 50,
-  quality: 'all' | 'accepted' | 'rejected' = 'all',
+  filters: CandidateFilters = {},
   sortBy?: 'matchScore' | 'createdAt',
   sortOrder: 'asc' | 'desc' = 'desc',
 ): Promise<CandidateListResponse> {
-  let url = `/api/v1/pipelines/${pipelineId}/jobs/${jobId}/candidates?page=${page}&limit=${limit}`;
-  if (quality !== 'all') url += `&quality=${quality}`;
-  if (sortBy) url += `&sort_by=${sortBy}&sort_order=${sortOrder}`;
-  return get(url);
+  const p = filterParams(filters);
+  p.set('page', String(page));
+  p.set('limit', String(limit));
+  if (sortBy) { p.set('sort_by', sortBy); p.set('sort_order', sortOrder); }
+  return get(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/candidates?${p}`);
+}
+
+/**
+ * Option lists for the column filter dropdowns.
+ *
+ * Counts honour the OTHER columns' active filters but not the column's own, so
+ * the list you're picking from never collapses to your current selection.
+ */
+export function fetchCandidateFacets(
+  pipelineId: string, jobId: string, filters: CandidateFilters = {},
+): Promise<CandidateFacets> {
+  return get(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/candidates/facets?${filterParams(filters)}`);
 }
 
 export function patchCandidate(
@@ -708,12 +767,69 @@ export interface DiscoverFilters {
   profileLanguages?: string[];
   recentlyChangedJobs?: boolean;
   recentlyPostedOnLinkedin?: boolean;
+  // ── Agentic search controls (stripped server-side before the actor call) ──
+  /** Retry a zero-result search with agent-broadened filters. Default true. */
+  autoBroaden?: boolean;
+  /** The brief sent to suggest-filters, so the Broadener knows the role's intent. */
+  brief?: SearchBrief;
+  /** The Strategist's pre-planned fallbacks, echoed back from suggest-filters. */
+  broadeningLadder?: BroadeningStep[];
+}
+
+/** The recruiter's optional hints for the Strategist. All fields optional. */
+export interface SearchBrief {
+  seniorityHint?: string;
+  mustHaveSkills?: string[];
+  niceToHaveSkills?: string[];
+  minYears?: number;
+  targetIndustries?: string[];
+  targetCompanies?: string[];
+  excludeCompanies?: string[];
+  languages?: string[];
+  workModel?: '' | 'onsite' | 'hybrid' | 'remote';
+  openToRelocation?: boolean;
+  notes?: string;
+}
+
+export interface BroadeningStep {
+  step: number;
+  action: string;
+  detail: string;
+  filters: DiscoverFilters;
+}
+
+/** The Strategist's proposal for one job. */
+export interface SearchStrategy {
+  interpretedRole: string;
+  titleReasoning: string;
+  filters: DiscoverFilters;
+  rationale: { field: string; why: string }[];
+  broadeningLadder: BroadeningStep[];
+  /** 0 means the AI didn't run (no key / error) and this is a literal prefill. */
+  confidence: number;
+  warnings: string[];
+}
+
+/**
+ * AI-propose the LinkedIn search filters for a job (prefill).
+ *
+ * Reasoning only — one LLM call, no vendor spend, no candidates sourced. Never
+ * rejects: with no LLM key it returns the literal job-title prefill with
+ * confidence 0 and a warning, so the form always has something to show.
+ */
+export function suggestJobFilters(
+  pipelineId: string, jobId: string, brief?: SearchBrief,
+): Promise<{ success: boolean; strategy: SearchStrategy }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/suggest-filters`, brief || {});
 }
 
 /**
  * Run the Apify LinkedIn-search actor for a job with the questionnaire filters,
  * store results as candidates, then auto-enrich each (background). Poll the
  * pipeline's job.searchStatus → then job.enrichStatus.
+ *
+ * With `autoBroaden`, a zero-result search is retried with agent-relaxed filters
+ * rather than returning empty; each attempt lands on the job's `searchAttempts`.
  */
 export function discoverJobCandidates(
   pipelineId: string, jobId: string, filters: DiscoverFilters,

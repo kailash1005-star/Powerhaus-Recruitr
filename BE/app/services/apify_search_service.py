@@ -112,6 +112,34 @@ _ENUM_FILTERS = {
 }
 
 
+# Public enum vocabulary: {our filter key: {code: human title}}. The sourcing
+# agents are prompted on these tables so an LLM can only ever propose a value the
+# actor accepts, and the UI can render the same labels. Read-only — mutate the
+# private tables above instead.
+ENUM_TABLES: Dict[str, Dict[str, str]] = {
+    "yearsOfExperience": _YEARS,
+    "yearsAtCurrentCompany": _YEARS,
+    "seniorityLevel": _SENIORITY,
+    "excludeSeniorityLevel": _SENIORITY,
+    "function": _FUNCTION,
+    "excludeFunction": _FUNCTION,
+    "companyHeadcount": _HEADCOUNT,
+}
+
+
+def resolve_enum(our_key: str, value: Any) -> Optional[str]:
+    """Normalize a code-or-human-title to the code the actor wants.
+
+    Accepts either form ("120" or "Senior") case/space/comma-insensitively.
+    Returns None for blank or unrecognised values, so callers can drop the
+    filter rather than send something the actor will reject.
+    """
+    entry = _ENUM_FILTERS.get(our_key)
+    if not entry or value is None or str(value).strip() == "":
+        return None
+    return entry[1].get(_norm(value))
+
+
 def _clean_list(v: Any) -> List[str]:
     if not v:
         return []

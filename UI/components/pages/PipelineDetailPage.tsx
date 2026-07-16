@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import {
-  fetchPipeline, rerunPipelineJob, removeJobFromPipeline,
+  fetchPipeline, removeJobFromPipeline,
   type Pipeline, type PipelineJob, type PipelineJobSearchStatus,
 } from '@/lib/api';
 
@@ -74,17 +74,15 @@ export function PipelineDetailPage({ pipelineId }: Props) {
     return () => clearInterval(id);
   }, [pipeline, load]);
 
-  const onRerun = async (jobId: string) => {
-    setBusyJob(jobId);
-    setActionError(null);
-    try {
-      await rerunPipelineJob(pipelineId, jobId);
-      await load();
-    } catch (e: any) {
-      setActionError(e.message || 'Failed to rerun');
-    } finally {
-      setBusyJob(null);
-    }
+  /** Open the AI search screen for this job, rather than firing a search here.
+   *
+   * This used to POST /rerun, which ran the legacy Apollo people-search with the
+   * job title verbatim and no review step. Searching is now a deliberate act:
+   * the recruiter briefs the AI, reviews the proposed filters, and runs it.
+   * `?search=1` makes the candidates page open the questionnaire on arrival.
+   */
+  const onNewSearch = (jobId: string) => {
+    router.push(`/candidates/${pipelineId}/jobs/${jobId}?search=1`);
   };
 
   const onRemove = async () => {
@@ -218,8 +216,8 @@ export function PipelineDetailPage({ pipelineId }: Props) {
                           {!isAwaiting && (
                             <button
                               disabled={!canRerun || isBusy}
-                              title={canRerun ? 'Re-run candidate search (appends new, skips already-rejected)' : 'Search in progress'}
-                              onClick={(e) => { e.stopPropagation(); onRerun(j.jobId); }}
+                              title={canRerun ? 'Brief the AI and run a new LinkedIn search for this job' : 'Search in progress'}
+                              onClick={(e) => { e.stopPropagation(); onNewSearch(j.jobId); }}
                               style={{
                                 height: 32, padding: '0 12px', borderRadius: 6, fontSize: 12, fontWeight: 500,
                                 cursor: canRerun && !isBusy ? 'pointer' : 'not-allowed',
@@ -228,7 +226,7 @@ export function PipelineDetailPage({ pipelineId }: Props) {
                                 fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 5,
                               }}
                             >
-                              <Icon name={isBusy ? 'loader' : 'refresh-ccw'} size={12} /> Re-run
+                              <Icon name="search" size={12} /> New search
                             </button>
                           )}
                           <button

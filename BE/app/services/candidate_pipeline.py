@@ -303,6 +303,59 @@ async def _claim_running(pipeline_id: str, job_id: str) -> Optional[dict]:
     return pipeline
 
 
+async def recount_pipeline(pipeline_id: str) -> Dict[str, int]:
+    """Recompute every denormalized count on a pipeline from the candidates.
+
+    The `candidates` collection is the source of truth; the counts on the
+    pipeline and its embedded jobs are a cache for the list UI. This recomputes
+    the lot — per-job candidate/accepted/rejected, then the pipeline rollup.
+
+    EVERY writer that adds, removes, accepts or rejects a candidate must call
+    this. Four call sites used to keep their own partial copy of this logic and
+    two of them were incomplete (the Apify discovery path never wrote
+    acceptedCount, so a pipeline with candidates displayed "0 candidates"), which
+    is exactly the drift this function exists to prevent.
+
+    Counts are written per job with a positional `jobs.$` match rather than by
+    array index, so a concurrent job add can't shift the write onto a sibling.
+    """
+    candidates_col = await get_collection("candidates")
+    pipelines_col = await get_collection("candidatePipelines")
+    oid = ObjectId(pipeline_id)
+
+    pipeline = await pipelines_col.find_one({"_id": oid}, {"jobs.jobId": 1})
+    if not pipeline:
+        return {}
+    now = datetime.utcnow()
+
+    for job in pipeline.get("jobs") or []:
+        job_id = job.get("jobId")
+        if not job_id:
+            continue
+        scope = {"pipelineId": pipeline_id, "sourceJobIds": job_id}
+        # `candidateCount` is counted directly rather than as accepted+rejected:
+        # a candidate with no decision yet belongs to neither bucket.
+        await pipelines_col.update_one(
+            {"_id": oid, "jobs.jobId": job_id},
+            {"$set": {
+                "jobs.$.candidateCount": await candidates_col.count_documents(scope),
+                "jobs.$.acceptedCount": await candidates_col.count_documents(
+                    {**scope, "isAccepted": True}),
+                "jobs.$.rejectedCount": await candidates_col.count_documents(
+                    {**scope, "isAccepted": False}),
+            }},
+        )
+
+    scope = {"pipelineId": pipeline_id}
+    totals = {
+        "totalCandidates": await candidates_col.count_documents(scope),
+        "acceptedCount": await candidates_col.count_documents({**scope, "isAccepted": True}),
+        "rejectedCount": await candidates_col.count_documents({**scope, "isAccepted": False}),
+    }
+    await pipelines_col.update_one({"_id": oid}, {"$set": {**totals, "updatedAt": now}})
+    return totals
+
+
 async def _finish(pipeline_id: str, job_id: str, *, status: str, **extras):
     pipelines_col = await get_collection("candidatePipelines")
     fields = {
@@ -447,45 +500,17 @@ async def _search_candidates_for_job(
                 re_surfaced += 1
 
         # ── update pipeline + job counts ──────────────────────────────────
-        accepted_count = await candidates_col.count_documents(
-            {"pipelineId": pipeline_id, "sourceJobIds": job_id, "isAccepted": True}
-        )
-        rejected_count = await candidates_col.count_documents(
-            {"pipelineId": pipeline_id, "sourceJobIds": job_id, "isAccepted": False}
-        )
         await _finish(
             pipeline_id, job_id,
             status="completed",
-            candidateCount=accepted_count + rejected_count,
-            acceptedCount=accepted_count,
-            rejectedCount=rejected_count,
             appliedIndustryFallback=applied_fallback,
             searchError=None,
         )
-        # Roll up pipeline totals
-        pipelines_col = await get_collection("candidatePipelines")
-        total = await candidates_col.count_documents({"pipelineId": pipeline_id})
-        accepted = await candidates_col.count_documents(
-            {"pipelineId": pipeline_id, "isAccepted": True}
-        )
-        rejected = await candidates_col.count_documents(
-            {"pipelineId": pipeline_id, "isAccepted": False}
-        )
-        await pipelines_col.update_one(
-            {"_id": ObjectId(pipeline_id)},
-            {
-                "$set": {
-                    "totalCandidates": total,
-                    "acceptedCount": accepted,
-                    "rejectedCount": rejected,
-                    "updatedAt": now,
-                }
-            },
-        )
+        counts = await recount_pipeline(pipeline_id)
         logger.info(
-            "[Phase4] %s/%s done — inserted=%d re_surfaced=%d total_for_job=%d "
+            "[Phase4] %s/%s done — inserted=%d re_surfaced=%d pipeline_total=%d "
             "(industry_fallback=%s)",
-            pipeline_id, job_id, inserted, re_surfaced, accepted_count + rejected_count,
+            pipeline_id, job_id, inserted, re_surfaced, counts.get("totalCandidates", 0),
             applied_fallback,
         )
     except Exception as exc:
@@ -638,73 +663,201 @@ async def _claim_discover(pipeline_id: str, job_id: str) -> bool:
 
 async def enqueue_job_discover(
     pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int = 25,
+    *,
+    auto_broaden: bool = False,
+    hints: Optional[Dict[str, Any]] = None,
+    ladder: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Kick off Apify search discovery for a job (background). Poll the job's
-    ``searchStatus`` then ``enrichStatus``."""
+    ``searchStatus`` then ``enrichStatus``.
+
+    ``auto_broaden`` turns on the agentic recovery loop: a search that returns
+    zero candidates is retried with agent-relaxed filters (see
+    ``_discover_candidates_for_job``). ``hints`` is the recruiter's optional
+    brief, and ``ladder`` the Strategist's pre-planned fallbacks — both are
+    context for the Broadener and are safe to omit.
+    """
     pipelines_col = await get_collection("candidatePipelines")
     job_exists = await pipelines_col.find_one(
         {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id}, {"_id": 1})
     if not job_exists:
         raise ValueError("job_not_found")
-    asyncio.create_task(_discover_candidates_for_job(pipeline_id, job_id, filters, max_items))
+    asyncio.create_task(_discover_candidates_for_job(
+        pipeline_id, job_id, filters, max_items,
+        auto_broaden=auto_broaden, hints=hints, ladder=ladder,
+    ))
     return {"queued": True}
+
+
+async def _run_search(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+) -> List[Dict[str, Any]]:
+    """One PAID Apify search → parsed short profiles. Metered by the caller's stage."""
+    from app.services.apify_search_service import get_apify_search_service, parse_short_profile
+    from app.services import cost_service
+
+    async with cost_service.cost_context(
+        cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+    ):
+        service = get_apify_search_service()
+        items = await asyncio.to_thread(service.search, filters, max_items=max_items)
+    return [p for p in (parse_short_profile(i) for i in items) if p and p.get("profileId")]
+
+
+async def _store_profiles(
+    profiles: List[Dict[str, Any]], *, pipeline_id: str, job_id: str,
+    search_query: str, now: datetime,
+) -> List[str]:
+    """Upsert short profiles as candidates. Returns their ids (new and existing)."""
+    candidates_col = await get_collection("candidates")
+    cand_ids: List[str] = []
+    for p in profiles:
+        doc = _build_apify_candidate_doc(
+            p, pipeline_id=pipeline_id, search_query=search_query, now=now)
+        try:
+            res = await candidates_col.update_one(
+                {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]},
+                {"$setOnInsert": doc,
+                 "$addToSet": {"sourceJobIds": job_id},
+                 "$set": {"updatedAt": now}},
+                upsert=True,
+            )
+            if res.upserted_id:
+                cand_ids.append(str(res.upserted_id))
+            else:
+                ex = await candidates_col.find_one(
+                    {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]}, {"_id": 1})
+                if ex:
+                    cand_ids.append(str(ex["_id"]))
+        except DuplicateKeyError:
+            continue
+    return cand_ids
+
+
+async def _record_attempts(
+    pipeline_id: str, job_id: str, attempts: List[Any],
+) -> None:
+    """Persist the attempt timeline on the job so the UI can show the agent's work."""
+    pipelines_col = await get_collection("candidatePipelines")
+    await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+        {"$set": {
+            "jobs.$.searchAttempts": [a.model_dump(mode="json") for a in attempts],
+            "updatedAt": datetime.utcnow(),
+        }},
+    )
+
+
+async def _search_with_broadening(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+    *, auto_broaden: bool, hints: Optional[Dict[str, Any]],
+    ladder: Optional[List[Dict[str, Any]]],
+) -> Tuple[List[Dict[str, Any]], List[Any], Dict[str, Any]]:
+    """Search, and if it returns zero, let the Broadener retry with wider filters.
+
+    Returns (profiles, attempts, winning_filters). Stops at the FIRST attempt that
+    returns anything — we're recovering from zero, not maximising recall.
+
+    Cost is bounded three ways: ``SOURCING_MAX_BROADEN_ATTEMPTS`` caps the retries,
+    the Broadener refuses to repeat a filter set it already tried, and it stops
+    early once the filters are broad enough that zero means "not on LinkedIn".
+    """
+    from app.config import settings
+    from app.services.sourcing import SearchAttempt, build_brief, next_attempt
+    from app.services.sourcing.models import BroadeningStep
+
+    attempts: List[SearchAttempt] = []
+    current = dict(filters)
+    action, reasoning = "initial", ""
+    max_retries = max(0, int(settings.SOURCING_MAX_BROADEN_ATTEMPTS))
+    brief = None
+    planned: List[BroadeningStep] = []
+    if ladder:
+        # A malformed ladder from the client must not break the search — the
+        # Broadener works reactively without it.
+        try:
+            planned = [BroadeningStep(**s) for s in ladder]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Discover] ignoring malformed broadening ladder: %s", exc)
+
+    while True:
+        try:
+            profiles = await _run_search(pipeline_id, job_id, current, max_items)
+            error = None
+        except Exception as exc:  # noqa: BLE001 — a dead attempt shouldn't kill the loop
+            logger.warning("[Discover] %s/%s attempt %d failed: %s",
+                           pipeline_id, job_id, len(attempts) + 1, exc)
+            profiles, error = [], str(exc)[:200]
+
+        attempts.append(SearchAttempt(
+            attempt=len(attempts) + 1, action=action, reasoning=reasoning,
+            filters=current, resultCount=len(profiles), error=error,
+        ))
+        await _record_attempts(pipeline_id, job_id, attempts)
+
+        if profiles:
+            return profiles, attempts, current
+        if not auto_broaden or len(attempts) > max_retries:
+            return [], attempts, current
+
+        logger.info("[Discover] %s/%s attempt %d returned 0 — broadening",
+                    pipeline_id, job_id, len(attempts))
+        if brief is None:
+            brief = await build_brief(pipeline_id, job_id, hints)
+        decision = await next_attempt(brief, attempts, planned)
+        if decision is None:
+            logger.info("[Discover] %s/%s broadening stopped after %d attempt(s)",
+                        pipeline_id, job_id, len(attempts))
+            return [], attempts, current
+        current = decision.filters.to_search_input()
+        action, reasoning = decision.action, decision.reasoning
 
 
 async def _discover_candidates_for_job(
     pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+    *,
+    auto_broaden: bool = False,
+    hints: Optional[Dict[str, Any]] = None,
+    ladder: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Background: run the Apify search actor with the user's filters, store the
-    results as candidates, then auto-enrich every one via the profile scraper."""
-    from app.services.apify_search_service import get_apify_search_service, parse_short_profile
-    from app.services import cost_service
+    """Background: search LinkedIn via Apify, store the results as candidates,
+    then auto-enrich every one via the profile scraper.
 
+    With ``auto_broaden`` the search is agentic: a zero-result attempt is retried
+    with filters the Broadener relaxes based on what already failed, instead of
+    handing the recruiter an empty list.
+    """
     if not await _claim_discover(pipeline_id, job_id):
         logger.info("[Discover] %s/%s already running — skip", pipeline_id, job_id)
         return
 
     try:
-        search_query = (filters.get("searchQuery") or "").strip()
-        async with cost_service.cost_context(
-            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
-        ):
-            service = get_apify_search_service()
-            items = await asyncio.to_thread(service.search, filters, max_items=max_items)
+        profiles, attempts, used_filters = await _search_with_broadening(
+            pipeline_id, job_id, filters, max_items,
+            auto_broaden=auto_broaden, hints=hints, ladder=ladder,
+        )
+        search_query = (used_filters.get("searchQuery") or "").strip()
 
-        profiles = [p for p in (parse_short_profile(i) for i in items) if p and p.get("profileId")]
-
-        candidates_col = await get_collection("candidates")
         now = datetime.utcnow()
-        cand_ids: List[str] = []
-        for p in profiles:
-            doc = _build_apify_candidate_doc(p, pipeline_id=pipeline_id, search_query=search_query, now=now)
-            try:
-                res = await candidates_col.update_one(
-                    {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]},
-                    {"$setOnInsert": doc,
-                     "$addToSet": {"sourceJobIds": job_id},
-                     "$set": {"updatedAt": now}},
-                    upsert=True,
-                )
-                if res.upserted_id:
-                    cand_ids.append(str(res.upserted_id))
-                else:
-                    ex = await candidates_col.find_one(
-                        {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]}, {"_id": 1})
-                    if ex:
-                        cand_ids.append(str(ex["_id"]))
-            except DuplicateKeyError:
-                continue
+        cand_ids = await _store_profiles(
+            profiles, pipeline_id=pipeline_id, job_id=job_id,
+            search_query=search_query, now=now,
+        )
 
-        total = await candidates_col.count_documents(
-            {"pipelineId": pipeline_id, "sourceJobIds": job_id})
         await _finish(pipeline_id, job_id, status="completed",
-                      candidateCount=total, lastSearchedAt=now, searchError=None)
-        logger.info("[Discover] %s/%s stored %d candidate(s)", pipeline_id, job_id, len(cand_ids))
+                      lastSearchedAt=now, searchError=None)
+        # Counts (per-job AND the pipeline rollup the list UI reads) come from
+        # the shared recount — this path used to set candidateCount only, which
+        # left every Apify-sourced pipeline showing "0 candidates".
+        await recount_pipeline(pipeline_id)
+        logger.info("[Discover] %s/%s stored %d candidate(s) after %d attempt(s)",
+                    pipeline_id, job_id, len(cand_ids), len(attempts))
 
         # Auto-enrich every discovered candidate (Apify profile scraper only).
         if cand_ids:
             await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
             from app.services.candidate_enrichment import enrich_candidates
+            from app.services import cost_service
             try:
                 async with cost_service.cost_context(
                     cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
