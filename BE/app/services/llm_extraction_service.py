@@ -154,8 +154,19 @@ def _reason_sync(jd: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[s
         '    {"id": string, "reasons": string[2-3], "gaps": string[0-2]}\n'
         "  ]\n"
         "}\n"
-        "`reasons` = concrete, evidence-based bullets on why to call this person. "
-        "`gaps` = missing must-haves, if any."
+        "`reasons` = concrete, evidence-based bullets on why to call this person.\n"
+        "`gaps` = ONLY the requirements in `missingMustHave`. That list is "
+        "authoritative: it is the deterministic scorer's finding that NOTHING in the "
+        "profile evidences those skills.\n"
+        "`partialMustHave` is NOT a gap and must NEVER be described as missing, "
+        "lacking or absent. Each entry names real evidence the candidate has that "
+        "partly satisfies the requirement (e.g. they list 'SAP HR' where the role "
+        "wants 'SAP HR3', or 'Lohnsteuer' where it wants 'Lohnsteuerrecht'). If you "
+        "mention one, describe it accurately as partial or adjacent — say what they "
+        "DO have and how it falls short, never that they lack it. Writing 'missing "
+        "X' for a partial match contradicts the evidence shown to the recruiter "
+        "alongside your text.\n"
+        "Do not invent gaps that are in neither list."
     )
     data = _chat_json(settings.REASONING_MODEL, _REASON_SYSTEM, user)
     return data or {}

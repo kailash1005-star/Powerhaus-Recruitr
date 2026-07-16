@@ -173,6 +173,16 @@ class Settings(BaseSettings):
     MATCH_RETRIEVE_K: int = Field(default=50, description="How many candidates to pull from the vector store")
     MATCH_REASON_TOP_N: int = Field(default=10, description="How many top candidates get LLM reasoning")
     MATCH_RETURN_TOP: int = Field(default=5, description="Final number of candidates returned to the recruiter")
+
+    # Pre-screen gate — judges a search hit on its free title/location BEFORE the
+    # per-profile Apify enrichment spend. Deliberately lopsided: a false drop is
+    # unrecoverable, a false keep costs one scrape, so only near-zero scores drop.
+    # Calibrated on 39 real SAP-sourced candidates: at 25 it keeps every genuine
+    # SAP consultant, drops only executive slop (CEO/Chairman/Geschäftsführer),
+    # and drops ~93% of those same people when aimed at an unrelated payroll role.
+    PRESCREEN_ENABLED: bool = Field(default=True, description="Gate search hits before paying to enrich them")
+    PRESCREEN_MIN_SCORE: float = Field(default=25.0, description="Drop search hits scoring below this (0-100)")
+
     # Upload guard rails
     MAX_UPLOAD_MB: int = Field(default=10, description="Max size per uploaded document (MB)")
 

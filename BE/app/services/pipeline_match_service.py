@@ -32,7 +32,10 @@ from app.config import settings
 from app.database import get_database
 from app.services import embedding_service as embeddings
 from app.services import llm_extraction_service as llm
+from app.services import role_spec_service
 from app.services.matching_service import (
+    BASE_WEIGHTS,
+    SCORING_VERSION,
     _embed_text_from_profile,
     _fallback_reasons,
     _score_candidate,
@@ -57,24 +60,9 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb)
 
 
-def _resolve_jd_text(job: Dict[str, Any]) -> str:
-    """The JD text to match against. Prefer the scraped description; when jobspy
-    captured none (common — descriptions are optional), synthesise a minimal JD
-    from the title + any structured requirements + location so matching still
-    runs instead of hard-failing."""
-    details = job.get("jobDetails") or {}
-    desc = (details.get("description") or "").strip()
-    if desc:
-        return desc
-    parts: List[str] = []
-    if job.get("title"):
-        parts.append(str(job["title"]))
-    reqs = details.get("requirements")
-    if isinstance(reqs, list) and reqs:
-        parts.append("Requirements:\n" + "\n".join(f"- {r}" for r in reqs if r))
-    if job.get("location"):
-        parts.append(f"Location: {job['location']}")
-    return "\n".join(parts).strip()
+# The JD text for a job. Owned by role_spec_service so sourcing and matching can
+# never disagree about what this job's description actually is.
+_resolve_jd_text = role_spec_service.resolve_jd_text
 
 
 async def start_pipeline_match(
@@ -183,7 +171,11 @@ async def _run_pipeline_match(
     return_top = return_top or settings.MATCH_RETURN_TOP
 
     logs: List[Dict[str, Any]] = []
+    # Every candidate ever scored, ranked. `results` is just its top-N window —
+    # the full list is what the run's "view all" analysis reads.
+    all_entries: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []
     total = len(candidate_ids)
     processed = 0
     considered = 0
@@ -196,6 +188,10 @@ async def _run_pipeline_match(
             "results": results,
             "candidatesConsidered": considered,
             "progress": {"total": total, "processed": processed, "considered": considered},
+            "analysis.scoringVersion": SCORING_VERSION,
+            "analysis.baseWeights": BASE_WEIGHTS,
+            "analysis.candidates": all_entries,
+            "analysis.excluded": excluded,
             "updatedAt": _now(),
         }
         if status:
@@ -211,8 +207,17 @@ async def _run_pipeline_match(
             await flush()
 
     def _rank_results() -> None:
-        results.sort(key=lambda r: r["score"], reverse=True)
-        del results[return_top:]  # keep only the top-N as they accumulate
+        """Re-rank the full list and re-cut the top-N window.
+
+        The top-N cut is a VIEW, never a delete — trimming the array in place used
+        to throw away every analysis outside the top 5, which is why a finished run
+        could not show why it rejected anyone.
+        """
+        all_entries.sort(
+            key=lambda r: (r["score"], (r.get("breakdown") or {}).get("base", 0.0)),
+            reverse=True,
+        )
+        results[:] = all_entries[:return_top]
 
     # Meter every billable call this run makes (embeddings, extraction,
     # reasoning, Apollo enrichment, Apify) under the "matching" stage.
@@ -226,12 +231,19 @@ async def _run_pipeline_match(
 
         await log(f"Starting match · {total} candidate(s) queued")
 
-        # Parse + embed the JD once up front.
-        await log("Parsing job description…")
-        requirements = await llm.parse_jd(jd_text)
-        jd_vector = await embeddings.embed_text(jd_text[:8000])
+        # Resolve the job's role spec — the same requirement object that drives
+        # sourcing. Re-uses the existing parse/embedding when the discovery form
+        # already built one for this job, instead of paying for a second opinion.
+        from app.services import role_spec_service
+
+        await log("Resolving the role spec (structured requirements)…")
+        spec = await role_spec_service.get_or_create_for_text(
+            db, jd_text, job_id=job_id,
+        )
+        requirements = spec["requirements"]
+        jd_vector = spec["embedding"]["vector"]
         must = requirements.get("mustHaveSkills") or []
-        await flush(extra={"requirements": requirements})
+        await flush(extra={"requirements": requirements, "jdId": spec["_id"]})
         await log(
             "Job description parsed"
             + (f" · {len(must)} must-have skill(s)" if must else ""),
@@ -245,6 +257,8 @@ async def _run_pipeline_match(
                 doc = None
             if not doc:
                 processed += 1
+                excluded.append({"candidateId": cid, "fullName": None,
+                                 "reason": "Candidate record not found."})
                 await log(f"✗ Candidate {cid} not found — skipped", level="warn")
                 continue
 
@@ -265,6 +279,9 @@ async def _run_pipeline_match(
             profile = enrichment.get("profile") or {}
             if not profile:
                 processed += 1
+                excluded.append({"candidateId": cid, "fullName": name,
+                                 "reason": "No LinkedIn profile could be enriched, so there was "
+                                           "nothing to embed or score."})
                 await log(f"✗ {name} — no LinkedIn profile found, excluded from scoring", level="warn")
                 continue
             if not already:
@@ -276,7 +293,7 @@ async def _run_pipeline_match(
             embed_text = _embed_text_from_profile(profile, profile.get("summary") or "")
             vector = await embeddings.embed_text(embed_text)
             sim = _cosine(jd_vector, vector)
-            score, subscores, gaps = _score_candidate(requirements, profile, sim)
+            score, subscores, gaps, breakdown = _score_candidate(requirements, profile, sim)
             scored = {"gaps": gaps}
 
             rid: Dict[str, Any] = {}
@@ -287,6 +304,10 @@ async def _run_pipeline_match(
                     "totalYears": profile.get("totalYears"),
                     "skills": profile.get("skills") or [],
                     "missingMustHave": gaps,
+                    # Without this the model sees a must-have absent from `skills`
+                    # and calls it missing, even when the scorer credited it from
+                    # the title or a variant.
+                    "partialMustHave": breakdown["partialMustHave"],
                 }])
                 for item in (resp.get("candidates") or []):
                     if str(item.get("id")) == cid:
@@ -296,7 +317,7 @@ async def _run_pipeline_match(
                 logger.warning("[PipelineMatch] reasoning failed for %s; using deterministic", cid)
 
             reasons = rid.get("reasons") or _fallback_reasons(requirements, profile, scored)
-            results.append({
+            all_entries.append({
                 "candidateId": cid,
                 "source": "pipeline",
                 "fullName": profile.get("fullName") or doc.get("displayName"),
@@ -304,8 +325,12 @@ async def _run_pipeline_match(
                 "location": profile.get("location") or doc.get("location"),
                 "score": score,
                 "subscores": subscores,
+                "breakdown": breakdown,
                 "reasons": reasons,
-                "gaps": rid.get("gaps") or gaps,
+                "reasoning": "llm" if rid.get("reasons") else "deterministic",
+                # Deterministic, NOT the model's prose — see matching_service.
+                "gaps": gaps,
+                "partial": breakdown["partialMustHave"],
                 "contact": {
                     "email": contact.get("email"),
                     "phone": contact.get("phone"),

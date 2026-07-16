@@ -72,10 +72,76 @@ function LogStream({ run, running }: { run: SavedMatchRun; running: boolean }) {
   );
 }
 
+/** Run-level summary: what the engine was asked for, and how it spends 100 points. */
+function ScoringSummary({ run }: { run: SavedMatchRun }) {
+  const analysis = run.analysis;
+  const all = analysis?.candidates || [];
+  const excluded = analysis?.excluded || [];
+  if (!all.length) return null;
+
+  const capped = all.filter((c) => c.breakdown?.cappedBy).length;
+  const reasoned = all.filter((c) => c.reasoning === 'llm').length;
+  // Applicability is a property of the JD, so any candidate's breakdown answers it.
+  const components = all[0]?.breakdown?.components || [];
+
+  return (
+    <div style={{ ...card, marginBottom: 16, padding: 16 }}>
+      <div style={{ ...label, marginBottom: 10 }}>How this run scored</div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        {components.map((c) => (
+          <div
+            key={c.key}
+            title={c.note}
+            style={{
+              flex: '1 1 150px', padding: '8px 10px', borderRadius: 8,
+              border: '1px solid var(--border-default)',
+              background: c.applicable ? '#FFF' : 'var(--bg-app)',
+              opacity: c.applicable ? 1 : 0.6,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-primary)' }}>{c.label}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: c.applicable ? 'var(--fg-primary)' : 'var(--fg-muted)', lineHeight: 1.2 }}>
+              {c.applicable ? `${(c.weight * 100).toFixed(1)}%` : 'excluded'}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+              {c.applicable
+                ? (Math.abs(c.weight - c.baseWeight) > 0.001 ? `nominal ${(c.baseWeight * 100).toFixed(0)}% · reweighted` : 'of the final score')
+                : 'not stated in the JD'}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
+        Scored <strong style={{ color: 'var(--fg-secondary)' }}>{all.length}</strong> candidate(s)
+        {reasoned > 0 && <> · LLM reasoning on the top <strong style={{ color: 'var(--fg-secondary)' }}>{reasoned}</strong></>}
+        {capped > 0 && <> · <strong style={{ color: '#92400E' }}>{capped}</strong> capped by missing must-have skills</>}
+        {excluded.length > 0 && <> · <strong style={{ color: 'var(--status-danger)' }}>{excluded.length}</strong> excluded before scoring</>}
+        {analysis?.scoringVersion && <> · <span style={{ fontFamily: 'ui-monospace, monospace' }}>{analysis.scoringVersion}</span></>}
+      </div>
+
+      {excluded.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--fg-secondary)' }}>
+            {excluded.length} candidate(s) never reached scoring
+          </summary>
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
+            {excluded.map((e) => (
+              <li key={e.candidateId}><strong>{e.fullName || e.candidateId}</strong> — {e.reason}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export function MatchingRunDetailPage({ runId }: Props) {
   const [run, setRun] = useState<SavedMatchRun | null>(null);
   const [state, setState] = useState<'loading' | 'running' | 'done' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [emailTarget, setEmailTarget] = useState<{ candidate: MatchedCandidate; roleTitle?: string } | null>(null);
   const [profileTarget, setProfileTarget] = useState<MatchedCandidate | null>(null);
 
@@ -106,7 +172,12 @@ export function MatchingRunDetailPage({ runId }: Props) {
   useEffect(() => { poll(); }, [poll]);
 
   const title = run?.jdTitle || run?.jdFileName || 'Match run';
-  const results = run?.results || [];
+  const topResults = run?.results || [];
+  const allScored = run?.analysis?.candidates || [];
+  // Older runs stored only their top-N, so "view all" is offered only when the
+  // run actually carries analysis for candidates beyond that window.
+  const canShowAll = allScored.length > topResults.length;
+  const results = showAll && canShowAll ? allScored : topResults;
 
   return (
     <>
@@ -132,8 +203,8 @@ export function MatchingRunDetailPage({ runId }: Props) {
               <h2 style={{ fontSize: 20, fontWeight: 700, color: 'var(--fg-primary)', margin: 0 }}>{title}</h2>
               <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
                 {fmtRunDate(run?.createdAt)}
-                {run?.candidatesConsidered ? ` · ${run.candidatesConsidered} considered` : ''}
-                {results.length ? ` · top ${results.length}` : ''}
+                {run?.candidatesConsidered ? ` · ${run.candidatesConsidered} scored` : ''}
+                {topResults.length ? (showAll && canShowAll ? ` · showing all ${results.length}` : ` · showing top ${topResults.length}`) : ''}
                 {run?.source === 'pipeline' ? ' · from candidate pipeline' : ''}
               </div>
             </div>
@@ -201,12 +272,40 @@ export function MatchingRunDetailPage({ runId }: Props) {
                   <div style={{ ...card, color: 'var(--status-danger)' }}>{error || 'This match run failed.'}</div>
                 )}
 
+                {/* Where the 100 points went, before any individual candidate */}
+                {!running && run && <ScoringSummary run={run} />}
+
                 {/* Results — partial while running (arrive on the spot), final when done */}
                 {results.map((c, i) => (
                   <CandidateCard key={c.candidateId} c={c} rank={i + 1}
                     onReachOut={(cand) => setEmailTarget({ candidate: cand, roleTitle: title })}
                     onOpen={c.source === 'pipeline' ? (cand) => setProfileTarget(cand) : undefined} />
                 ))}
+
+                {/* The rest of the ranking — the evidence for what the top-N beat */}
+                {!running && canShowAll && (
+                  <button
+                    onClick={() => setShowAll((s) => !s)}
+                    style={{
+                      width: '100%', padding: '12px 16px', borderRadius: 10, cursor: 'pointer',
+                      border: '1px dashed var(--border-card)', background: '#FFF',
+                      fontFamily: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--primary)',
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                    }}
+                  >
+                    <Icon name={showAll ? 'chevron-up' : 'chevron-down'} size={15} />
+                    {showAll
+                      ? `Show only the top ${topResults.length}`
+                      : `View all ${allScored.length} scored candidates`}
+                  </button>
+                )}
+
+                {!running && !canShowAll && topResults.length > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--fg-muted)', textAlign: 'center', padding: '8px 0' }}>
+                    This run was scored before per-candidate analysis was recorded, so only its
+                    top {topResults.length} were kept. Re-run the match to see the full ranking.
+                  </div>
+                )}
 
                 {/* Empty final state */}
                 {state === 'done' && results.length === 0 && (

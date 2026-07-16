@@ -68,11 +68,26 @@ Rules for the filters you produce:
    or Experienced Manager, whatever the title says. LEAVE A FILTER NULL when the
    JD doesn't support it — every filter you add shrinks the result set, and a
    wrong filter is far worse than a missing one.
-5. Skills are NOT a filter on this actor. Encode skill signal in the titles and
-   the query instead (e.g. must-have "S/4HANA" → add "SAP S/4HANA Consultant" as
-   a title). Do not silently drop the signal.
+5. Skills are NOT a filter on this actor, but `mustHaveSkills` in the brief is
+   the EXACT list the candidate will later be scored against — a candidate who
+   carries none of them cannot pass, however good the title looks. So the
+   must-haves are your primary aiming input, not a footnote: encode them in the
+   titles and the query (must-have "S/4HANA" → add "SAP S/4HANA Consultant" as a
+   title; must-have "Entgeltabrechnung" → "Entgeltabrechner", "Payroll
+   Specialist", "Personalsachbearbeiter Entgeltabrechnung"). Never silently drop
+   the signal, and never propose titles whose holders would plainly have none of
+   the must-haves.
 6. If the recruiter named target companies, put them in `currentCompanies` — that
    is a deliberate poach and should be respected exactly.
+7. LANGUAGE. People describe themselves in the language they work in. If the JD
+   or its must-have skills are in a language other than English (German
+   "Entgeltabrechnung", French "Chargé de recrutement"), the people you want have
+   native-language headlines, and English titles will not find them. Emit titles
+   in THAT language — add the English variant only where it is genuinely also in
+   use locally (e.g. "Payroll Specialist" is common in Germany; "Labour Law
+   Clerk" is not). Set `profileLanguages` to that language when the role is
+   plainly local. Domain vocabulary is the strongest language signal — trust it
+   over the posting title.
 
 Enum filters MUST use one of these codes (emit the CODE, not the label):
 {enum_vocabulary_prompt()}

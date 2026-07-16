@@ -707,13 +707,45 @@ async def _run_search(
 async def _store_profiles(
     profiles: List[Dict[str, Any]], *, pipeline_id: str, job_id: str,
     search_query: str, now: datetime,
-) -> List[str]:
-    """Upsert short profiles as candidates. Returns their ids (new and existing)."""
+    requirements: Optional[Dict[str, Any]] = None,
+    target_titles: Optional[List[str]] = None,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Upsert short profiles as candidates, pre-screening each against the role.
+
+    Returns (ids_worth_enriching, screening_verdicts). Screened-out profiles are
+    still STORED — marked `isAccepted: False` with their verdict — never dropped
+    on the floor. The recruiter can see who was skipped and why, and re-include
+    them; only the Apify enrichment spend is withheld.
+    """
+    from app.config import settings
+    from app.services import prescreen_service
+
     candidates_col = await get_collection("candidates")
     cand_ids: List[str] = []
+    verdicts: List[Dict[str, Any]] = []
+
     for p in profiles:
         doc = _build_apify_candidate_doc(
             p, pipeline_id=pipeline_id, search_query=search_query, now=now)
+
+        if settings.PRESCREEN_ENABLED:
+            keep, verdict = prescreen_service.screen(
+                p, requirements=requirements, target_titles=target_titles,
+                min_score=settings.PRESCREEN_MIN_SCORE,
+            )
+        else:
+            keep, verdict = True, {"decision": "keep", "score": None,
+                                   "reasons": ["Pre-screen disabled."]}
+        verdict = {**verdict, "at": now}
+        verdicts.append({**verdict, "title": p.get("currentTitle"),
+                         "name": doc.get("displayName")})
+
+        doc["prescreen"] = verdict
+        if not keep:
+            doc["isAccepted"] = False
+            doc["rejectionReason"] = verdict["reasons"][0] if verdict.get("reasons") else "Pre-screened out"
+            doc["decidedAt"] = now
+
         try:
             res = await candidates_col.update_one(
                 {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]},
@@ -723,15 +755,50 @@ async def _store_profiles(
                 upsert=True,
             )
             if res.upserted_id:
-                cand_ids.append(str(res.upserted_id))
+                cid = str(res.upserted_id)
             else:
                 ex = await candidates_col.find_one(
                     {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]}, {"_id": 1})
-                if ex:
-                    cand_ids.append(str(ex["_id"]))
+                cid = str(ex["_id"]) if ex else None
+            # Only survivors go on to be enriched — this is where the money stops.
+            if cid and keep:
+                cand_ids.append(cid)
         except DuplicateKeyError:
             continue
-    return cand_ids
+
+    return cand_ids, verdicts
+
+
+async def _record_prescreen(
+    pipeline_id: str, job_id: str, verdicts: List[Dict[str, Any]],
+) -> None:
+    """Persist what the gate did, so a thin pipeline is explainable rather than
+    mysterious. Best-effort — telemetry must never fail a discovery run."""
+    kept = [v for v in verdicts if v.get("decision") != "drop"]
+    dropped = [v for v in verdicts if v.get("decision") == "drop"]
+    try:
+        pipelines_col = await get_collection("candidatePipelines")
+        await pipelines_col.update_one(
+            {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+            {"$set": {
+                "jobs.$.prescreen": {
+                    "total": len(verdicts),
+                    "kept": len(kept),
+                    "dropped": len(dropped),
+                    # Enough to justify the gate without storing every profile twice.
+                    "droppedSamples": [
+                        {"name": v.get("name"), "title": v.get("title"),
+                         "score": v.get("score"), "reason": (v.get("reasons") or [None])[0]}
+                        for v in dropped[:20]
+                    ],
+                    "at": datetime.utcnow(),
+                },
+                "updatedAt": datetime.utcnow(),
+            }},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Discover] could not record pre-screen for %s/%s: %s",
+                       pipeline_id, job_id, exc)
 
 
 async def _record_attempts(
@@ -763,6 +830,7 @@ async def _search_with_broadening(
     early once the filters are broad enough that zero means "not on LinkedIn".
     """
     from app.config import settings
+    from app.services.apify_profile_service import ApifyRunFailed
     from app.services.sourcing import SearchAttempt, build_brief, next_attempt
     from app.services.sourcing.models import BroadeningStep
 
@@ -784,6 +852,19 @@ async def _search_with_broadening(
         try:
             profiles = await _run_search(pipeline_id, job_id, current, max_items)
             error = None
+        except ApifyRunFailed as exc:
+            # An account/billing refusal is not a filter problem: every retry hits
+            # the same wall and returns the same nothing. Broadening through it
+            # burns the whole budget and ends by telling the recruiter their role
+            # has no candidates, when in fact no search ever ran.
+            logger.error("[Discover] %s/%s aborting — Apify refused the run: %s",
+                         pipeline_id, job_id, exc)
+            attempts.append(SearchAttempt(
+                attempt=len(attempts) + 1, action=action, reasoning=reasoning,
+                filters=current, resultCount=0, error=str(exc)[:300],
+            ))
+            await _record_attempts(pipeline_id, job_id, attempts)
+            raise
         except Exception as exc:  # noqa: BLE001 — a dead attempt shouldn't kill the loop
             logger.warning("[Discover] %s/%s attempt %d failed: %s",
                            pipeline_id, job_id, len(attempts) + 1, exc)
@@ -838,11 +919,40 @@ async def _discover_candidates_for_job(
         )
         search_query = (used_filters.get("searchQuery") or "").strip()
 
+        # The role spec is what the matcher will grade these people against, so
+        # screen them against the same thing rather than against the fuzzy query.
+        requirements: Dict[str, Any] = {}
+        try:
+            from app.database import get_database
+            from app.services import role_spec_service
+
+            spec = await role_spec_service.get_or_create_for_job(await get_database(), job_id)
+            requirements = (spec or {}).get("requirements") or {}
+        except Exception as exc:  # noqa: BLE001 — no spec ⇒ screen() keeps everything
+            logger.warning("[Discover] %s/%s no role spec for pre-screen: %s",
+                           pipeline_id, job_id, exc)
+
         now = datetime.utcnow()
-        cand_ids = await _store_profiles(
+        cand_ids, verdicts = await _store_profiles(
             profiles, pipeline_id=pipeline_id, job_id=job_id,
             search_query=search_query, now=now,
+            requirements=requirements,
+            # The ORIGINAL aim, never `used_filters`. The Broadener relaxes titles
+            # to salvage a zero-result search and can drift into a neighbouring job
+            # family (a payroll search widening to "SAP Consultant"); screening
+            # against what it relaxed TO would make broadening silently lower the
+            # bar and rubber-stamp the drift. The role is the yardstick.
+            target_titles=filters.get("currentJobTitles") or [],
         )
+        dropped = [v for v in verdicts if v.get("decision") == "drop"]
+        if dropped:
+            logger.info(
+                "[Discover] %s/%s pre-screen kept %d of %d — skipped enriching %d "
+                "off-role hit(s), e.g. %s",
+                pipeline_id, job_id, len(cand_ids), len(verdicts), len(dropped),
+                "; ".join(f"{v.get('title')!r}" for v in dropped[:3]),
+            )
+        await _record_prescreen(pipeline_id, job_id, verdicts)
 
         await _finish(pipeline_id, job_id, status="completed",
                       lastSearchedAt=now, searchError=None)

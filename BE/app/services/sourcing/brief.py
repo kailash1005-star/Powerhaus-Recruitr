@@ -1,14 +1,20 @@
 """Assemble a SearchBrief from what the database already knows about a job.
 
 The recruiter should never retype what we have. This gathers the job title,
-location, company context, and the best available JD text, then layers the
-recruiter's optional hints on top.
+location, company context, the JD, AND the structured requirements the matching
+engine will later score against — then layers the recruiter's optional hints on
+top.
 
-JD text is preferred in this order:
-  1. `parsed_jds.requirements` — already LLM-extracted for the matching engine.
-     Structured and short: the cheapest, highest-signal input available.
-  2. `parsed_jds.rawText` — the parsed document, if the structured pass is absent.
-  3. `jobs.jobDetails.description` — the scraped/manual posting body.
+That last part is the point. The must-have skills are what the job actually
+needs, so they have to shape the SEARCH, not just grade the results afterwards.
+The Strategist is explicitly written to fold skill signal into the job titles it
+proposes ("must-have S/4HANA → add 'SAP S/4HANA Consultant' as a title"); it can
+only do that if we hand it the skills. Previously `mustHaveSkills`, `minYears`
+and `seniorityHint` were left empty unless a recruiter typed them by hand, and
+the requirement only entered the funnel at match time — after the Apify spend.
+
+Requirements come from the job's role spec (`role_spec_service`), the same object
+the matcher scores with, so the search and the scorecard can never disagree.
 """
 from __future__ import annotations
 
@@ -17,50 +23,28 @@ from typing import Any, Dict, Optional
 
 from bson import ObjectId
 
-from app.database import get_collection
+from app.database import get_collection, get_database
 from app.services.sourcing.models import SearchBrief
 
 logger = logging.getLogger(__name__)
 
 
-def _requirements_text(req: Dict[str, Any]) -> str:
-    """Render structured JD requirements back into prose for the agent."""
-    parts = []
-    if req.get("title"):
-        parts.append(f"Title: {req['title']}")
-    if req.get("seniority"):
-        parts.append(f"Seniority: {req['seniority']}")
-    if req.get("minYears") is not None:
-        parts.append(f"Minimum years: {req['minYears']}")
-    if req.get("location"):
-        parts.append(f"Location: {req['location']}")
-    if req.get("mustHaveSkills"):
-        parts.append("Must-have skills: " + ", ".join(req["mustHaveSkills"]))
-    if req.get("niceToHaveSkills"):
-        parts.append("Nice-to-have skills: " + ", ".join(req["niceToHaveSkills"]))
-    if req.get("responsibilities"):
-        parts.append("Responsibilities:\n- " + "\n- ".join(req["responsibilities"]))
-    return "\n".join(parts)
+async def _role_spec(job_id: str, job_doc: dict) -> Dict[str, Any]:
+    """The job's role spec, parsing the JD on first ask.
 
-
-async def _jd_text(job_id: str, job_doc: dict) -> str:
-    """Best available JD text for this job (see module docstring for order)."""
+    Never raises: sourcing must still work on a job whose JD can't be parsed (or
+    with no LLM key configured) — it just falls back to a thinner brief.
+    """
     try:
-        parsed_col = await get_collection("parsed_jds")
-        parsed = await parsed_col.find_one(
-            {"sourceJobId": job_id}, sort=[("createdAt", -1)],
-        )
-        if parsed:
-            if parsed.get("requirements"):
-                text = _requirements_text(parsed["requirements"])
-                if text:
-                    return text
-            if parsed.get("rawText"):
-                return parsed["rawText"]
-    except Exception as exc:  # noqa: BLE001 — a missing JD is not an error
-        logger.warning("[Brief] parsed_jds lookup failed for %s: %s", job_id, exc)
+        from app.services import role_spec_service
 
-    return (job_doc.get("jobDetails") or {}).get("description") or ""
+        db = await get_database()
+        spec = await role_spec_service.get_or_create_for_job(db, job_id)
+        if spec:
+            return spec
+    except Exception as exc:  # noqa: BLE001 — a missing/unparseable JD is not an error
+        logger.warning("[Brief] role spec unavailable for %s: %s", job_id, exc)
+    return {}
 
 
 async def build_brief(
@@ -90,17 +74,44 @@ async def build_brief(
     title = job_doc.get("title") or job_entry.get("jobTitle") or ""
     location = job_doc.get("location") or job_entry.get("jobLocation") or ""
 
+    spec = await _role_spec(job_id, job_doc)
+    req: Dict[str, Any] = spec.get("requirements") or {}
+
     fields: Dict[str, Any] = {
         "jobTitle": title,
         "jobLocation": location,
         "companyName": pipeline.get("companyName") or "",
         "companyIndustry": pipeline.get("matchedIndustry") or pipeline.get("companyIndustry") or "",
-        "jobDescription": await _jd_text(job_id, job_doc),
+        # The RAW JD, not a re-rendering of the extraction: it is the strongest
+        # signal the Strategist has for the vocabulary and language real profiles
+        # use. The structured fields below carry the extraction separately.
+        "jobDescription": spec.get("rawText")
+        or (job_doc.get("jobDetails") or {}).get("description")
+        or "",
     }
+
+    # What the matcher will grade on — now also what the search aims at.
+    if req.get("mustHaveSkills"):
+        fields["mustHaveSkills"] = req["mustHaveSkills"]
+    if req.get("niceToHaveSkills"):
+        fields["niceToHaveSkills"] = req["niceToHaveSkills"]
+    if req.get("minYears") is not None:
+        fields["minYears"] = req["minYears"]
+    if req.get("seniority"):
+        fields["seniorityHint"] = req["seniority"]
+    # The JD's own location is more precise than the posting's when both exist.
+    if req.get("location") and not location:
+        fields["jobLocation"] = req["location"]
 
     # Recruiter hints win over the derived values — they're the human's override.
     for key, value in (hints or {}).items():
         if key in SearchBrief.model_fields and value not in (None, "", []):
             fields[key] = value
 
-    return SearchBrief(**fields)
+    brief = SearchBrief(**fields)
+    logger.info(
+        "[Brief] %s/%s — %d must-have(s), %d nice-to-have(s), minYears=%s, seniority=%r",
+        pipeline_id, job_id, len(brief.mustHaveSkills), len(brief.niceToHaveSkills),
+        brief.minYears, brief.seniorityHint,
+    )
+    return brief

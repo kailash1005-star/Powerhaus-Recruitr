@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Icon } from '../Icon';
 import {
   draftOutreach, enrollOutreach, cvDownloadUrl,
-  type MatchedCandidate,
+  type MatchedCandidate, type ScoreBreakdown as ScoreBreakdownData, type SkillEvidence,
 } from '@/lib/api';
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
@@ -36,6 +36,103 @@ export function ScoreBar({ value }: { value: number }) {
   );
 }
 
+// ── Score breakdown ("why this score") ────────────────────────────────────────
+const SKILL_METHOD_STYLE: Record<SkillEvidence['method'], { bg: string; fg: string; text: string }> = {
+  exact:    { bg: '#DCFCE7', fg: '#166534', text: 'exact' },
+  specific: { bg: '#DCFCE7', fg: '#166534', text: 'covered' },
+  fuzzy:    { bg: '#FEF9C3', fg: '#854D0E', text: 'close' },
+  broader:  { bg: '#FFEDD5', fg: '#9A3412', text: 'broader' },
+  none:     { bg: '#FEE2E2', fg: '#991B1B', text: 'missing' },
+};
+
+function SkillEvidenceRow({ e }: { e: SkillEvidence }) {
+  const s = SKILL_METHOD_STYLE[e.method] || SKILL_METHOD_STYLE.none;
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '5px 0', borderTop: '1px solid var(--border-default)' }}>
+      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-primary)', minWidth: 150 }}>{e.skill}</span>
+      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 9999, background: s.bg, color: s.fg, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+        {s.text}
+      </span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--fg-secondary)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+        {e.credit.toFixed(2)}
+      </span>
+      <span style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.5 }}>{e.note}</span>
+    </div>
+  );
+}
+
+/** The full audit of one candidate's number: every component, its weight, the
+ *  points it won, the points it lost, and the per-skill evidence underneath. */
+export function ScoreBreakdown({ bd }: { bd: ScoreBreakdownData }) {
+  return (
+    <div style={{ marginTop: 12, padding: 14, background: 'var(--bg-app)', borderRadius: 8, border: '1px solid var(--border-default)' }}>
+      <div style={{ ...label, marginBottom: 10 }}>How this score was built</div>
+
+      {bd.components.map((c) => {
+        const na = !c.applicable;
+        return (
+          <div key={c.key} style={{ marginBottom: 12, opacity: na ? 0.6 : 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>
+                {c.label}
+                {na && (
+                  <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 7, padding: '1px 6px', borderRadius: 4, background: 'var(--border-default)', color: 'var(--fg-muted)', textTransform: 'uppercase' }}>
+                    not stated in JD
+                  </span>
+                )}
+              </span>
+              <span style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: 'var(--fg-secondary)', flexShrink: 0 }}>
+                {na ? (
+                  <em style={{ color: 'var(--fg-muted)' }}>0 of 0 pts</em>
+                ) : (
+                  <>
+                    <strong style={{ color: 'var(--fg-primary)' }}>{c.points.toFixed(1)}</strong>
+                    {' / '}{c.maxPoints.toFixed(1)} pts
+                    {c.lost > 0.05 && (
+                      <span style={{ color: 'var(--status-danger)', marginLeft: 6 }}>−{c.lost.toFixed(1)}</span>
+                    )}
+                  </>
+                )}
+              </span>
+            </div>
+
+            {!na && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '5px 0 4px' }}>
+                <div style={{ flex: 1 }}><ScoreBar value={c.value} /></div>
+                <span style={{ fontSize: 11, color: 'var(--fg-muted)', fontVariantNumeric: 'tabular-nums', minWidth: 96, textAlign: 'right' }}>
+                  {c.value.toFixed(1)} × {(c.weight * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
+
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.55 }}>{c.note}</div>
+
+            {c.skills && c.skills.length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                {c.skills.map((e, i) => <SkillEvidenceRow key={`${e.skill}-${i}`} e={e} />)}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div style={{ borderTop: '1px solid var(--border-card)', paddingTop: 10, marginTop: 4 }}>
+        <div style={{ fontSize: 12, color: 'var(--fg-secondary)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+          {bd.formula}
+        </div>
+        {bd.cappedBy && (
+          <div style={{ marginTop: 8, padding: '7px 10px', borderRadius: 6, background: '#FEF3C7', color: '#92400E', fontSize: 12, lineHeight: 1.5 }}>
+            <strong>Capped at {bd.ceiling}.</strong> {bd.cappedBy} The uncapped score was {bd.base.toFixed(1)}.
+          </div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-subtle)' }}>
+          Cosine similarity {bd.similarity.toFixed(4)} · scoring {bd.version}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Candidate result card ─────────────────────────────────────────────────────
 export function CandidateCard({ c, rank, onReachOut, onOpen }: {
   c: MatchedCandidate; rank: number;
@@ -43,6 +140,7 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
   /** When set (pipeline candidates), the card opens the deep-profile slide-over. */
   onOpen?: (c: MatchedCandidate) => void;
 }) {
+  const [showWhy, setShowWhy] = useState(false);
   const contact = c.contact || {};
   const clickable = !!onOpen;
   return (
@@ -75,19 +173,30 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
         <div style={{ textAlign: 'right', minWidth: 70 }}>
           <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--fg-primary)', lineHeight: 1 }}>{c.score}</div>
           <div style={{ fontSize: 10, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>match</div>
+          {c.breakdown?.cappedBy && (
+            <div title={c.breakdown.cappedBy} style={{ marginTop: 5, fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: '#FEF3C7', color: '#92400E', whiteSpace: 'nowrap' }}>
+              capped
+            </div>
+          )}
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, margin: '14px 0' }}>
-        {Object.entries(c.subscores || {}).map(([k, v]) => (
-          <div key={k}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={{ fontSize: 11, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>{k.replace(/([A-Z])/g, ' $1')}</span>
-              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>{Math.round(v)}</span>
+        {Object.entries(c.subscores || {}).map(([k, v]) => {
+          // A component the JD never stated scores 100 but earns nothing — show it
+          // as excluded rather than as a full green bar the reader would read as merit.
+          const comp = c.breakdown?.components.find((x) => x.key === k);
+          const na = comp ? !comp.applicable : false;
+          return (
+            <div key={k} style={{ opacity: na ? 0.45 : 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 11, color: 'var(--fg-muted)', textTransform: 'capitalize' }}>{k.replace(/([A-Z])/g, ' $1')}</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-secondary)' }}>{na ? 'n/a' : Math.round(v)}</span>
+              </div>
+              <ScoreBar value={na ? 0 : v} />
             </div>
-            <ScoreBar value={v} />
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {c.reasons?.length > 0 && (
@@ -95,8 +204,36 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
           {c.reasons.map((r, i) => <li key={i}>{r}</li>)}
         </ul>
       )}
+      {/* Missing = nothing evidences it. Partial = related evidence exists. Keeping
+          them apart is the whole point: a 92%-similar skill listed under "Gaps"
+          contradicts the breakdown directly below it. */}
       {c.gaps?.length > 0 && (
-        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--status-danger)' }}>Gaps: {c.gaps.join('; ')}</div>
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--status-danger)' }}>
+          <strong>Missing:</strong> {c.gaps.join('; ')}
+        </div>
+      )}
+      {c.partial && c.partial.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 12, color: '#9A3412' }}>
+          <strong>Partially met:</strong>{' '}
+          {c.partial.map((p) => `${p.skill} (via ${p.via ?? '—'})`).join('; ')}
+        </div>
+      )}
+
+      {c.breakdown && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={() => setShowWhy((s) => !s)}
+            style={{
+              marginTop: 10, background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: 'var(--primary)',
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+            }}
+          >
+            <Icon name={showWhy ? 'chevron-up' : 'chevron-down'} size={13} />
+            {showWhy ? 'Hide scoring detail' : 'Why this score?'}
+          </button>
+          {showWhy && <ScoreBreakdown bd={c.breakdown} />}
+        </div>
       )}
 
       <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-default)', display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>

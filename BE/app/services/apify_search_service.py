@@ -148,6 +148,31 @@ def _clean_list(v: Any) -> List[str]:
     return [str(x).strip() for x in v if x and str(x).strip()]
 
 
+# The actor reports account-level refusals as a SUCCEEDED run with an empty
+# dataset and an explanatory statusMessage. Without this check that is
+# indistinguishable from "nobody matches your search", which is the worst possible
+# confusion: the recruiter is told their role has no candidates, the Broadener
+# burns its whole retry budget widening a search that was never run, and the
+# pipeline silently empties. Observed live: "free user run limit reached" returned
+# 0 profiles for every query, including ones that had returned results an hour
+# earlier.
+_QUOTA_MARKERS = ("run limit reached", "usage limit", "quota", "exceeded",
+                  "insufficient credit", "payment required", "upgrade")
+
+
+def _raise_if_quota_exhausted(info: Dict[str, Any]) -> None:
+    msg = str(info.get("statusMessage") or info.get("status_message") or "").strip()
+    if not msg:
+        return
+    low = msg.lower()
+    if any(m in low for m in _QUOTA_MARKERS):
+        raise ApifyRunFailed(
+            f"Apify refused the search: {msg!r}. The run 'succeeded' but returned no "
+            f"data — this is an account/billing limit, NOT an empty candidate pool. "
+            f"Do not treat it as 'no candidates found'."
+        )
+
+
 def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
     """Build the actor run input, dropping empty filters."""
     run_input: Dict[str, Any] = {
@@ -254,6 +279,7 @@ class ApifySearchService:
         info = _run_to_dict(run)
         if info.get("status") != "SUCCEEDED":
             raise ApifyRunFailed(f"Apify search run status {info.get('status')!r} (expected SUCCEEDED).")
+        _raise_if_quota_exhausted(info)
         dataset_id = info.get("defaultDatasetId") or info.get("default_dataset_id")
         if not dataset_id:
             raise ApifyRunFailed("Apify search run returned no defaultDatasetId.")

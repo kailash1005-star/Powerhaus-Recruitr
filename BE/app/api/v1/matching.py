@@ -237,7 +237,9 @@ async def list_match_runs(
     skip = (page - 1) * limit
     total = await col.count_documents({})
     items = []
-    cursor = col.find({}).sort("createdAt", -1).skip(skip).limit(limit)
+    # The full per-candidate analysis is large and the history list only renders
+    # headlines — exclude it here; GET /run/{id} serves it.
+    cursor = col.find({}, {"analysis": 0, "logs": 0}).sort("createdAt", -1).skip(skip).limit(limit)
     async for doc in cursor:
         doc["_id"] = str(doc["_id"])
         items.append(doc)
@@ -245,9 +247,18 @@ async def list_match_runs(
 
 
 @router.get("/run/{match_run_id}")
-async def get_match_run(match_run_id: str, db=Depends(get_db)):
+async def get_match_run(
+    match_run_id: str,
+    analysis: bool = Query(True, description="Include the full per-candidate scoring analysis"),
+    db=Depends(get_db),
+):
+    """A saved run. Carries `analysis.candidates` — EVERY candidate scored, ranked,
+    each with the weighted breakdown behind its number — not just the top-N in
+    `results`. Pass `analysis=false` while polling a running job to keep the
+    payload small."""
     col = db["match_runs"]
-    doc = await col.find_one({"_id": _oid(match_run_id)})
+    projection = None if analysis else {"analysis": 0}
+    doc = await col.find_one({"_id": _oid(match_run_id)}, projection)
     if not doc:
         raise HTTPException(status_code=404, detail="match run not found")
     doc["_id"] = str(doc["_id"])

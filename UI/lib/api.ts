@@ -872,6 +872,51 @@ export interface CvListItem {
   createdAt?: string;
 }
 
+/** Evidence for one must-have skill: how much credit it earned and why. */
+export interface SkillEvidence {
+  skill: string;
+  /** 0..1 — 1 exact/specific, 0.75 fuzzy, 0.5 broader term, 0 no match. */
+  credit: number;
+  method: 'exact' | 'specific' | 'broader' | 'fuzzy' | 'none';
+  /** The candidate skill that earned the credit. */
+  via?: string | null;
+  confidence: number;
+  note: string;
+}
+
+/** One weighted component of a score. */
+export interface ScoreComponent {
+  key: 'semantic' | 'skillCoverage' | 'experience' | 'location';
+  label: string;
+  /** False when the JD never stated this requirement — weight redistributed, not free points. */
+  applicable: boolean;
+  /** The raw 0..100 component value. */
+  value: number;
+  baseWeight: number;
+  /** Effective weight after redistribution (0 when not applicable). */
+  weight: number;
+  points: number;
+  maxPoints: number;
+  lost: number;
+  note: string;
+  /** Per-must-have evidence — present on the skillCoverage component only. */
+  skills?: SkillEvidence[];
+}
+
+/** The full "why this score" record for one candidate. */
+export interface ScoreBreakdown {
+  version: string;
+  total: number;
+  /** The weighted score before any must-have ceiling was applied. */
+  base: number;
+  ceiling: number;
+  /** Set when the must-have ceiling held the score below `base`. */
+  cappedBy?: string | null;
+  similarity: number;
+  components: ScoreComponent[];
+  formula: string;
+}
+
 export interface MatchedCandidate {
   candidateId: string;
   /** "cv" (uploaded CV corpus) or "pipeline" (Apify-enriched candidate). */
@@ -879,11 +924,35 @@ export interface MatchedCandidate {
   fullName?: string | null;
   currentTitle?: string | null;
   location?: string | null;
+  sourceFileName?: string | null;
   score: number;
   subscores: Record<string, number>;
+  /** Absent on runs scored before the breakdown existed. */
+  breakdown?: ScoreBreakdown | null;
   reasons: string[];
+  /** Whether `reasons` came from the LLM or the deterministic fallback. */
+  reasoning?: 'llm' | 'deterministic';
+  /** Must-haves NOTHING in the profile evidences. Deterministic — never LLM prose. */
   gaps: string[];
+  /** Must-haves with related-but-incomplete evidence. NOT gaps. */
+  partial?: Array<{ skill: string; credit: number; via?: string | null; method: string; note: string }>;
   contact: { email?: string | null; phone?: string | null; linkedin?: string | null };
+}
+
+/** A candidate that never reached scoring, and why. */
+export interface ExcludedCandidate {
+  candidateId: string;
+  fullName?: string | null;
+  reason: string;
+}
+
+/** Every candidate the run scored — the evidence behind the top-N. */
+export interface MatchAnalysis {
+  scoringVersion?: string;
+  baseWeights?: Record<string, number>;
+  reasonedTopN?: number;
+  candidates?: MatchedCandidate[];
+  excluded?: ExcludedCandidate[];
 }
 
 export interface MatchResult {
@@ -952,6 +1021,9 @@ export interface SavedMatchRun {
   jobId?: string;
   requirements?: MatchResult['requirements'];
   error?: string | null;
+  /** Every candidate scored, not just the top-N in `results`. */
+  analysis?: MatchAnalysis | null;
+  params?: { retrieveK?: number; reasonTopN?: number; returnTop?: number };
   /** Live streaming progress for pipeline runs (per-candidate queue). */
   progress?: { total: number; processed: number; considered: number } | null;
   logs?: Array<{ ts?: string; message: string; level?: 'info' | 'warn' | 'error' }> | null;
