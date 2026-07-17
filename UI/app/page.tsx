@@ -1,5 +1,7 @@
-import { redirect } from 'next/navigation';
+'use client';
 
-export default function Home() {
-  redirect('/runs');
+import { LandingPage } from '@/components/pages/LandingPage';
+
+export default function LandingRoute() {
+  return <LandingPage />;
 }

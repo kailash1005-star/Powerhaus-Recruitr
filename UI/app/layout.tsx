@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import { AppShell } from '@/components/AppShell';
+import { ShellGate } from '@/components/ShellGate';
 
 export const metadata: Metadata = {
   title: 'Recruitr',
@@ -15,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <AppShell>{children}</AppShell>
+        <ShellGate>{children}</ShellGate>
       </body>
     </html>
   );

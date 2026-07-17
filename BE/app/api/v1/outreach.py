@@ -23,6 +23,11 @@ from app.services.outreach_provider import get_source
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Provider callbacks (Smartlead, Cal.com). Mounted in router.py WITHOUT the
+# bearer dependency — these authenticate by HMAC signature instead, which is the
+# only credential a third-party sender can present.
+webhook_router = APIRouter()
+
 
 async def get_db():
     return await get_database()
@@ -107,11 +112,15 @@ async def _ingest_webhook(request: Request, provider_name: str, db) -> dict:
     return {"ok": True, "ingested": len(results), "results": results}
 
 
-@router.post("/webhooks/smartlead")
+# On `webhook_router` (unauthenticated): these are signature-verified in
+# _ingest_webhook above, which is the right control for a caller that has no
+# bearer token. Note the signature check is only ENFORCED when the corresponding
+# *_WEBHOOK_SECRET is configured — see verify_signature.
+@webhook_router.post("/webhooks/smartlead")
 async def smartlead_webhook(request: Request, db=Depends(get_db)):
     return await _ingest_webhook(request, "smartlead", db)
 
 
-@router.post("/webhooks/calcom")
+@webhook_router.post("/webhooks/calcom")
 async def calcom_webhook(request: Request, db=Depends(get_db)):
     return await _ingest_webhook(request, "calcom", db)

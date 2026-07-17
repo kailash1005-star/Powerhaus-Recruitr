@@ -18,6 +18,11 @@ from bson import ObjectId
 
 router = APIRouter()
 
+# Inbound provider callbacks. Mounted separately in router.py WITHOUT the bearer
+# dependency, because third-party services can't present one. Keep this router
+# empty of anything that reads or returns candidate data.
+webhook_router = APIRouter()
+
 
 async def get_db():
     return await get_database()
@@ -340,9 +345,18 @@ async def enrich_prospect_mobile(prospect_id: str, db=Depends(get_db)):
 
 
 # ── POST /prospects/mobile-webhook ──────────────────────────────────────
-@router.post("/prospects/mobile-webhook")
+# On `webhook_router`, NOT `router`: Apollo POSTs this callback with no bearer
+# token, so it cannot live under the authenticated aggregate or phone-reveal
+# delivery would silently 401 and every reveal would hang on "pending" forever.
+@webhook_router.post("/prospects/mobile-webhook")
 async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
-    """Public receiver for Apollo's asynchronous phone-number delivery."""
+    """Public receiver for Apollo's asynchronous phone-number delivery.
+
+    Unauthenticated by necessity. It is not signature-verified either (Apollo
+    doesn't sign these), so treat the payload as untrusted: we only act on
+    prospects we already marked `pending`, which bounds what a forged call can
+    do to "fill in a phone number we already asked for".
+    """
     if payload.get("status") and payload.get("status") != "success":
         return {"status": "ignored", "reason": f"status is {payload.get('status')}"}
 

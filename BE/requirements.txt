@@ -8,6 +8,15 @@ pydantic-settings>=2.7.0
 motor>=3.6.0
 pymongo>=4.10.0
 
+# ── Auth (Auth0) ────────────────────────────────────────────────
+# RS256 access-token verification against Auth0's JWKS. The [crypto] extra pulls
+# `cryptography`, without which PyJWT cannot do RSA at all — it would fail at
+# runtime on the first request, not at import, so the extra is load-bearing.
+#
+# NOT using Auth0's own `auth0-fastapi-api`: it is still a beta (1.0.0b5), and
+# this is the code path that decides who may read candidate PII. See AUTH0_SETUP.md.
+pyjwt[crypto]>=2.10.0
+
 # ── External Services ──────────────────────────────────────────
 # NOTE: python-jobspy is installed separately in the Dockerfile with --no-deps.
 # It hard-pins numpy==1.26.3, which is incompatible with the numpy>=2.0 that

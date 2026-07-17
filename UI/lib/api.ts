@@ -1,9 +1,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Recruitr — Real API client
-// Mirrors the backend at http://127.0.0.1:8000
+//
+// Calls go to our OWN origin, not the backend directly: /api/proxy/* is a Next
+// route handler that reads the access token from the httpOnly session cookie and
+// forwards to the API with an Authorization header (see app/api/proxy).
+//
+// That's why there's no token handling anywhere in this file, and why the
+// browser never learns the backend's URL. The old NEXT_PUBLIC_API_URL is gone —
+// NEXT_PUBLIC_* is inlined into the browser bundle, and under the BFF model only
+// the server talks to the API (API_BASE_URL, server-side).
+//
+// Paths are unchanged: the proxy forwards everything after /api/proxy verbatim,
+// so `/api/v1/runs` still means `/api/v1/runs` upstream.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+const API_BASE = '/api/proxy';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

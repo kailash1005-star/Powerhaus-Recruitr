@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# ── Scraped docs cache (Firecrawl) ──────────────────────────────
+.firecrawl/
+
 # ── Node (UI) ───────────────────────────────────────────────────
 node_modules/
 .next/

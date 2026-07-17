@@ -14,9 +14,19 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # CORS Configuration
+    #
+    # Under the BFF model the browser never calls this API directly — Next.js on
+    # Vercel calls it server-to-server, and server-to-server requests aren't
+    # subject to CORS at all. So this list only exists for direct browser access
+    # during local development and for hitting /docs by hand.
+    #
+    # The old "https://job-hunt-kappa-two.vercel.app" entry was a leftover from a
+    # different project and has been removed: every allowed origin is an origin
+    # permitted to read authenticated responses, so stale entries are a real
+    # (if small) hole, not just untidiness.
     CORS_ORIGINS: list[str] = Field(
-        default=["http://localhost:3000", "https://job-hunt-kappa-two.vercel.app"],
-        description="Allowed CORS origins",
+        default=["http://localhost:3000"],
+        description="Allowed CORS origins (browser-direct only; the BFF proxy doesn't need these)",
     )
 
     # LinkedIn Credentials (for company info API)
@@ -43,8 +53,12 @@ class Settings(BaseSettings):
     LINKEDIN_JSESSIONID: str = Field(default="", description="LinkedIn JSESSIONID cookie from a logged-in browser")
 
     # Firecrawl Configuration
+    # No default: a live key used to sit here and is therefore burned (it's in git
+    # history — rotate it, see AUTH0_SETUP.md Step 10). An empty default makes a
+    # missing key fail loudly at the call site instead of silently falling back to
+    # a compromised credential.
     FIRECRAWL_API_KEY: str = Field(
-        default="fc-a5218360c4624ed9b764dc0305c9d0ba",
+        default="",
         description="Firecrawl API Key",
     )
 
@@ -219,6 +233,65 @@ class Settings(BaseSettings):
         default=10000,
         description="Reject companies with more employees than this",
     )
+
+    # ── Auth0 ───────────────────────────────────────────────────────────
+    # The API verifies RS256 access tokens against Auth0's published JWKS. There
+    # is no shared secret here: the signing key is Auth0's PRIVATE key and we
+    # only ever hold the public half, fetched from AUTH0_DOMAIN.
+    #
+    # Domain vs issuer is a deliberate, easily-fumbled asymmetry:
+    #   AUTH0_DOMAIN = "tenant.eu.auth0.com"       — bare host, no scheme/slash
+    #   AUTH0_ISSUER = "https://tenant.eu.auth0.com/"  — scheme AND trailing slash
+    # The issuer is compared character-for-character against the token's `iss`,
+    # so it must match exactly what Auth0 mints. We derive it from the domain by
+    # default (see auth0_issuer) rather than make you keep both in sync by hand.
+    AUTH0_DOMAIN: str = Field(default="", description="Auth0 tenant domain, e.g. recruitr-prod.eu.auth0.com (no scheme)")
+    AUTH0_AUDIENCE: str = Field(default="", description="Auth0 API identifier, e.g. https://api.recruit.vanceltech.com")
+    AUTH0_ISSUER: str = Field(default="", description="Override the issuer; blank derives it from AUTH0_DOMAIN")
+
+    # Kill switch for local dev and the test suite ONLY. Guarded in
+    # startup_checks: the app refuses to boot with auth off while a real Auth0
+    # domain is configured, so this can't silently disable auth in production.
+    AUTH_ENABLED: bool = Field(default=True, description="Verify bearer tokens. Never disable outside local dev/tests.")
+
+    # Namespace for custom claims. Auth0 silently DROPS non-namespaced custom
+    # claims, so this prefix is load-bearing, not cosmetic. Must match the
+    # post-login Action (see AUTH0_SETUP.md, Step 7).
+    AUTH0_CLAIM_NAMESPACE: str = Field(
+        default="https://recruit.vanceltech.com/",
+        description="URL prefix for custom claims (tenant_id, roles)",
+    )
+
+    # JWKS responses are cached in-process by PyJWKClient. Cloud Run scales to
+    # many instances and each keeps its own cache; this only bounds how long a
+    # rotated Auth0 signing key takes to be picked up.
+    AUTH0_JWKS_CACHE_TTL: int = Field(default=600, description="Seconds to cache the Auth0 JWKS")
+
+    # Small allowance for clock drift between Auth0 and Cloud Run when checking
+    # exp/iat. Seconds. Keep tight — this is a window where an expired token is
+    # still accepted.
+    AUTH0_LEEWAY: int = Field(default=10, description="Clock-skew leeway in seconds for exp/iat")
+
+    @property
+    def auth0_issuer(self) -> str:
+        """The expected `iss` claim. Explicit override wins; otherwise derive it
+        from the domain in the exact shape Auth0 mints (https + trailing slash)."""
+        if self.AUTH0_ISSUER:
+            return self.AUTH0_ISSUER
+        if not self.AUTH0_DOMAIN:
+            return ""
+        return f"https://{self.AUTH0_DOMAIN.strip().rstrip('/')}/"
+
+    @property
+    def auth0_jwks_url(self) -> str:
+        """Where Auth0 publishes the public signing keys for this tenant."""
+        if not self.AUTH0_DOMAIN:
+            return ""
+        return f"https://{self.AUTH0_DOMAIN.strip().rstrip('/')}/.well-known/jwks.json"
+
+    @property
+    def auth0_configured(self) -> bool:
+        return bool(self.AUTH0_DOMAIN and self.AUTH0_AUDIENCE)
 
     model_config = {
         "env_file": ".env",

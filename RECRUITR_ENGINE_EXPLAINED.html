@@ -1,0 +1,1058 @@
+<title>Recruitr — Sourcing &amp; Matching Engine</title>
+<style>
+  :root {
+    --ink:#14181F; --ink-2:#3A424E; --ink-3:#6A7484; --ink-4:#9AA3B2;
+    --paper:#FFFFFF; --paper-2:#F7F8FA; --paper-3:#EFF1F5;
+    --rule:#E2E6ED; --rule-2:#CFD5E0;
+    --navy:#1E3A8A; --navy-soft:#EEF2FC;
+    --ok:#0B6E4F; --ok-bg:#E9F7F1;
+    --warn:#8A5A00; --warn-bg:#FDF6E7;
+    --bad:#A32020; --bad-bg:#FCEDED;
+    --code-bg:#F5F7FA; --code-ink:#243044;
+    --sans:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+    --mono:ui-monospace,'Cascadia Mono',Consolas,'SF Mono',Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:#E8ECF3; --ink-2:#BAC3D0; --ink-3:#8A94A6; --ink-4:#69738A;
+      --paper:#0E1116; --paper-2:#151A22; --paper-3:#1C222C;
+      --rule:#252C38; --rule-2:#333C4B;
+      --navy:#8FAEF6; --navy-soft:#151E33;
+      --ok:#5FD1A6; --ok-bg:#0F2620;
+      --warn:#E0B057; --warn-bg:#26200F;
+      --bad:#F08A8A; --bad-bg:#2A1517;
+      --code-bg:#141A23; --code-ink:#C7D2E2;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#E8ECF3; --ink-2:#BAC3D0; --ink-3:#8A94A6; --ink-4:#69738A;
+    --paper:#0E1116; --paper-2:#151A22; --paper-3:#1C222C;
+    --rule:#252C38; --rule-2:#333C4B;
+    --navy:#8FAEF6; --navy-soft:#151E33;
+    --ok:#5FD1A6; --ok-bg:#0F2620;
+    --warn:#E0B057; --warn-bg:#26200F;
+    --bad:#F08A8A; --bad-bg:#2A1517;
+    --code-bg:#141A23; --code-ink:#C7D2E2;
+  }
+  :root[data-theme="light"] {
+    --ink:#14181F; --ink-2:#3A424E; --ink-3:#6A7484; --ink-4:#9AA3B2;
+    --paper:#FFFFFF; --paper-2:#F7F8FA; --paper-3:#EFF1F5;
+    --rule:#E2E6ED; --rule-2:#CFD5E0;
+    --navy:#1E3A8A; --navy-soft:#EEF2FC;
+    --ok:#0B6E4F; --ok-bg:#E9F7F1;
+    --warn:#8A5A00; --warn-bg:#FDF6E7;
+    --bad:#A32020; --bad-bg:#FCEDED;
+    --code-bg:#F5F7FA; --code-ink:#243044;
+  }
+  * { box-sizing:border-box; }
+  .doc { font-family:var(--sans); color:var(--ink); background:var(--paper);
+         -webkit-font-smoothing:antialiased; line-height:1.62; }
+
+  .shell { display:grid; grid-template-columns:238px minmax(0,1fr); gap:44px;
+           max-width:1240px; margin:0 auto; padding:0 32px 100px; }
+  @media (max-width:900px) { .shell { grid-template-columns:1fr; gap:0; } nav.toc { position:static !important; height:auto !important; border-right:0 !important; padding:20px 0 !important; margin-bottom:20px; border-bottom:1px solid var(--rule); } }
+
+  /* Masthead */
+  header.mast { border-bottom:1px solid var(--rule); background:var(--paper-2); }
+  .mast-in { max-width:1240px; margin:0 auto; padding:40px 32px 34px; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:0.14em;
+             text-transform:uppercase; color:var(--ink-3); }
+  h1 { font-size:38px; line-height:1.12; letter-spacing:-0.03em; margin:12px 0 0;
+       font-weight:700; text-wrap:balance; max-width:22ch; }
+  .standfirst { font-size:16.5px; color:var(--ink-2); max-width:66ch; margin:14px 0 0; }
+  .mast-meta { display:flex; gap:26px; flex-wrap:wrap; margin-top:24px;
+               font-size:12.5px; color:var(--ink-3); }
+  .mast-meta b { color:var(--ink-2); font-weight:600; }
+
+  /* TOC */
+  nav.toc { position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+            padding:34px 18px 34px 0; border-right:1px solid var(--rule); }
+  nav.toc .grp { font-family:var(--mono); font-size:10.5px; letter-spacing:0.12em;
+                 text-transform:uppercase; color:var(--ink-4); margin:22px 0 8px; }
+  nav.toc .grp:first-child { margin-top:0; }
+  nav.toc a { display:block; font-size:13px; color:var(--ink-2); text-decoration:none;
+              padding:4px 0 4px 11px; border-left:2px solid var(--rule); }
+  nav.toc a:hover { color:var(--navy); border-left-color:var(--navy); }
+
+  main { padding-top:34px; min-width:0; }
+  section { scroll-margin-top:20px; }
+  h2 { font-size:25px; letter-spacing:-0.02em; margin:52px 0 4px; font-weight:700;
+       text-wrap:balance; }
+  h2:first-child { margin-top:0; }
+  h3 { font-size:17px; letter-spacing:-0.01em; margin:34px 0 6px; font-weight:650; }
+  h4 { font-size:14px; margin:22px 0 4px; font-weight:650; color:var(--ink-2); }
+  p { margin:10px 0; max-width:70ch; color:var(--ink-2); }
+  p strong, li strong { color:var(--ink); font-weight:650; }
+  ul, ol { max-width:70ch; padding-left:20px; color:var(--ink-2); }
+  li { margin:5px 0; }
+  a { color:var(--navy); }
+  code { font-family:var(--mono); font-size:0.87em; background:var(--paper-3);
+         padding:1px 5px; border-radius:4px; color:var(--code-ink); }
+
+  .rule { height:1px; background:var(--rule); border:0; margin:44px 0 0; }
+
+  /* Callouts */
+  .note { border-left:3px solid var(--rule-2); background:var(--paper-2);
+          padding:12px 16px; border-radius:0 7px 7px 0; margin:18px 0; }
+  .note.warn { border-left-color:var(--warn); background:var(--warn-bg); }
+  .note.bad  { border-left-color:var(--bad);  background:var(--bad-bg); }
+  .note.ok   { border-left-color:var(--ok);   background:var(--ok-bg); }
+  .note p { margin:4px 0; max-width:none; }
+  .note .tag { font-family:var(--mono); font-size:10px; letter-spacing:0.1em;
+               text-transform:uppercase; color:var(--ink-3); display:block; margin-bottom:4px; }
+
+  /* Prompt blocks */
+  .prompt { border:1px solid var(--rule); border-radius:9px; overflow:hidden; margin:16px 0; background:var(--paper); }
+  .prompt-h { display:flex; align-items:center; justify-content:space-between; gap:10px;
+              padding:8px 13px; background:var(--paper-3); border-bottom:1px solid var(--rule); }
+  .prompt-h .who { font-family:var(--mono); font-size:11px; font-weight:700;
+                   letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-2); }
+  .prompt-h .src { font-family:var(--mono); font-size:10.5px; color:var(--ink-4); }
+  pre { margin:0; padding:14px 15px; overflow-x:auto; background:var(--code-bg);
+        font-family:var(--mono); font-size:12.2px; line-height:1.62; color:var(--code-ink);
+        white-space:pre-wrap; word-break:break-word; }
+  pre.raw { border:1px solid var(--rule); border-radius:9px; }
+
+  /* Tables */
+  .tw { overflow-x:auto; margin:16px 0; border:1px solid var(--rule); border-radius:9px; }
+  table { width:100%; border-collapse:collapse; font-size:13.2px; }
+  th { text-align:left; font-size:10.5px; letter-spacing:0.08em; text-transform:uppercase;
+       color:var(--ink-3); font-weight:700; padding:9px 13px; background:var(--paper-3);
+       border-bottom:1px solid var(--rule); white-space:nowrap; }
+  td { padding:9px 13px; border-bottom:1px solid var(--rule); color:var(--ink-2);
+       vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  td.n { font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--ink); }
+  td code { background:transparent; padding:0; }
+
+  .pill { font-family:var(--mono); font-size:10px; font-weight:700; padding:2px 7px;
+          border-radius:4px; text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap; }
+  .p-ok { background:var(--ok-bg); color:var(--ok); }
+  .p-warn { background:var(--warn-bg); color:var(--warn); }
+  .p-bad { background:var(--bad-bg); color:var(--bad); }
+  .p-neu { background:var(--paper-3); color:var(--ink-3); }
+
+  .mermaid { background:var(--paper-2); border:1px solid var(--rule); border-radius:9px;
+             padding:18px; margin:20px 0; overflow-x:auto; }
+
+  .kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(196px,1fr)); gap:10px; margin:18px 0; }
+  .kv div { border:1px solid var(--rule); border-radius:8px; padding:11px 13px; background:var(--paper-2); }
+  .kv .k { font-size:10.5px; letter-spacing:0.07em; text-transform:uppercase; color:var(--ink-3); font-weight:700; }
+  .kv .v { font-family:var(--mono); font-size:14px; color:var(--ink); margin-top:4px; word-break:break-word; }
+
+  .lede { font-size:15.5px; color:var(--ink-2); max-width:70ch; }
+  .step { font-family:var(--mono); color:var(--navy); font-weight:700; }
+  :focus-visible { outline:2px solid var(--navy); outline-offset:2px; }
+</style>
+
+<div class="doc">
+
+<header class="mast">
+  <div class="mast-in">
+    <div class="eyebrow">Recruitr · Engine documentation</div>
+    <h1>How Recruitr finds candidates, and how it scores them</h1>
+    <p class="standfirst">
+      Two halves of one system. <b>Sourcing</b> turns a job description into a LinkedIn
+      search that returns real people. <b>Matching</b> scores those people against what
+      the job actually requires, and shows its evidence. This document covers the
+      architecture, the workflow, every prompt, and the exact scoring maths.
+    </p>
+    <div class="mast-meta">
+      <span><b>Scoring version</b> match-scoring-4</span>
+      <span><b>Search actor</b> harvestapi/linkedin-profile-search</span>
+      <span><b>Vector store</b> mongo</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="grp">Overview</div>
+    <a href="#big-picture">The big picture</a>
+    <a href="#spine">The Role Spec spine</a>
+
+    <div class="grp">Part 1 · Sourcing</div>
+    <a href="#src-flow">Workflow</a>
+    <a href="#brief">The Search Brief</a>
+    <a href="#strategist">The Strategist</a>
+    <a href="#filters">Filters &amp; enums</a>
+    <a href="#broadener">The Broadener</a>
+    <a href="#domain-guard">The domain guard</a>
+    <a href="#gate">The pre-screen gate</a>
+    <a href="#enrich">Enrichment</a>
+
+    <div class="grp">Part 2 · Matching</div>
+    <a href="#match-flow">Workflow</a>
+    <a href="#weights">Weights &amp; redistribution</a>
+    <a href="#skills">Skill matching rules</a>
+    <a href="#evidence">The evidence pool</a>
+    <a href="#ceiling">The must-have ceiling</a>
+    <a href="#worked">A worked example</a>
+    <a href="#gaps">Gaps vs partials</a>
+
+    <div class="grp">Reference</div>
+    <a href="#prompts">All prompts</a>
+    <a href="#config">Config &amp; cost</a>
+    <a href="#traps">Known traps</a>
+  </nav>
+
+  <main>
+
+  <!-- ─────────────── OVERVIEW ─────────────── -->
+  <section id="big-picture">
+    <h2>The big picture</h2>
+    <p class="lede">
+      The system's organising idea: <strong>the requirement drives everything, and it is
+      computed once.</strong> A job description is parsed into a structured Role Spec, and
+      that same object aims the LinkedIn search, gates the spend, and grades the results.
+      Sourcing and matching never form separate opinions about what the job needs.
+    </p>
+
+    <pre class="mermaid">
+flowchart TB
+  JD["Job description"] --> RS["Role Spec<br/>(parsed once, cached)"]
+  RS --> ST["Strategist<br/>JD → real LinkedIn titles"]
+  ST --> AP["Apify people-search"]
+  AP -->|zero results| BR["Broadener<br/>relax reach, keep domain"]
+  BR --> AP
+  AP -->|hits| GT{"Pre-screen gate<br/>title vs role"}
+  GT -->|off-role| DROP["Stored, not enriched<br/>(no spend)"]
+  GT -->|plausible| EN["Apify profile enrichment<br/>the expensive step"]
+  EN --> SC["Deterministic scorer"]
+  RS --> SC
+  RS --> GT
+  SC --> LLM["LLM reasoning<br/>narrates only"]
+  LLM --> UI["Ranked results + evidence"]
+  SC --> UI
+    </pre>
+
+    <p>
+      Two properties are worth calling out, because they are what make the numbers
+      trustworthy:
+    </p>
+    <ul>
+      <li><strong>The gate sits before the money.</strong> A LinkedIn search returns a
+        title and location for free; deep enrichment costs per profile. Anyone whose
+        title has nothing to do with the role is dropped before we pay for them.</li>
+      <li><strong>The LLM never states a fact.</strong> Every score, every gap, every
+        skill credit is computed in code. The model only writes the prose. It cannot
+        contradict the evidence, because it is not the source of it.</li>
+    </ul>
+  </section>
+
+  <hr class="rule">
+
+  <section id="spine">
+    <h2>The Role Spec spine</h2>
+    <p>
+      <code>role_spec_service.py</code> owns one canonical structured requirement per job,
+      stored as a <code>parsed_jds</code> document, keyed by a hash of the JD text and
+      linked to the job by <code>sourceJobId</code>.
+    </p>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">Role Spec — shape</span><span class="src">parsed_jds</span></div>
+      <pre>{
+  "sourceJobId": "6a58c9b76753c3ece2f47999",
+  "textHash":    "&lt;sha256 of the JD text&gt;",
+  "rawText":     "&lt;the job description&gt;",
+  "requirements": {
+    "title":            "Sachbearbeiter Entgeltabrechnung",
+    "mustHaveSkills":   ["SAP HR3", "Entgeltabrechnung", "Arbeitsrecht",
+                         "Sozialversicherungsrecht", "Lohnsteuerrecht"],
+    "niceToHaveSkills": ["Prozessoptimierungen"],
+    "minYears":         3,
+    "location":         null,
+    "seniority":        "Senior",
+    "responsibilities": [...]
+  },
+  "embedding": { "model": "text-embedding-3-small", "dim": 1536, "vector": [...] }
+}</pre>
+    </div>
+
+    <p>What the hash buys: <strong>one LLM parse and one embedding per distinct JD.</strong>
+      Re-running a match, or opening the discovery form twice, reuses the parse. Editing
+      the JD changes the hash, so a stale spec is never silently reused.</p>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ─────────────── PART 1 : SOURCING ─────────────── -->
+  <section id="src-flow">
+    <h2>Part 1 · Candidate sourcing</h2>
+    <p class="lede">
+      The problem this half exists to solve: <strong>a job posting title is employer
+      language; a LinkedIn headline is how a person describes themselves.</strong> They are
+      frequently different words for the same job, and searching the posting title
+      verbatim is the single biggest cause of a search returning nobody.
+    </p>
+
+    <pre class="mermaid">
+sequenceDiagram
+  participant R as Recruiter
+  participant B as Brief
+  participant S as Strategist (gpt-4o)
+  participant A as Apify actor
+  participant W as Broadener (gpt-4o-mini)
+  participant G as Gate
+  participant E as Enrichment
+
+  R->>B: opens discovery for a job
+  B->>B: load Role Spec (parse JD if new)
+  B->>S: title + location + JD + must-haves + minYears
+  S-->>R: proposed titles, filters, rationale, ladder
+  R->>A: run search
+  A-->>W: 0 results
+  W->>W: relax enums → location → titles (domain must survive)
+  W->>A: next attempt
+  A-->>G: short profiles (title, company, location)
+  G->>G: score title against the ROLE
+  G-->>E: survivors only
+  E-->>R: full profiles, ready to match
+    </pre>
+  </section>
+
+  <section id="brief">
+    <h3>The Search Brief</h3>
+    <p>Assembled by <code>sourcing/brief.py</code> from what the database already knows —
+      the recruiter never retypes it. The <strong>must-have skills come from the Role
+      Spec</strong>, which is what lets the Strategist aim at the requirement rather than
+      the job title alone.</p>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">SearchBrief</span><span class="src">sourcing/models.py</span></div>
+      <pre>jobTitle:          "Sachbearbeiter Entgeltabrechnung (SAP HR3)"   # required
+jobLocation:       "Frankfurt, Germany"
+companyName:       "Payroll Test Co"
+companyIndustry:   ""
+jobDescription:    "&lt;raw JD — strongest signal for vocabulary and language&gt;"
+
+# ── from the Role Spec (the requirement) ──
+mustHaveSkills:    ["SAP HR3", "Entgeltabrechnung", "Arbeitsrecht", ...]
+niceToHaveSkills:  ["Prozessoptimierungen"]
+minYears:          3.0
+seniorityHint:     "Senior"
+
+# ── optional recruiter overrides ──
+targetCompanies / excludeCompanies / languages / workModel / notes</pre>
+    </div>
+  </section>
+
+  <section id="strategist">
+    <h3>The Strategist</h3>
+    <p>
+      One reasoning call, no tools, run once when the discovery form opens. It translates
+      the role into titles real people carry, and pre-plans a broadening ladder. Model:
+      <code>openai:gpt-4o</code>. If no LLM key is configured it degrades to a literal
+      title prefill with <code>confidence: 0</code> — it is an enhancement, never a hard
+      dependency.
+    </p>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">System / instructions</span><span class="src">sourcing/strategist.py</span></div>
+      <pre>You are a technical sourcing strategist. You turn a job opening
+into a LinkedIn people-search that returns REAL candidates.
+
+The single most important thing you understand: a job POSTING title is written in
+employer/HR language, but you are searching PROFILE titles, which are written in
+the member's own words. They are frequently different, and searching the posting
+title verbatim is the #1 cause of a zero-result search.
+
+Examples of the translation you must perform:
+  • "SAP Consultant FI" → nobody's headline says that. Real titles: "SAP FICO
+    Consultant", "SAP FI Consultant", "SAP Finance Consultant", "SAP FI/CO
+    Consultant", "Senior SAP Consultant". FI is almost always paired with CO in
+    practice — include the FICO variants.
+  • "Java Developer II" → the "II" is an internal grade, never a headline. Use
+    "Java Developer", "Software Engineer", "Backend Developer".
+  • "Growth Marketing Ninja" → a real title is "Growth Marketing Manager", ...
+  • "Cloud Architect (AWS)" → "Cloud Architect", "AWS Architect", ...
+
+Rules for the filters you produce:
+1. `currentJobTitles` — 4 to 8 titles people ACTUALLY carry on LinkedIn. Include
+   the common abbreviation AND the expanded form when both are in use (SAP FICO /
+   SAP Finance). Order strongest-match first. Never include internal grades
+   (II, L3, Band 4), employment types (Contract, Permanent), or req codes.
+2. `searchQuery` — a SHORT fuzzy keyword phrase (2-4 words), NOT the full title.
+3. `locations` — a LinkedIn-recognisable place. Prefer the metro/city the job is
+   in; use the country when the role is remote or the city is tiny.
+4. `seniorityLevel` / `function` / `yearsOfExperience` — infer from the JD, not
+   the title alone. LEAVE A FILTER NULL when the JD doesn't support it — every
+   filter you add shrinks the result set, and a wrong filter is far worse than a
+   missing one.
+5. Skills are NOT a filter on this actor, but `mustHaveSkills` in the brief is
+   the EXACT list the candidate will later be scored against — a candidate who
+   carries none of them cannot pass, however good the title looks. So the
+   must-haves are your primary aiming input, not a footnote: encode them in the
+   titles and the query (must-have "S/4HANA" → add "SAP S/4HANA Consultant" as a
+   title; must-have "Entgeltabrechnung" → "Entgeltabrechner", "Payroll
+   Specialist", "Personalsachbearbeiter Entgeltabrechnung"). Never silently drop
+   the signal, and never propose titles whose holders would plainly have none of
+   the must-haves.
+6. If the recruiter named target companies, put them in `currentCompanies`.
+7. LANGUAGE. People describe themselves in the language they work in. If the JD
+   or its must-have skills are in a language other than English (German
+   "Entgeltabrechnung", French "Chargé de recrutement"), the people you want have
+   native-language headlines, and English titles will not find them. Emit titles
+   in THAT language — add the English variant only where it is genuinely also in
+   use locally (e.g. "Payroll Specialist" is common in Germany; "Labour Law
+   Clerk" is not). Set `profileLanguages` to that language when the role is
+   plainly local. Domain vocabulary is the strongest language signal — trust it
+   over the posting title.
+
+Enum filters MUST use one of these codes (emit the CODE, not the label):
+  &lt;generated live from the actor's own ENUM_TABLES&gt;
+
+Also produce:
+  • `interpretedRole` — one line naming what this job really is, in plain terms.
+  • `titleReasoning` — why the posting title does or doesn't work as a search term.
+  • `rationale` — one short entry per non-empty filter, saying why.
+  • `broadeningLadder` — 3 fallback attempts, tried in order ONLY if the search
+    returns zero. Each step carries a COMPLETE filter set, strictly broader than
+    the one before.
+  • `confidence` — 0..1. Be honest: a vague one-line JD with no location is 0.3.
+  • `warnings` — anything the recruiter should know.
+
+Be decisive and specific. Prefer fewer, higher-signal filters.</pre>
+    </div>
+
+    <h4>What it produced for the German payroll role</h4>
+    <pre class="raw">interpretedRole : Entgeltabrechner with expertise in SAP HR3 and payroll laws
+titleReasoning  : The job title 'Sachbearbeiter Entgeltabrechnung (SAP HR3)' is
+                  specific to German payroll processing using SAP HR3, which won't
+                  directly match LinkedIn profiles written in English. However,
+                  titles like 'Entgeltabrechner' or 'Payroll Specialist' are
+                  commonly used by professionals in this field, especially in Germany.
+searchQuery     : "Entgeltabrechnung SAP HR3"
+currentJobTitles: ["Entgeltabrechner", "Sachbearbeiter Entgeltabrechnung",
+                   "Payroll Specialist", "Payroll Officer",
+                   "Personalsachbearbeiter Entgeltabrechnung"]
+locations       : ["Frankfurt, Germany"]
+confidence      : 0.8</pre>
+
+    <div class="note ok">
+      <span class="tag">Why this matters</span>
+      <p>Before the must-haves reached the brief, the same JD produced an English-titled
+      search and found data engineers. The German domain vocabulary in
+      <code>mustHaveSkills</code> is what tells the model the people it wants write
+      <em>Entgeltabrechner</em>, not <em>Payroll Clerk</em>.</p>
+    </div>
+  </section>
+
+  <section id="filters">
+    <h3>Filters and the enum vocabulary</h3>
+    <p>The Strategist emits a <code>SearchFilters</code> object whose field names match the
+      actor's input exactly, so an agent cannot invent a filter the actor would reject.
+      Enum values are validated against the actor's own tables and <strong>an
+      unrecognised value is dropped rather than passed through</strong> — the actor fails
+      an entire run on a bad enum instead of ignoring it.</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>Filter</th><th>Type</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td class="n">searchQuery</td><td>fuzzy text</td><td>2–4 words. Broad keyword match, ANDed with the rest.</td></tr>
+          <tr><td class="n">currentJobTitles</td><td>string[]</td><td>OR-matched. The main aiming device. Capped at 10.</td></tr>
+          <tr><td class="n">locations</td><td>string[]</td><td>Must be a place LinkedIn recognises — <code>"Europe"</code> is not.</td></tr>
+          <tr><td class="n">yearsOfExperience</td><td>enum code</td><td><code>1</code>=&lt;1yr · <code>2</code>=1–2 · <code>3</code>=3–5 · <code>4</code>=6–10 · <code>5</code>=10+</td></tr>
+          <tr><td class="n">seniorityLevel</td><td>enum code</td><td><code>120</code>=Senior, <code>210</code>=Experienced Manager, …</td></tr>
+          <tr><td class="n">function</td><td>enum code</td><td><code>1</code>=Accounting · <code>10</code>=Finance · <code>12</code>=Human Resources · …</td></tr>
+          <tr><td class="n">profileLanguages</td><td>string[]</td><td><span class="pill p-bad">Broken</span> silently dropped — see Known traps.</td></tr>
+          <tr><td class="n">currentCompanies</td><td>string[]</td><td>A deliberate poach. Respected exactly.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note warn">
+      <span class="tag">Important</span>
+      <p><strong>Skills are not a filter on this actor.</strong> The only way a must-have
+      skill can influence the search is by being encoded into the titles or the query.
+      That is why rule 5 of the Strategist prompt exists, and why the must-haves must
+      reach the brief.</p>
+    </div>
+  </section>
+
+  <section id="broadener">
+    <h3>The Broadener</h3>
+    <p>Called <em>only</em> when a search returns zero. It sees the full attempt history —
+      every filter set tried and what each returned — and proposes the next, strictly
+      broader attempt. Model: <code>openai:gpt-4o-mini</code>. Capped at
+      <code>SOURCING_MAX_BROADEN_ATTEMPTS = 3</code>.</p>
+
+    <p>An agent rather than just walking the pre-planned ladder, because the ladder is
+      written blind. Once you know <em>which</em> search died, the reason matters: a dead
+      title needs different relaxation than a dead location.</p>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">System / instructions</span><span class="src">sourcing/broadener.py</span></div>
+      <pre>You are a sourcing strategist recovering from a FAILED LinkedIn
+people-search: every attempt so far returned ZERO candidates.
+
+Given the job brief and the full history of what was tried, produce the NEXT
+search attempt. It must be STRICTLY BROADER than every attempt already made —
+repeating or narrowing is a wasted paid API call.
+
+THE ONE RULE YOU MUST NOT BREAK: widening means casting a wider net for THIS job.
+It NEVER means searching for a different job. The role's domain vocabulary — the
+words that make this role this role ("Entgeltabrechnung", "Payroll", "FICO",
+"S/4HANA") — must survive every attempt. Relaxing "Entgeltabrechner" to "SAP
+Consultant" or "HR Specialist" is NOT broadening: payroll clerks and SAP
+consultants are different professions, and that search returns a pile of people
+who cannot do the job. Zero results means "widen the net", never "change the
+target". If the only way you can widen further is by abandoning the domain, the
+answer is `give_up`, not a search for someone else.
+
+Relax in THIS order — cheapest, most speculative filters FIRST, and touch the
+titles LAST:
+  1. Enum filters (`seniorityLevel`, `yearsOfExperience`, `function`,
+     `companyHeadcount`). ALWAYS start here. They are INFERRED from the JD, not
+     stated by the member, and profiles routinely leave the underlying data
+     blank — so they silently exclude people who DO qualify. Several set at once
+     is the single most common cause of a zero-result search.
+  2. `currentCompanies` — restricts to a handful of employers.
+  3. `locations` — widen the city to the metro, then to the country.
+  4. `profileLanguages` — only if the role plausibly exists in English too.
+  5. TITLES, and only once 1-4 are exhausted. Generalise WITHIN the domain and
+     keep the domain word: "Sachbearbeiter Entgeltabrechnung" → "Entgeltabrechner"
+     → "Payroll Specialist" → "Payroll" (all still payroll). Never climb out to a
+     generic title ("Consultant", "Specialist", "Manager") — those match everyone
+     and nobody.
+
+Widen ONE dimension per attempt where possible, so the result stays attributable.
+
+Choose `decision: "broaden"` whenever ANY filter is still left to relax.
+Choose `decision: "give_up"` ONLY when the last attempt was already a bare title
+plus a country with no enum filters and STILL returned zero.
+
+`reasoning` is shown to the recruiter: one plain sentence on what you changed and
+why, referencing the actual values. No jargon.</pre>
+    </div>
+
+    <div class="note">
+      <span class="tag">Design note</span>
+      <p><code>decision</code> is an action enum (<code>broaden</code> /
+      <code>give_up</code>) rather than a boolean on purpose. A negated flag
+      (<code>shouldRetry: false</code>) gets inverted by the model, which then returns a
+      perfectly good filter set flagged to be thrown away. Naming both outcomes removes
+      the polarity it has to infer.</p>
+    </div>
+  </section>
+
+  <section id="domain-guard">
+    <h3>The domain guard</h3>
+    <p>The prompt above is <strong>not trusted on its own.</strong> Observed live: told the
+      titles were too specific, the model relaxed a German payroll clerk into
+      <code>SAP Consultant</code> / <code>HR Specialist</code> and returned twelve SAP
+      <em>Finance</em> consultants. So the rule is also enforced in code.</p>
+
+    <pre class="raw">anchor  = non-generic tokens of the FIRST attempt's titles
+          (the Strategist's read of the job, before any relaxation)
+
+          "Entgeltabrechner", "Payroll Specialist",
+          "Personalsachbearbeiter Entgeltabrechnung", ...
+              ↓ strip generic role words
+          {entgeltabrechnung, payroll, personalsachbearbeiter, lohnabrechnung, ...}
+
+for each proposed title:
+    keep it only if some anchor word (or an obvious inflection) appears in it
+
+  "Payroll Consultant"  → payroll  ✓ KEEP
+  "SAP Consultant"      → —        ✗ DROP
+  "HR Specialist"       → —        ✗ DROP   ("specialist" is a generic role word)
+
+if nothing survives → fall back to the Strategist's planned ladder</pre>
+
+    <p>Generic role words — <code>consultant</code>, <code>berater</code>,
+      <code>specialist</code>, <code>manager</code>, <code>sachbearbeiter</code>,
+      <code>analyst</code>, … — are stripped from the anchor because every profession
+      shares them. Without that, <em>Payroll Specialist</em> and <em>HR Specialist</em>
+      look related.</p>
+
+    <div class="note ok">
+      <span class="tag">Result</span>
+      <p>After the guard, the same search relaxed <code>seniorityLevel</code>,
+      <code>function</code> and the location, kept every payroll title, and returned twelve
+      genuine <em>Personalsachbearbeiter Entgeltabrechnung</em>.</p>
+    </div>
+  </section>
+
+  <section id="gate">
+    <h3>The pre-screen gate</h3>
+    <p>A search hit arrives with a title, company and location, for free. Turning it into
+      something scoreable costs an Apify profile scrape each. The gate spends the free
+      signal first.</p>
+
+    <p><strong>It is deliberately lopsided.</strong> A false drop is unrecoverable — that
+      person is never enriched, never scored, never seen again. A false keep costs one
+      scrape and is caught by the real matcher a minute later. So it only rejects what it
+      is confident about, and answers <em>"is this person plausibly in the right job
+      family?"</em> — never <em>"do they meet the requirements"</em>, because a title cannot
+      evidence a skill list.</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>Signal</th><th>Weight</th></tr></thead>
+        <tbody>
+          <tr><td>Title vs the titles the search <em>originally</em> aimed at</td><td>Strongest — the Strategist already translated the role</td></tr>
+          <tr><td>A must-have skill named in the title</td><td>Full credit — direct domain evidence</td></tr>
+          <tr><td>Title vs the role's own title</td><td>Fallback when the aim is unusable</td></tr>
+          <tr><td>No title at all</td><td class="n">kept</td></tr>
+          <tr><td>No Role Spec to judge against</td><td class="n">kept</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note bad">
+      <span class="tag">Critical</span>
+      <p>The gate screens against the <strong>role</strong>, never against
+      <code>used_filters</code>. Screening against the Broadener's relaxed titles let
+      broadening silently lower the bar: the drifted SAP-Finance results scored
+      <b>100/100</b> and 10 of 12 were kept. Anchored to the role, 2 of 12 survive.</p>
+    </div>
+
+    <h4>Calibration, on 39 real candidates</h4>
+    <p>Threshold <code>PRESCREEN_MIN_SCORE = 25</code> was set against the people actually
+      sourced for a live SAP Consultant job — not invented:</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Title</th><th>Score</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>SAP Inhouse Consultant</td><td class="n">100</td><td><span class="pill p-ok">keep</span></td></tr>
+          <tr><td>Associate Consultant SAP FI/CO</td><td class="n">100</td><td><span class="pill p-ok">keep</span></td></tr>
+          <tr><td>Senior Consultant <span style="opacity:.6">(no SAP)</span></td><td class="n">50</td><td><span class="pill p-ok">keep</span></td></tr>
+          <tr><td>CEO · Geschäftsführer · Interim Manager</td><td class="n">0</td><td><span class="pill p-bad">drop</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>It keeps every genuine SAP consultant, drops only executive slop, and drops ~93% of
+      those same people when aimed at an unrelated payroll role. Dropped candidates are
+      <strong>stored</strong> with their verdict and <code>isAccepted: false</code> — visible
+      and recoverable. Only the spend is withheld.</p>
+  </section>
+
+  <section id="enrich">
+    <h3>Enrichment</h3>
+    <p>Survivors are deep-scraped via Apify into <code>apifyEnrichment.profile</code>:
+      full name, headline, location, current title/company, <code>totalYears</code>,
+      skills, titles, experience (with per-role skills and dates), education,
+      certifications — plus the LinkedIn profile photo, in four sizes.</p>
+    <div class="note">
+      <span class="tag">Photos</span>
+      <p>The CDN URLs are public — no cookie or referer needed — but <strong>signed and
+      expiring</strong> (a few weeks). Every size is signed separately, so a 200px variant
+      cannot be derived from the 800px URL by rewriting the path. The UI falls back to
+      initials when a link dies.</p>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ─────────────── PART 2 : MATCHING ─────────────── -->
+  <section id="match-flow">
+    <h2>Part 2 · Candidate matching</h2>
+    <p class="lede">
+      Hard constraints are scored <strong>in code</strong>. The LLM only explains. Every run
+      records its model versions and its scoring version, so any number on screen can be
+      traced back to the rules that produced it.
+    </p>
+
+    <p>There are two entry points that share one scorer:</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th></th><th>CV corpus</th><th>Pipeline</th></tr></thead>
+        <tbody>
+          <tr><td><b>Source</b></td><td>Uploaded CVs, parsed and embedded</td><td>Apify-enriched LinkedIn profiles for one job</td></tr>
+          <tr><td><b>Retrieval</b></td><td>Vector store, top <code>MATCH_RETRIEVE_K = 50</code></td><td>The selected candidates — small, scored in memory</td></tr>
+          <tr><td><b>Streaming</b></td><td>Batch</td><td>Per candidate, live log, ranked as they land</td></tr>
+          <tr><td><b>Photos</b></td><td>None</td><td>Yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre class="mermaid">
+flowchart LR
+  A["Role Spec<br/>requirements + JD vector"] --> B["Embed candidate<br/>profile text"]
+  B --> C["Cosine similarity"]
+  C --> D["Deterministic scorer"]
+  A --> D
+  D --> E["subscores<br/>+ breakdown<br/>+ gaps / partials"]
+  E --> F["LLM reasoning<br/>top N only"]
+  F --> G["reasons (prose)"]
+  E --> H["Persist: EVERY candidate<br/>analysis.candidates"]
+  G --> H
+    </pre>
+
+    <div class="note">
+      <span class="tag">Retention</span>
+      <p>Runs persist <strong>every candidate scored</strong>, not just the top 5 —
+      <code>analysis.candidates</code>. The top-N is a <em>view</em>. A recruiter can only
+      judge whether a ranking is right by seeing what it rejected and why.</p>
+    </div>
+  </section>
+
+  <section id="weights">
+    <h3>Weights, and why they move</h3>
+    <p>Four components. The nominal weights:</p>
+
+    <div class="kv">
+      <div><div class="k">Profile fit</div><div class="v">0.50</div></div>
+      <div><div class="k">Must-have skills</div><div class="v">0.30</div></div>
+      <div><div class="k">Experience</div><div class="v">0.12</div></div>
+      <div><div class="k">Location</div><div class="v">0.08</div></div>
+    </div>
+
+    <p><strong>A component the JD never stated is not scored as a free 100 — it is dropped,
+      and its weight is redistributed over the components that do apply.</strong> This is
+      the rule that makes scores mean something. A vague JD naming no location used to
+      hand every candidate the same 8 points of padding, so only profile fit could
+      discriminate, and everyone clustered at the same number.</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>Component</th><th>Applies when</th><th>Nominal</th><th>Effective (payroll JD)</th></tr></thead>
+        <tbody>
+          <tr><td>Profile fit</td><td>always</td><td class="n">0.50</td><td class="n">0.543</td></tr>
+          <tr><td>Must-have skills</td><td>the JD lists any</td><td class="n">0.30</td><td class="n">0.326</td></tr>
+          <tr><td>Experience</td><td><code>minYears</code> is set</td><td class="n">0.12</td><td class="n">0.130</td></tr>
+          <tr><td>Location</td><td>the JD names one</td><td class="n">0.08</td><td class="n">0 — excluded</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4>How each component is valued</h4>
+    <ul>
+      <li><strong>Profile fit</strong> — cosine similarity between the JD embedding and the
+        candidate's profile embedding (<code>text-embedding-3-small</code>, 1536 dims).
+        The only component that weighs the whole document rather than a checklist.
+        Shown to recruiters as Strong / Good / Moderate / Weak.</li>
+      <li><strong>Must-have skills</strong> — sum of per-skill credit ÷ number of
+        must-haves. See below.</li>
+      <li><strong>Experience</strong> — <code>1.0</code> when <code>totalYears ≥ minYears</code>;
+        <code>0.5</code> when the CV states no total; otherwise <code>years / minYears</code>.</li>
+      <li><strong>Location</strong> — <code>1.0</code> on a match, <code>0.6</code> when the
+        candidate's location is unknown, <code>0.3</code> when clearly elsewhere.</li>
+    </ul>
+  </section>
+
+  <section id="skills">
+    <h3>Skill matching rules</h3>
+    <p>Every must-have is credited <code>0</code>–<code>1</code>, with the evidence recorded.
+      <strong>Every rule is evaluated and the strongest wins</strong> — not first-match-wins,
+      which let a weak rule cap a strong one.</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>Tier</th><th>Credit</th><th>Rule</th><th>Example</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill p-ok">Exact</span></td><td class="n">1.00</td><td>Normalised strings equal</td><td><code>Sozialversicherungsrecht</code></td></tr>
+          <tr><td><span class="pill p-ok">Specific</span></td><td class="n">1.00</td><td>The requirement appears in the candidate's term, on token boundaries</td><td>role <code>Personalsachbearbeiterin Entgeltabrechnung</code> covers <code>Entgeltabrechnung</code></td></tr>
+          <tr><td><span class="pill p-warn">Fuzzy</span></td><td class="n">1.00 / 0.75</td><td><code>token_sort_ratio</code> ≥ 95 / ≥ 88, both ≥ 4 chars</td><td><code>SAP HR</code> → <code>SAP HR3</code> (92%)</td></tr>
+          <tr><td><span class="pill p-warn">Broader</span></td><td class="n">0.50</td><td>The candidate's term is part of the requirement</td><td><code>Lohnsteuer</code> → <code>Lohnsteuerrecht</code></td></tr>
+          <tr><td><span class="pill p-bad">None</span></td><td class="n">0.00</td><td>Nothing evidences it</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4>Two guards that took real bugs to find</h4>
+    <div class="note bad">
+      <span class="tag">The “R” bug</span>
+      <p>The original matcher used a bare substring test in both directions. The
+      one-letter skill <code>"R"</code> is a substring of <em>a</em>rbeitsrecht,
+      sap h<em>r</em>3, entgeltab<em>r</em>echnung — <strong>every</strong> German compound.
+      Every data engineer scored 100% must-have coverage on an SAP payroll role. Fixed by
+      requiring <strong>token boundaries</strong>.</p>
+    </div>
+    <div class="note warn">
+      <span class="tag">German compounds</span>
+      <p>But token boundaries are too strict for German: <code>Lohnsteuer</code> sits
+      inside <code>Lohnsteuerrecht</code> as a prefix, not a token. A
+      <strong>minimum-length floor of 5 characters</strong> separates the two — long enough
+      that the overlap can't be coincidence, which credits <code>Lohnsteuer</code> while
+      still blocking <code>"R"</code>.</p>
+    </div>
+    <p><code>token_sort_ratio</code> is used rather than <code>token_set_ratio</code>: the
+      latter returns 100 whenever one token set is a subset of the other, which is exactly
+      the over-crediting the containment rules above handle deliberately.</p>
+  </section>
+
+  <section id="evidence">
+    <h3>The evidence pool</h3>
+    <p><strong>Skills are not the only evidence a candidate has a skill.</strong> Scoring
+      <code>profile.skills</code> alone reported <code>Entgeltabrechnung</code> as
+      <em>missing</em> for a woman whose job title is
+      <em>Personalsachbearbeiterin Entgeltabrechnung</em> — the requirement is literally
+      her job.</p>
+    <pre class="raw">evidence pool = skills                  ← first, so a real skills hit is named as the source
+              + currentTitle
+              + titles[]
+              + experience[].title</pre>
+    <p>Order matters: skills come first so an exact skills match wins the evidence race and
+      is quoted as the source, rather than the title.</p>
+  </section>
+
+  <section id="ceiling">
+    <h3>The must-have ceiling</h3>
+    <p>Prose cannot buy a candidate past the bar their missing must-haves set. Coverage
+      caps the final score:</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Coverage</th><th>Ceiling</th></tr></thead>
+        <tbody>
+          <tr><td class="n">100%</td><td class="n">100 — no cap</td></tr>
+          <tr><td class="n">≥ 75%</td><td class="n">85</td></tr>
+          <tr><td class="n">≥ 50%</td><td class="n">65</td></tr>
+          <tr><td class="n">≥ 25%</td><td class="n">50</td></tr>
+          <tr><td class="n">&gt; 0%</td><td class="n">40</td></tr>
+          <tr><td class="n">0%</td><td class="n">25</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Because a ceiling flattens many candidates onto the same displayed number, ranking
+      <strong>tie-breaks on the uncapped base score</strong> — the ordering underneath still
+      carries signal.</p>
+  </section>
+
+  <section id="worked">
+    <h3>A worked example</h3>
+    <p>Sina Baumann, <em>Personalsachbearbeiterin Entgeltabrechnung</em>, against the
+      German payroll role.</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th>Requirement</th><th>Credit</th><th>Via</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td>Entgeltabrechnung</td><td class="n">1.00</td><td>her job title</td><td><span class="pill p-ok">specific</span></td></tr>
+          <tr><td>Arbeitsrecht</td><td class="n">1.00</td><td>“Arbeitsrecht (Grundkenntnisse)”</td><td><span class="pill p-ok">specific</span></td></tr>
+          <tr><td>Sozialversicherungsrecht</td><td class="n">1.00</td><td>listed directly</td><td><span class="pill p-ok">exact</span></td></tr>
+          <tr><td>SAP HR3</td><td class="n">0.75</td><td>“SAP HR” — 92% similar</td><td><span class="pill p-warn">fuzzy</span></td></tr>
+          <tr><td>Lohnsteuerrecht</td><td class="n">0.50</td><td>“Lohnsteuer”</td><td><span class="pill p-warn">broader</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre class="raw">coverage = (1.00 + 1.00 + 1.00 + 0.75 + 0.50) / 5 = 4.25 / 5 = 85%
+
+profile fit    71.5 × 0.543 = 38.8
+must-haves     85.0 × 0.326 = 27.7
+experience    100.0 × 0.130 = 13.0        (3.8 years vs 3 required)
+location            excluded              (JD names none — weight redistributed)
+                              ───────
+base                            79.6
+ceiling (85% coverage) = 85 → not binding
+FINAL                           79.6      Strong match</pre>
+
+    <p>For contrast, before the title counted as evidence and before the compound rule, the
+      same candidate scored <strong>65.0</strong> with 55% coverage — capped, and reported as
+      <em>missing</em> the very skill she is employed to do.</p>
+  </section>
+
+  <section id="gaps">
+    <h3>Gaps vs partials — and what the LLM is allowed to say</h3>
+    <p>A <strong>gap</strong> is an absence: nothing in the profile evidences it. A
+      <strong>partial</strong> is real evidence that falls short. Conflating them —
+      treating everything under full credit as a gap — produced a screen that said
+      <em>“Missing specific experience with SAP HR3”</em> directly above evidence crediting
+      <em>SAP HR</em> at 92%.</p>
+
+    <pre class="raw">gaps    = [ credit == 0 ]              →  "Missing"
+partial = [ 0 &lt; credit &lt; 1 ]           →  "Partially met"
+full    = [ credit &gt;= 1 ]              →  counted, not shown as a problem
+
+invariant: every must-have is exactly one of the three — never both, never neither.</pre>
+
+    <div class="note bad">
+      <span class="tag">The structural fix</span>
+      <p>The reasoning model used to be handed the (wrong) gap list as
+      <code>missingMustHave</code>, and its prose then <em>overrode</em> the deterministic
+      data. It wasn't reasoning from the profile — it was rationalising a bad input.
+      Now the scorer is authoritative and <strong>the model narrates in
+      <code>reasons</code> only</strong>. It cannot restate a fact, so it cannot contradict
+      one.</p>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ─────────────── REFERENCE ─────────────── -->
+  <section id="prompts">
+    <h2>All prompts</h2>
+    <p>The LLM is used in exactly five narrow places. Each is
+      <code>temperature = 0</code>, strict JSON, defensive parse, with retries.</p>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">1 · Parse JD → requirements</span><span class="src">gpt-4o-mini</span></div>
+      <pre><b>SYSTEM</b>
+You extract structured hiring requirements from a job description. Return
+ONLY a JSON object, no commentary. Use null/empty when unknown.
+
+<b>USER</b>
+From this job description, extract JSON with EXACTLY these keys:
+{
+  "title": string|null,
+  "mustHaveSkills": string[],
+  "niceToHaveSkills": string[],
+  "minYears": number|null,
+  "location": string|null,
+  "seniority": string|null,
+  "responsibilities": string[]
+}
+
+Job description:
+&lt;first 12,000 chars&gt;</pre>
+    </div>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">2 · Extract CV → profile</span><span class="src">gpt-4o-mini</span></div>
+      <pre><b>SYSTEM</b>
+You extract structured data from a candidate CV. Return ONLY a JSON object,
+no commentary. Use null/empty when unknown. Do not invent skills.
+
+<b>USER</b>
+From this CV, extract JSON with EXACTLY these keys:
+{
+  "fullName": string|null,
+  "email": string|null,
+  "phone": string|null,
+  "linkedin": string|null,
+  "location": string|null,
+  "totalYears": number|null,   // best estimate of total years of experience
+  "currentTitle": string|null,
+  "skills": string[],          // normalized skill names
+  "titles": string[],          // past job titles
+  "education": string[],
+  "certifications": string[],
+  "experience": [{"company": string|null, "title": string|null,
+                  "start": string|null, "end": string|null, "summary": string|null}]
+}
+
+CV:
+&lt;first 12,000 chars&gt;</pre>
+    </div>
+
+    <div class="prompt">
+      <div class="prompt-h"><span class="who">3 · Reason about candidates</span><span class="src">gpt-4o-mini</span></div>
+      <pre><b>SYSTEM</b>
+You are a recruiting assistant. For each candidate, explain in plain language
+why they fit (or don't) the role, grounded ONLY in the skills/experience given.
+Never reference name, gender, age, or contact details. Return ONLY JSON.
+
+<b>USER</b>
+Role requirements:
+{...the Role Spec requirements...}
+
+Candidates (anonymized):
+[{ "id", "currentTitle", "totalYears", "skills",
+   "missingMustHave": [...],        ← credit == 0, authoritative
+   "partialMustHave": [{skill, credit, via, method, note}] }]
+
+Return JSON: {
+  "candidates": [
+    {"id": string, "reasons": string[2-3], "gaps": string[0-2]}
+  ]
+}
+`reasons` = concrete, evidence-based bullets on why to call this person.
+`gaps` = ONLY the requirements in `missingMustHave`. That list is
+authoritative: it is the deterministic scorer's finding that NOTHING in the
+profile evidences those skills.
+`partialMustHave` is NOT a gap and must NEVER be described as missing,
+lacking or absent. Each entry names real evidence the candidate has that
+partly satisfies the requirement (e.g. they list 'SAP HR' where the role
+wants 'SAP HR3', or 'Lohnsteuer' where it wants 'Lohnsteuerrecht'). If you
+mention one, describe it accurately as partial or adjacent — say what they
+DO have and how it falls short, never that they lack it. Writing 'missing
+X' for a partial match contradicts the evidence shown to the recruiter
+alongside your text.
+Do not invent gaps that are in neither list.</pre>
+    </div>
+
+    <div class="note">
+      <span class="tag">Bias control</span>
+      <p>The reasoning prompt is given <strong>only skills and experience</strong> — never
+      name, contact details or demographics. Candidates are passed anonymised, by id.</p>
+    </div>
+
+    <p style="margin-top:22px">Prompts <b>4 · Strategist</b> and <b>5 · Broadener</b> are
+      reproduced in full in <a href="#strategist">the Strategist</a> and
+      <a href="#broadener">the Broadener</a> above.</p>
+  </section>
+
+  <hr class="rule">
+
+  <section id="config">
+    <h2>Config &amp; cost</h2>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td class="n">EXTRACTION_MODEL</td><td class="n">gpt-4o-mini</td><td>CV + JD structured extraction</td></tr>
+          <tr><td class="n">REASONING_MODEL</td><td class="n">gpt-4o-mini</td><td>Top-N candidate reasoning</td></tr>
+          <tr><td class="n">EMBEDDING_MODEL</td><td class="n">text-embedding-3-small</td><td>1536 dims, JD + profiles</td></tr>
+          <tr><td class="n">SOURCING_STRATEGY_MODEL</td><td class="n">openai:gpt-4o</td><td>Strategist — one call per prefill</td></tr>
+          <tr><td class="n">SOURCING_BROADEN_MODEL</td><td class="n">openai:gpt-4o-mini</td><td>Broadener — one call per zero-result retry</td></tr>
+          <tr><td class="n">SOURCING_MAX_BROADEN_ATTEMPTS</td><td class="n">3</td><td>Hard cost guard on retries</td></tr>
+          <tr><td class="n">APIFY_SEARCH_ACTOR</td><td class="n">harvestapi/linkedin-profile-search</td><td>Short mode ≈ $0.10 / page</td></tr>
+          <tr><td class="n">PRESCREEN_ENABLED</td><td class="n">true</td><td>Gate hits before enrichment spend</td></tr>
+          <tr><td class="n">PRESCREEN_MIN_SCORE</td><td class="n">25</td><td>Drop below this — calibrated, not guessed</td></tr>
+          <tr><td class="n">MATCH_RETRIEVE_K</td><td class="n">50</td><td>Candidates pulled from the vector store</td></tr>
+          <tr><td class="n">MATCH_REASON_TOP_N</td><td class="n">10</td><td>How many get LLM prose</td></tr>
+          <tr><td class="n">MATCH_RETURN_TOP</td><td class="n">5</td><td>The default view — not what is stored</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Cost is bounded in three places: the broaden cap, the Broadener refusing to repeat a
+      filter set it already tried, and the gate withholding enrichment from off-role hits.</p>
+  </section>
+
+  <hr class="rule">
+
+  <section id="traps">
+    <h2>Known traps</h2>
+    <p>Live findings, kept here because each one cost real time to diagnose.</p>
+
+    <div class="note bad">
+      <span class="tag">Quota looks like “no candidates”</span>
+      <p>The Apify actor reports an account refusal as
+      <code>Status: SUCCEEDED, Message: free user run limit reached</code> with an
+      <em>empty dataset</em>. Read naively, that is indistinguishable from “nobody matches
+      your search” — so the recruiter is told their role has no candidates, and the
+      Broadener burns its entire budget widening searches that never ran.
+      <code>_raise_if_quota_exhausted</code> now inspects <code>statusMessage</code> and
+      raises instead.</p>
+      <p><b>Rule:</b> before blaming filters or titles for a zero-result search, replay a
+      known-good filter set and prove the actor still returns anything. A bare
+      <code>{searchQuery: "Payroll", locations: ["Germany"]}</code> returning 0 is never a
+      real result.</p>
+    </div>
+
+    <div class="note warn">
+      <span class="tag">Still open</span>
+      <ul style="margin:6px 0">
+        <li><code>profileLanguages</code> <strong>never reaches the actor</strong> — the log
+          shows <code>dropping unknown profileLanguages value 'de'</code>. The
+          German-language filter has never done anything.</li>
+        <li><code>seniorityLevel</code> is not in the actor's input either. Its real inputs
+          are only <code>search</code>, <code>locations</code>, <code>currentJobTitles</code>,
+          <code>yearsOfExperienceIds</code>, <code>functionIds</code>.</li>
+        <li><code>function</code> is an unstable guess — <code>1</code> (Accounting) on one
+          run and <code>10</code> (Finance) on the next for the same JD, when payroll people
+          tag themselves <code>12</code> (Human Resources).</li>
+        <li><code>yearsOfExperience</code> is mis-mapped from <code>minYears</code>: a
+          <code>minYears: 3</code> JD produced code <code>4</code> (= 6–10 years). Should be
+          mapped deterministically, not by an LLM.</li>
+        <li>The Broadener invents locations the actor rejects — <code>"Europe"</code> → 404.</li>
+        <li>A discovery process that dies leaves <code>searchStatus: "running"</code>
+          forever; there is no stale-claim timeout, so the job can never be re-run.</li>
+      </ul>
+    </div>
+
+    <div class="note">
+      <span class="tag">Reading a run</span>
+      <p>Read the <strong>Apify actor log</strong>, never a <code>searchAttempts</code>
+      snapshot. The snapshot records what we <em>intended</em> to send, and a mid-flight
+      read shows fewer attempts than actually ran.</p>
+    </div>
+  </section>
+
+  </main>
+</div>
+</div>

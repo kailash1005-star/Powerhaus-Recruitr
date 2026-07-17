@@ -3,10 +3,17 @@ FastAPI Application Entry Point
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.router import api_router
+from app.api.v1.router import api_router, public_router
 from app.database import connect_to_mongo, close_mongo_connection
 from app.config import settings
-from app.startup_checks import log_matching_readiness, matching_readiness, outreach_readiness
+from app.startup_checks import (
+    auth_readiness,
+    log_auth_readiness,
+    log_matching_readiness,
+    matching_readiness,
+    outreach_readiness,
+    verify_auth_configuration,
+)
 
 app = FastAPI(
     title="Recruitment API",
@@ -23,19 +30,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include v1 routers
-app.include_router(api_router, prefix="/api/v1")
+# Include v1 routers. Both are mounted under the same /api/v1 prefix so URLs are
+# unchanged; they differ only in whether a bearer token is required.
+app.include_router(api_router, prefix="/api/v1")       # authenticated
+app.include_router(public_router, prefix="/api/v1")    # provider callbacks only
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint — includes matching-engine readiness so a
-    misconfigured environment (wrong Python / missing parser deps) is visible."""
-    return {"status": "healthy", "matching": matching_readiness(), "outreach": outreach_readiness()}
+    misconfigured environment (wrong Python / missing parser deps) is visible.
+
+    Deliberately public: Cloud Run's health probe has no bearer token. It reports
+    only configuration shape (is auth on, which issuer) — never secrets, and no
+    data.
+    """
+    return {
+        "status": "healthy",
+        "matching": matching_readiness(),
+        "outreach": outreach_readiness(),
+        "auth": auth_readiness(),
+    }
 
 @app.on_event("startup")
 async def startup_db_client():
     """Connect to MongoDB and verify the matching engine is runnable."""
+    # First: refuse to boot on an unsafe auth configuration. Before Mongo, before
+    # anything — a container that shouldn't be serving shouldn't get as far as
+    # opening a database connection.
+    verify_auth_configuration()
+    log_auth_readiness()
     log_matching_readiness()
     await connect_to_mongo()
     # Seed + cache the cost price book for the Cost Analyser (never blocks startup).

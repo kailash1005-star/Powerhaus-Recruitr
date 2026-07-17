@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useUser } from '@auth0/nextjs-auth0';
 import { Icon } from './Icon';
 import { useI18n, type TKey } from '@/lib/i18n';
 
@@ -188,9 +189,26 @@ function isActive(pathname: string, item: NavItem): boolean {
   return pathname === prefix || pathname.startsWith(prefix + '/');
 }
 
+/** Initials for the avatar. Prefers a real name, falls back to the email local
+ *  part, then to a neutral glyph — never renders an empty circle. */
+function initialsFor(user: { name?: string | null; email?: string | null } | undefined): string {
+  const source = user?.name || user?.email?.split('@')[0] || '';
+  const parts = source.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length === 0) return '·';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 export function Sidebar() {
   const pathname = usePathname() ?? '';
   const { t } = useI18n();
+
+  // Reads the session from the SDK's /auth/profile endpoint — the ID token's
+  // claims, not the access token. There is no token here and there cannot be:
+  // this is a client component, and anything it touched would be in the bundle.
+  const { user, isLoading } = useUser();
+
+  const displayName = user?.email ?? user?.name ?? '';
 
   const navItemStyle = (active: boolean): React.CSSProperties => ({
     display: 'flex',
@@ -289,9 +307,34 @@ export function Sidebar() {
           <Icon name="chevron-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
         </div>
         <div style={sidebarStyles.account}>
-          <div style={sidebarStyles.accountAvatar}>U</div>
-          <span style={sidebarStyles.accountText}>user@recruitr.io</span>
-          <Icon name="chevron-down" size={14} style={{ color: 'var(--fg-subtle)' }} />
+          {user?.picture ? (
+            // eslint-disable-next-line @next/next/no-img-element -- avatar host is
+            // Auth0/Google/Gravatar and varies per connection; next/image would
+            // need every one allow-listed in next.config for no real benefit.
+            <img
+              src={user.picture}
+              alt=""
+              width={24}
+              height={24}
+              style={{ ...sidebarStyles.accountAvatar, objectFit: 'cover' }}
+            />
+          ) : (
+            <div style={sidebarStyles.accountAvatar}>{initialsFor(user ?? undefined)}</div>
+          )}
+          <span style={sidebarStyles.accountText}>
+            {isLoading ? '…' : displayName}
+          </span>
+          {/* A plain <a>, not a Link: /auth/logout is served by middleware, not by
+              the App Router, so client-side navigation would 404. It must be a
+              real document request. */}
+          <a
+            href="/auth/logout"
+            title="Sign out"
+            aria-label="Sign out"
+            style={{ display: 'inline-flex', color: 'var(--fg-subtle)', textDecoration: 'none' }}
+          >
+            <Icon name="log-out" size={14} />
+          </a>
         </div>
       </div>
     </aside>

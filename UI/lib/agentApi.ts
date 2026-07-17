@@ -1,9 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Engineer — agent API client (thread CRUD + SSE streaming over fetch)
 // Mirrors BE /api/v1/agent/*
+//
+// Same-origin via the authenticated proxy — see lib/api.ts for why.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+const API_BASE = '/api/proxy';
 
 export interface ChatThread {
   id: string;

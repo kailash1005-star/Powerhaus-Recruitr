@@ -180,6 +180,70 @@ html, body { font-family: var(--font-sans); color: var(--fg-primary); -webkit-fo
   }
 }
 
+/* ── Marketing surfaces (landing + login) ─────────────────────
+   The only pages that live outside AppShell. They need a wider type
+   ramp than the dashboard's dense 10–18px scale, and they collapse at
+   narrow widths — both of which need media queries, so they are classes
+   rather than inline styles. Everything is scoped under .mk- to keep it
+   away from the app proper.
+   ───────────────────────────────────────────────────────────── */
+.mk-container { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+/* Type ramp — marketing headlines, larger than the app's --text-* scale. */
+.mk-h1 { font-size: 56px; font-weight: var(--w-semibold); line-height: 1.05; letter-spacing: -0.02em; margin: 0; }
+.mk-h2 { font-size: 38px; font-weight: var(--w-semibold); line-height: 1.15; letter-spacing: -0.02em; margin: 0; }
+.mk-h3 { font-size: 18px; font-weight: var(--w-semibold); line-height: var(--leading-snug); margin: 0; }
+.mk-lead { font-size: 18px; line-height: var(--leading-normal); color: var(--fg-muted); margin: 0; }
+.mk-body { font-size: 14px; line-height: var(--leading-normal); color: var(--fg-muted); margin: 0; }
+.mk-eyebrow { font-size: var(--text-11); font-weight: var(--w-semibold); text-transform: uppercase;
+              letter-spacing: var(--tracking-widest); color: var(--primary); margin: 0 0 8px; }
+
+.mk-section { padding: 96px 0; }
+
+/* Grids — collapse to a single column on small screens. */
+.mk-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.mk-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.mk-hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 48px; align-items: center; }
+
+/* Hero mock and nav links hide before the layout gets cramped. */
+.mk-nav-links { display: flex; align-items: center; gap: 28px; }
+.mk-nav-cta { display: flex; align-items: center; gap: 8px; }
+.mk-nav-toggle { display: none; }
+
+.mk-card { background: var(--bg-app); border: 1px solid var(--border-card); border-radius: var(--r-12); padding: 24px; }
+
+/* Marquee — duplicated row slides -50% so the loop is seamless. */
+@keyframes mk-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.mk-marquee-mask { overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+          mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent); }
+.mk-marquee-track { display: flex; width: max-content; flex-wrap: nowrap; animation: mk-marquee 48s linear infinite; }
+
+@media (max-width: 900px) {
+  .mk-h1 { font-size: 38px; }
+  .mk-h2 { font-size: 28px; }
+  .mk-lead { font-size: 16px; }
+  .mk-section { padding: 64px 0; }
+  .mk-hero-grid { grid-template-columns: 1fr; gap: 40px; }
+  .mk-grid-2, .mk-grid-3 { grid-template-columns: 1fr; }
+  .mk-nav-links, .mk-nav-cta { display: none; }
+  .mk-nav-toggle { display: inline-flex; }
+}
+
+/* Login: the brand panel is desktop-only, the form goes full width below it. */
+.mk-auth { min-height: 100dvh; display: flex; }
+.mk-auth-brand { display: flex; flex-direction: column; justify-content: space-between;
+                 width: 42%; background: var(--primary); color: var(--primary-fg); padding: 40px; }
+.mk-auth-logo-sm { display: none; }
+@media (max-width: 900px) {
+  .mk-auth-brand { display: none; }
+  .mk-auth-logo-sm { display: flex; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-marquee-track { animation: none; }
+}
+
 .t-page-title    { font-size: var(--text-18); font-weight: var(--w-semibold); color: var(--fg-primary); letter-spacing: var(--tracking-tight); }
 .t-section-label { font-size: var(--text-10); font-weight: var(--w-medium); color: var(--fg-subtle); text-transform: uppercase; letter-spacing: var(--tracking-widest); }
 .t-nav-item      { font-size: var(--text-13); font-weight: var(--w-medium); color: var(--fg-secondary); }

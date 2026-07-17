@@ -44,6 +44,17 @@ async def connect_to_mongo():
         print(f"[ERROR] MongoDB connection failed: {e}")
         raise
 
+    # users — one row per Auth0 identity, provisioned just-in-time on first
+    # authenticated request. The unique index on auth0Sub is what makes that safe
+    # under concurrency: two simultaneous first-calls race to upsert and the index
+    # guarantees one row rather than two.
+    try:
+        from app.services.user_service import ensure_indexes as ensure_user_indexes
+        await ensure_user_indexes(database)
+        print("[OK] users indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not create users indexes: {e}")
+
     # Relax prospects schema validator — pre-enrichment prospects may have empty
     # lastName / email which the original strict $jsonSchema rejects.
     try:
