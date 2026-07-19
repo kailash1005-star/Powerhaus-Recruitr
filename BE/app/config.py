@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # Firecrawl Configuration
     # No default: a live key used to sit here and is therefore burned (it's in git
-    # history — rotate it, see AUTH0_SETUP.md Step 10). An empty default makes a
+    # history — rotate it, see docs/engineering/AUTH0_SETUP.md Step 10). An empty default makes a
     # missing key fail loudly at the call site instead of silently falling back to
     # a compromised credential.
     FIRECRAWL_API_KEY: str = Field(
@@ -156,6 +156,22 @@ class Settings(BaseSettings):
         default=3,
         description="Max agent-broadened retries after a zero-result candidate search",
     )
+    # The number of strong candidates a discovery aims to put in front of the
+    # recruiter. Fewer than this after pre-screening triggers the "widen the
+    # specialty?" suggestion (recruiter-opt-in adjacent titles) instead of
+    # silently delivering a thin list.
+    SOURCING_TARGET_CANDIDATES: int = Field(
+        default=10,
+        description="Kept-candidate count below which the UI offers a deliberate widening",
+    )
+    # Hard cap on candidates per enrichment request from the job candidates UI.
+    # Chosen to match APIFY_ENRICH_BATCH (one actor run per enrichment click):
+    # HarvestAPI's free tier caps runs, so every click costing exactly ONE run
+    # is the difference between ~20 roles and ~6 on a free Apify account.
+    JOB_ENRICH_SELECTION_MAX: int = Field(
+        default=10,
+        description="Max candidates per enrich request on the pipeline job UI",
+    )
 
     # ── MCP tool servers the agent connects to ──────────────────────────
     # The agent's tools come from MCP server(s). Point it at the LinkedIn MCP
@@ -187,6 +203,89 @@ class Settings(BaseSettings):
     MATCH_RETRIEVE_K: int = Field(default=50, description="How many candidates to pull from the vector store")
     MATCH_REASON_TOP_N: int = Field(default=10, description="How many top candidates get LLM reasoning")
     MATCH_RETURN_TOP: int = Field(default=5, description="Final number of candidates returned to the recruiter")
+
+    # ── LLM judge (stage 2 of scoring) ─────────────────────────────────────
+    # The deterministic blend produces the base ranking; the judge re-scores the
+    # reasoned candidates against an ANCHORED rubric (explicit descriptions of
+    # what 90 vs 40 means) and the two are blended. The judge can pull a score
+    # down or up but can never lift a candidate past the must-have coverage
+    # ceiling — hard evidence still outranks prose.
+    MATCH_JUDGE_ENABLED: bool = Field(
+        default=True, description="Blend an anchored-rubric LLM judge score into the match score")
+    MATCH_JUDGE_WEIGHT: float = Field(
+        default=0.35, description="Judge share of the blended score (0 disables the blend, 1 is judge-only)")
+
+    # ── QA auditors (adversarial verification layer) ───────────────────────
+    # Two auditors, one principle: verification is harder than the job, so the
+    # auditor runs a STRONGER model than the workers (extract/reason/judge use
+    # the cheap REASONING_MODEL; the auditors default to gpt-4o). Each auditor
+    # runs ONCE per run over the whole batch, so the bigger model's cost is
+    # bounded. Both write to the `qa_reports` collection (admin-only page).
+    #
+    # QA_AUDITOR_MODEL is the shared default; the per-auditor overrides let you
+    # dial one up (e.g. a reasoning model) without touching the other.
+    QA_AUDITOR_MODEL: str = Field(
+        default="gpt-4o",
+        description="Superior model for the QA auditors (verification > generation)")
+
+    # Match-score auditor. The judge is contractually forbidden from
+    # contradicting the deterministic gap list (that discipline is what keeps
+    # prose honest), which means the judge can never catch a deterministic false
+    # negative — this auditor is the one component allowed to disagree, and every
+    # false-negative flag must survive a mechanical quote check before it can
+    # correct a score. Runs after scoring, before a run is marked completed.
+    MATCH_QA_ENABLED: bool = Field(
+        default=True, description="Run the QA auditor over every match run before completion")
+    MATCH_QA_MODEL: str = Field(
+        default="", description="Override model for the match auditor (empty → QA_AUDITOR_MODEL)")
+
+    # Sourcing-results auditor. Audits what the discovery API actually returns
+    # against the recruiter's query — is each candidate genuinely in the right
+    # specialty/seniority for the role? Location is NOT its job: a wrong-country
+    # candidate is caught by a deterministic gate (SOURCING_LOCATION_GATE), which
+    # is exact, free and can't hallucinate. The auditor handles the fuzzy
+    # authenticity question a string check can't.
+    SOURCING_QA_ENABLED: bool = Field(
+        default=True, description="Audit discovery result sets against the query before presenting")
+    SOURCING_QA_MODEL: str = Field(
+        default="", description="Override model for the sourcing auditor (empty → QA_AUDITOR_MODEL)")
+    # Deterministic location gate over discovery results. "country" = reject a
+    # candidate whose country differs from the requested location (the Bavaria→
+    # India leak); wrong region within the right country is kept but flagged
+    # (remote/relocation is legitimate). "off" disables the gate.
+    SOURCING_LOCATION_GATE: str = Field(
+        default="country", description='Location gate over results: "country" | "off"')
+
+    # Admins see the QA reports page (per-run false-positive/negative metrics).
+    # Comma-separated, case-insensitive. Principals with the 'admin' role pass too.
+    ADMIN_EMAILS: str = Field(
+        default="kailash@vanceltech.com",
+        description="Emails allowed to read QA reports (comma-separated)")
+
+    # Fallback admin allowlist keyed on the Auth0 user id (the `sub` claim).
+    # `sub` is present in EVERY access token, so this works even when the
+    # post-login Action that stamps email/roles isn't firing. Comma-separated,
+    # e.g. "auth0|abc123,google-oauth2|xyz789".
+    ADMIN_SUBS: str = Field(
+        default="",
+        description="Auth0 user ids (sub) allowed to read QA reports (comma-separated)")
+
+    # ── OpenAI client hardening ────────────────────────────────────────────
+    # The SDK default timeout is 600s per request; a hung call parks a worker
+    # thread for 10 minutes. Retries are hand-rolled at the call sites (with
+    # backoff), so the SDK's own retry layer stays off.
+    OPENAI_TIMEOUT_SECS: float = Field(default=60.0, description="Per-request timeout for OpenAI calls (seconds)")
+    # Best-effort reproducibility (OpenAI documents `seed` as mostly-deterministic;
+    # the run also records model + system_fingerprint so drift is attributable).
+    OPENAI_SEED: int = Field(default=42, description="Seed sent with extraction/judge calls")
+
+    # ── Background-run hygiene ─────────────────────────────────────────────
+    # Apify actor calls otherwise wait forever; a hung run leaves the job stuck
+    # on "running" with no recovery.
+    APIFY_CALL_TIMEOUT_SECS: int = Field(default=300, description="Apify actor run + client wait timeout (seconds)")
+    # At startup, any run still marked running whose last heartbeat is older than
+    # this was orphaned by a restart — flip it to failed so the UI stops waiting.
+    STALE_RUN_REAP_MINUTES: int = Field(default=30, description="Age (minutes) after which a 'running' run is reaped at startup")
 
     # Pre-screen gate — judges a search hit on its free title/location BEFORE the
     # per-profile Apify enrichment spend. Deliberately lopsided: a false drop is
@@ -256,7 +355,7 @@ class Settings(BaseSettings):
 
     # Namespace for custom claims. Auth0 silently DROPS non-namespaced custom
     # claims, so this prefix is load-bearing, not cosmetic. Must match the
-    # post-login Action (see AUTH0_SETUP.md, Step 7).
+    # post-login Action (see docs/engineering/AUTH0_SETUP.md, Step 7).
     AUTH0_CLAIM_NAMESPACE: str = Field(
         default="https://recruit.vanceltech.com/",
         description="URL prefix for custom claims (tenant_id, roles)",

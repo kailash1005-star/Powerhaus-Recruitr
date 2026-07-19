@@ -399,7 +399,43 @@ export function fetchCompany(id: string): Promise<CompanyDoc> {
 
 export type PipelineJobSearchStatus = 'awaiting_input' | 'queued' | 'running' | 'completed' | 'failed';
 
-export type PipelineJobEnrichStatus = 'queued' | 'running' | 'completed' | 'failed';
+// 'ready' = discovery found candidates and stopped before the (now manual) deep
+// enrichment; 'none' = discovery found nothing to enrich.
+export type PipelineJobEnrichStatus =
+  'ready' | 'none' | 'queued' | 'running' | 'completed' | 'failed';
+
+/** One executed search attempt — the discovery loop's audit trail. */
+export interface SearchAttemptEntry {
+  attempt: number;
+  action: string;
+  reasoning?: string;
+  filters: Record<string, unknown>;
+  resultCount: number;
+  /** Raw hits per channel when the attempt ran more than one search page. */
+  channelCounts?: Record<string, number> | null;
+  at?: string;
+  error?: string | null;
+}
+
+/** Why the pre-screen gate kept/dropped what it did. */
+export interface PrescreenSummary {
+  total: number;
+  kept: number;
+  dropped: number;
+  droppedSamples?: { name?: string; title?: string; score?: number; reason?: string }[];
+  at?: string;
+}
+
+/** Set when discovery found fewer strong candidates than the target — carries
+ *  the recruiter-opt-in widening suggestions. */
+export interface SearchShortfall {
+  found: number;
+  target: number;
+  adjacentTitles: string[];
+  attempts: number;
+  reason: string;
+  at?: string;
+}
 
 export interface PipelineJob {
   jobId: string;
@@ -417,6 +453,16 @@ export interface PipelineJob {
   enrichStatus?: PipelineJobEnrichStatus | null;
   enrichError?: string | null;
   enrichCounts?: Record<string, number> | null;
+  /** Discovery transparency: every search attempt this job ran. */
+  searchAttempts?: SearchAttemptEntry[] | null;
+  /** What the pre-screen gate did with the raw search hits. */
+  prescreen?: PrescreenSummary | null;
+  /** Present when the exact-specialty pool came up short of the target. */
+  searchShortfall?: SearchShortfall | null;
+  /** The filters the last discovery ran with (rerun/widen replays these). */
+  lastDiscoverFilters?: Record<string, unknown> | null;
+  /** Adjacent-specialty titles the Strategist proposed — opt-in widen chips. */
+  adjacentTitles?: string[] | null;
 }
 
 export interface Pipeline {
@@ -549,6 +595,23 @@ export interface Candidate {
   location?: string;
   matchScore: number;
   matchReasons: string[];
+  /** Provenance of matchScore: "sourcing_heuristic" = provisional title-overlap
+   *  number from search time; "match_run" = the real scoring engine's result. */
+  matchScoreSource?: 'sourcing_heuristic' | 'match_run';
+  lastMatchRunId?: string;
+  /** LinkedIn's "open to work" flag (set at deep-enrichment time). */
+  openToWork?: boolean;
+  /** Which search channel(s) found this person: "title" and/or "keyword". */
+  sourceChannels?: string[];
+  /** The pre-screen gate's verdict on the free search signal. */
+  prescreen?: {
+    score?: number | null;
+    roleFit?: number | null;
+    decision?: 'keep' | 'drop';
+    matchedVia?: string | null;
+    reasons?: string[];
+    channels?: string[];
+  } | null;
   isAccepted: boolean;
   rejectionReason?: string | null;
   decidedAt?: string | null;
@@ -747,8 +810,10 @@ export function enrichCandidate(candidateId: string): Promise<Candidate> {
  * for the selected candidates in a job. Poll the pipeline's job.enrichStatus.
  */
 export function bulkEnrichJobCandidates(
-  pipelineId: string, jobId: string, candidateIds: string[],
+  pipelineId: string, jobId: string, candidateIds: string[] | null,
 ): Promise<{ success: boolean; queued: boolean }> {
+  // null → enrich every candidate in the job (the "Enrich all" button); an
+  // array → only those selected. The backend treats null/empty the same way.
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds });
 }
 
@@ -790,6 +855,22 @@ export interface DiscoverFilters {
   brief?: SearchBrief;
   /** The Strategist's pre-planned fallbacks, echoed back from suggest-filters. */
   broadeningLadder?: BroadeningStep[];
+  /** The Strategist's two-tier domain anchor, echoed back from suggest-filters.
+   *  Guards broadening against changing the target profession. */
+  domainAnchor?: DomainAnchor;
+  /** Adjacent-specialty titles — never searched automatically; offered as
+   *  opt-in chips when the exact-specialty search comes up short. */
+  adjacentTitles?: string[];
+}
+
+/** The words that make the role THIS role — see the Strategist's output. */
+export interface DomainAnchor {
+  /** Specialization words ("hcm", "payroll"). A title without one is a
+   *  different profession. */
+  coreTerms: string[];
+  /** Platform/vendor words shared across professions ("sap"). Matching one of
+   *  these alone does NOT make a title in-domain. */
+  ecosystemTerms: string[];
 }
 
 /** The recruiter's optional hints for the Strategist. All fields optional. */
@@ -820,6 +901,11 @@ export interface SearchStrategy {
   titleReasoning: string;
   filters: DiscoverFilters;
   rationale: { field: string; why: string }[];
+  /** What may never be relaxed away — enforced in code by the discovery loop. */
+  domainAnchor: DomainAnchor;
+  /** Neighbouring-specialty titles. NEVER searched automatically — they become
+   *  the opt-in "widen the search" chips when the specialty pool is thin. */
+  adjacentTitles: string[];
   broadeningLadder: BroadeningStep[];
   /** 0 means the AI didn't run (no key / error) and this is a literal prefill. */
   confidence: number;
@@ -858,10 +944,41 @@ export function discoverJobCandidates(
  * candidates' enriched profiles (auto-enriching any that aren't yet). Returns a
  * matchRunId to poll via fetchMatchRun.
  */
+/** Recruiter edits to the parsed requirements, applied to one match run (and
+ *  persisted onto the job's role spec). Omitted keys keep the parsed values;
+ *  an empty list is a deliberate "none" and is honoured. */
+export interface RequirementsEdit {
+  mustHaveSkills?: string[];
+  niceToHaveSkills?: string[];
+  minYears?: number | null;
+}
+
 export function runJobMatch(
   pipelineId: string, jobId: string, candidateIds: string[], returnTop?: number,
+  requirements?: RequirementsEdit,
 ): Promise<{ success: boolean; matchRunId: string }> {
-  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/match`, { candidateIds, returnTop });
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/match`, {
+    candidateIds, returnTop, ...(requirements || {}),
+  });
+}
+
+export interface JobRequirements {
+  jdId: string;
+  requirements: {
+    title?: string | null;
+    mustHaveSkills: string[];
+    niceToHaveSkills: string[];
+    minYears?: number | null;
+    location?: string | null;
+    seniority?: string | null;
+  };
+  requirementsSource: 'parsed' | 'recruiter_edited';
+}
+
+/** The parsed hiring requirements a match run will score against — powers the
+ *  review-and-edit step before Run Match. Parses the JD on first ask. */
+export function fetchJobRequirements(pipelineId: string, jobId: string): Promise<JobRequirements> {
+  return get(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/requirements`);
 }
 
 // ── Candidate Matching (CV ↔ JD engine) ─────────────────────────────────────
@@ -949,8 +1066,10 @@ export interface MatchedCandidate {
   /** Absent on runs scored before the breakdown existed. */
   breakdown?: ScoreBreakdown | null;
   reasons: string[];
-  /** Whether `reasons` came from the LLM or the deterministic fallback. */
-  reasoning?: 'llm' | 'deterministic';
+  /** Whether `reasons` came from the rubric judge, the LLM, or the deterministic fallback. */
+  reasoning?: 'judge' | 'llm' | 'deterministic';
+  /** LinkedIn's own "open to work" flag from the scraped profile. */
+  openToWork?: boolean;
   /** Must-haves NOTHING in the profile evidences. Deterministic — never LLM prose. */
   gaps: string[];
   /** Must-haves with related-but-incomplete evidence. NOT gaps. */
@@ -1300,4 +1419,83 @@ export function updatePriceEntry(body: {
   inUsdPer1M?: number; outUsdPer1M?: number; usdPerUnit?: number; allocateBy?: string;
 }): Promise<PriceBookEntry> {
   return patch('/api/v1/cost/price-book', body);
+}
+
+// ── QA reports (operator/admin only — the match-QA auditor's run-wise metrics) ─
+
+export interface QaMetrics {
+  candidatesReviewed: number;
+  fnFlagsRaised: number;
+  fnFlagsVerified: number;
+  fnFlagsDiscarded: number;
+  fnCorrected: number;
+  fpFlagsRaised: number;
+}
+
+export interface QaScoreCorrection {
+  candidateId: string;
+  fullName?: string | null;
+  from: number;
+  to: number;
+  skills: string[];
+}
+
+export interface QaSourcingMetrics {
+  kept: number;
+  locationRejected: number;
+  mismatchesRaised: number;
+  mismatchesFlagged: number;
+  lowConfidenceNoted: number;
+}
+
+export interface QaSourcingFlag {
+  candidateId: string;
+  reason?: string;
+  likelyActualSpecialty?: string;
+  confidence: number;
+}
+
+export interface QaReportSummary {
+  id: string;
+  kind: 'match' | 'sourcing';
+  matchRunId?: string;
+  pipelineId?: string | null;
+  jobId?: string | null;
+  jdTitle?: string | null;
+  status: 'completed' | 'skipped' | 'failed';
+  model?: string;
+  metrics: QaMetrics & Partial<QaSourcingMetrics>;
+  scoreCorrections: QaScoreCorrection[];
+  flags?: QaSourcingFlag[];
+  createdAt?: string | null;
+}
+
+export interface QaReportDetail extends QaReportSummary {
+  error?: string | null;
+  perCandidate: Array<{
+    candidateId: string;
+    fullName?: string | null;
+    originalScore?: number | null;
+    correctedScore?: number | null;
+    falseNegativesVerified: Array<{ skill: string; quote?: string; why?: string }>;
+    falseNegativesDiscarded: Array<{ skill?: string; quote?: string }>;
+    falsePositives: Array<{ skill?: string; why?: string }>;
+  }>;
+}
+
+/** 200 {isAdmin} for everyone authenticated — the UI hides the QA nav when false. */
+export function fetchQaAccess(): Promise<{ isAdmin: boolean }> {
+  return get('/api/v1/qa/access');
+}
+
+export function fetchQaReports(limit = 50): Promise<{
+  totals: QaMetrics & { runs: number };
+  sourcingTotals: { runs: number; kept: number; locationRejected: number; mismatchesFlagged: number };
+  reports: QaReportSummary[];
+}> {
+  return get(`/api/v1/qa/reports?limit=${limit}`);
+}
+
+export function fetchQaReport(id: string): Promise<QaReportDetail> {
+  return get(`/api/v1/qa/reports/${id}`);
 }

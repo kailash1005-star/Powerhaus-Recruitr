@@ -5,18 +5,26 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
+import { bandFor } from '../matching/shared';
 import { CandidateSlideOut } from '../CandidateSlideOut';
 import { CandidateDiscoveryForm } from '../CandidateDiscoveryForm';
 import { CandidateColumnFilter } from '../CandidateColumnFilter';
 import {
-  fetchPipelineCandidates, fetchPipeline, patchCandidate, enrichCandidate,
+  fetchPipelineCandidates, fetchPipeline, patchCandidate,
   fetchCandidate, bulkEnrichJobCandidates, runJobMatch, fetchCandidateFacets,
+  fetchJobRequirements, discoverJobCandidates,
   type Candidate, type Pipeline, type CandidateFilters, type CandidateFacets,
+  type DiscoverFilters,
 } from '@/lib/api';
 
 interface Props { pipelineId: string; jobId: string }
 
 const ROWS_OPTIONS = [25, 50, 100];
+
+// One enrichment click = one Apify actor run (runs, not dollars, are the free
+// tier's scarce resource). Mirrors the backend's JOB_ENRICH_SELECTION_MAX —
+// the server enforces it too; this just keeps the UI honest up front.
+const ENRICH_MAX = 10;
 
 const EMPTY_FACETS: CandidateFacets = { companies: [], locations: [], status: [] };
 
@@ -78,15 +86,90 @@ function SortIcon({ active, order }: { active: boolean; order: 'asc' | 'desc' })
   );
 }
 
-function MatchBadge({ score }: { score: number }) {
-  let style: React.CSSProperties;
-  if (score >= 80)      style = { background: '#ECFDF5', color: '#059669', border: '1px solid #A7F3D0' };
-  else if (score >= 60) style = { background: '#EFF6FF', color: '#2563EB', border: '1px solid #BFDBFE' };
-  else if (score >= 40) style = { background: '#FFFBEB', color: '#D97706', border: '1px solid #FDE68A' };
-  else                  style = { background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA' };
+/** Add/remove chip editor for skill keywords (review-before-match). */
+function SkillChips({ label, hint, skills, onChange, accent }: {
+  label: string; hint: string; skills: string[];
+  onChange: (next: string[]) => void; accent: string;
+}) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    if (!skills.some((s) => s.toLowerCase() === v.toLowerCase())) onChange([...skills, v]);
+    setDraft('');
+  };
   return (
-    <span style={{ ...style, padding: '2px 7px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
-      {score}
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg-secondary)', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginBottom: 8 }}>{hint}</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {skills.length === 0 && (
+          <span style={{ fontSize: 12, color: 'var(--fg-subtle)', fontStyle: 'italic' }}>None yet — add below.</span>
+        )}
+        {skills.map((s) => (
+          <span key={s} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 10px',
+            borderRadius: 9999, fontSize: 12, fontWeight: 600,
+            background: `${accent}14`, color: accent, border: `1px solid ${accent}45`,
+          }}>
+            {s}
+            <button
+              onClick={() => onChange(skills.filter((x) => x !== s))}
+              title={`Remove "${s}"`}
+              style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', display: 'inline-flex', padding: 0 }}
+            >
+              <Icon name="x" size={11} />
+            </button>
+          </span>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+          placeholder="Type a skill + Enter"
+          style={{
+            flex: 1, height: 32, padding: '0 10px', borderRadius: 6, fontSize: 12.5,
+            border: '1px solid var(--border-card)', fontFamily: 'inherit', outline: 'none',
+          }}
+        />
+        <button
+          onClick={add}
+          disabled={!draft.trim()}
+          style={{
+            height: 32, padding: '0 12px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+            cursor: draft.trim() ? 'pointer' : 'not-allowed', border: '1px solid var(--border-card)',
+            background: '#FFF', color: 'var(--fg-secondary)', fontFamily: 'inherit',
+            opacity: draft.trim() ? 1 : 0.5,
+          }}
+        >
+          <Icon name="plus" size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** One badge, one band definition. Colors/thresholds come from the shared
+ *  matching bands so this table can never disagree with the match-run views.
+ *  `provisional` = the score is still the sourcing-time title-overlap heuristic
+ *  (no match run yet) — rendered dashed so it doesn't read as an assessment. */
+function MatchBadge({ score, provisional }: { score: number; provisional?: boolean }) {
+  const band = bandFor(score);
+  return (
+    <span
+      title={provisional
+        ? 'Provisional — title match only. Run Match for the real score.'
+        : band.label}
+      style={{
+        background: band.bg, color: band.fg,
+        border: `1px ${provisional ? 'dashed' : 'solid'} ${band.line}`,
+        padding: '2px 7px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+        opacity: provisional ? 0.75 : 1,
+      }}
+    >
+      {Math.round(score)}{provisional ? '*' : ''}
     </span>
   );
 }
@@ -127,6 +210,13 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [discoverMsg, setDiscoverMsg] = useState<string | null>(null);
   const autoOpenedRef = useRef(false);
+
+  // "Widen the search?" — shown when discovery found fewer strong candidates
+  // than the target. The recruiter picks which adjacent-specialty titles to
+  // add; nothing widens without their click.
+  const [dismissedShortfall, setDismissedShortfall] = useState(false);
+  const [widenPicked, setWidenPicked] = useState<Set<string>>(new Set());
+  const [widenBusy, setWidenBusy] = useState(false);
 
   const jobEntry = useMemo(
     () => pipeline?.jobs.find((j) => j.jobId === jobId),
@@ -221,6 +311,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
 
   // Poll the job through search → auto-enrich after the questionnaire is run.
   const pollDiscover = useCallback(async () => {
+    let sawRunning = false;
     for (let i = 0; i < 200; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       let p: Pipeline | null = null;
@@ -230,25 +321,32 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       const ss = je?.searchStatus;
       const es = je?.enrichStatus;
       const found = je?.candidateCount ?? 0;
-      if (ss === 'running') { setDiscoverMsg('Searching LinkedIn for candidates…'); continue; }
+      if (ss === 'running') { sawRunning = true; setDiscoverMsg('Searching LinkedIn for candidates…'); continue; }
       if (ss === 'failed') { setDiscoverMsg(`Search failed: ${je?.searchError || 'unknown error'}`); return; }
+      // Zero strong candidates ends as awaiting_input (the recruiter decides
+      // the next move) — terminal once we know THIS search ran, not the state
+      // left over from before it claimed the job.
+      if (ss === 'awaiting_input' && (sawRunning || je?.searchShortfall)) {
+        setDismissedShortfall(false);
+        setDiscoverMsg(null);
+        await loadCandidates();
+        return;
+      }
       if (ss === 'completed') {
         await loadCandidates();
+        // Deep enrichment is human-controlled: search completing is the END
+        // of discovery. The recruiter reviews the profiles and presses
+        // Enrich to pull full work history. (es === 'queued'/'running'
+        // only happens if a legacy auto-enrich run is still finishing.)
         if (es === 'queued' || es === 'running') { setDiscoverMsg(`Found ${found} candidate(s) · enriching profiles…`); continue; }
-        if (es === 'completed') {
-          const c = je?.enrichCounts || {};
-          const enr = c.enriched ?? 0;
-          const nf = c.not_found ?? 0;
-          setDiscoverMsg(
-            enr > 0
-              ? `Done — ${found} candidate(s); enriched ${enr}${nf ? `, ${nf} no profile` : ''} ✓`
-              : `Found ${found} candidate(s), but none could be enriched${nf ? ` (${nf} returned no profile)` : ''}.`,
-          );
-          await loadCandidates();
-          return;
-        }
-        if (es === 'failed') { setDiscoverMsg(`Found ${found} candidate(s); enrichment failed: ${je?.enrichError || ''}`); return; }
-        setDiscoverMsg(`Found ${found} candidate(s)…`);
+        setDismissedShortfall(false);
+        if (es === 'completed') { setDiscoverMsg(`Found ${found} candidate(s) — profiles enriched ✓`); await loadCandidates(); return; }
+        setDiscoverMsg(
+          found > 0
+            ? `Found ${found} candidate(s), strongest first. Tick up to ${ENRICH_MAX}, then press Enrich for full work history.`
+            : 'No candidates matched. Adjust the filters and search again.',
+        );
+        return;
       }
     }
     setDiscoverMsg('This is taking longer than expected — refresh to check.');
@@ -256,8 +354,46 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
 
   const onDiscoverSubmitted = () => {
     setDiscoverOpen(false);
+    setDismissedShortfall(false);
     setDiscoverMsg('Starting LinkedIn search…');
     pollDiscover();
+  };
+
+  // Shortfall chips default to ALL suggested titles ticked — one click to run,
+  // still fully editable.
+  const shortfall = (jobEntry?.searchStatus === 'completed' || jobEntry?.searchStatus === 'awaiting_input')
+    ? jobEntry?.searchShortfall : null;
+  useEffect(() => {
+    setWidenPicked(new Set(shortfall?.adjacentTitles ?? []));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shortfall?.at]);
+
+  /** Re-run discovery with the SAME filters plus the recruiter-picked adjacent
+   *  titles. This is the only path that ever widens the specialty — and it is
+   *  a recruiter click, by design. */
+  const onWidenSearch = async () => {
+    const base = (jobEntry?.lastDiscoverFilters ?? {}) as DiscoverFilters;
+    const existing = (base.currentJobTitles ?? []).map(String);
+    const added = Array.from(widenPicked).filter((t) => !existing.includes(t));
+    if (added.length === 0) return;
+    setWidenBusy(true);
+    setActionError(null);
+    try {
+      await discoverJobCandidates(pipelineId, jobId, {
+        ...base,
+        currentJobTitles: [...existing, ...added],
+        autoBroaden: true,
+        // The remaining suggestions stay on offer for a further widening.
+        adjacentTitles: (jobEntry?.adjacentTitles ?? []).filter((t) => !widenPicked.has(t)),
+      });
+      setDismissedShortfall(true);
+      setDiscoverMsg(`Searching again with ${added.length} added title(s)…`);
+      pollDiscover();
+    } catch (e: any) {
+      setActionError(e.message || 'Failed to widen the search');
+    } finally {
+      setWidenBusy(false);
+    }
   };
 
   const handleSort = (field: string) => {
@@ -329,14 +465,15 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     })();
   }, []);
 
+  // Single-candidate enrich (slide-out). Goes through the job-level enrich
+  // endpoint, which routes by candidate SOURCE — the old per-candidate endpoint
+  // was Apollo-only and returned 502 for every Apify-discovered candidate.
   const onEnrich = async (id: string) => {
     setBusyId(id);
     setActionError(null);
     try {
-      const updated = await enrichCandidate(id);
-      setCandidates((prev) => prev.map((c) => (c._id === id ? updated : c)));
-      // Apollo done; the deep Apify profile continues in the background — poll it.
-      if (updated.apifyEnrichmentStatus === 'pending') pollApify(id);
+      await bulkEnrichJobCandidates(pipelineId, jobId, [id]);
+      pollApify(id); // background job — poll this one row until it settles
     } catch (e: any) {
       setActionError(e.message || 'Enrichment failed');
     } finally {
@@ -358,7 +495,14 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         setBulkMsg(`Enriching… (Apollo ${c.apollo_enriched ?? 0} · Apify ${c.apify_enriched ?? 0})`);
       }
       if (st === 'completed') {
-        setBulkMsg(`Enriched ✓ — Apollo ${c.apollo_enriched ?? 0}, Apify ${c.apify_enriched ?? 0}${c.not_found ? `, not found ${c.not_found}` : ''}`);
+        const apify = c.apify_enriched ?? 0;
+        const apollo = c.apollo_enriched ?? 0;
+        const nf = c.not_found ?? 0;
+        const parts: string[] = [];
+        if (apify) parts.push(`${apify} profile(s) enriched`);
+        if (apollo) parts.push(`${apollo} via Apollo`);
+        if (nf) parts.push(`${nf} no profile found`);
+        setBulkMsg(`Enriched ✓ — ${parts.join(' · ') || 'nothing left to enrich'}`);
         await loadCandidates();
         return;
       }
@@ -368,7 +512,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   }, [pipelineId, jobId, loadCandidates]);
 
   const onBulkEnrich = async () => {
-    if (selected.size === 0) return;
+    if (selected.size === 0 || selected.size > ENRICH_MAX) return;
     setBulkBusy('enrich');
     setActionError(null);
     setBulkMsg(`Queuing enrichment for ${selected.size} candidate(s)…`);
@@ -383,13 +527,51 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     }
   };
 
+  // ── Review-before-match ───────────────────────────────────────────────────
+  // Run Match no longer fires blind: it first shows the recruiter what was
+  // extracted from the JD (must-have / nice-to-have skills) and lets them add
+  // or remove keywords. The match then scores against THEIR list, and the edit
+  // is persisted onto the job's role spec for future runs.
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reqLoading, setReqLoading] = useState(false);
+  const [reqError, setReqError] = useState<string | null>(null);
+  const [reqEdited, setReqEdited] = useState(false);
+  const [mustHave, setMustHave] = useState<string[]>([]);
+  const [niceToHave, setNiceToHave] = useState<string[]>([]);
+
   const onRunMatch = async () => {
     if (selected.size === 0) return;
+    setReviewOpen(true);
+    setReqLoading(true);
+    setReqError(null);
+    setReqEdited(false);
+    try {
+      const data = await fetchJobRequirements(pipelineId, jobId);
+      setMustHave(data.requirements.mustHaveSkills);
+      setNiceToHave(data.requirements.niceToHaveSkills);
+    } catch (e: any) {
+      // The review step must not dead-end the flow: surface the parse problem,
+      // start from empty lists, and let the recruiter type the keywords.
+      setMustHave([]);
+      setNiceToHave([]);
+      setReqError(e.message || 'Could not parse the job description — add the key skills yourself.');
+    } finally {
+      setReqLoading(false);
+    }
+  };
+
+  const startMatch = async () => {
+    setReviewOpen(false);
     setBulkBusy('match');
     setActionError(null);
     setBulkMsg(`Starting match for ${selected.size} candidate(s)…`);
     try {
-      const { matchRunId } = await runJobMatch(pipelineId, jobId, Array.from(selected));
+      const { matchRunId } = await runJobMatch(
+        pipelineId, jobId, Array.from(selected), undefined,
+        // Only send an override when the recruiter actually changed something —
+        // an untouched list keeps the parsed requirements (and their provenance).
+        reqEdited ? { mustHaveSkills: mustHave, niceToHaveSkills: niceToHave } : undefined,
+      );
       router.push(`/matching/${matchRunId}`);
     } catch (e: any) {
       setActionError(e.message || 'Failed to start match');
@@ -520,6 +702,149 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         </div>
       )}
 
+      {/* "Widen the search?" — discovery found fewer strong candidates than the
+          target. The tool NEVER widens the specialty itself: these chips are the
+          Strategist's adjacent-specialty titles, and only the recruiter's click
+          adds them to the search. */}
+      {shortfall && !dismissedShortfall && (
+        <div style={{
+          padding: '14px 24px', background: '#FFFBEB',
+          borderBottom: '1px solid #FDE68A',
+          display: 'flex', flexDirection: 'column', gap: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+            <Icon name="alert-triangle" size={15} style={{ color: '#D97706', flexShrink: 0, marginTop: 1 }} />
+            <div style={{ fontSize: 13, lineHeight: 1.55, color: '#92400E' }}>
+              <b>{shortfall.reason}</b>{' '}
+              The search stayed strictly inside this specialty across {shortfall.attempts} attempt(s) —
+              it will not swap in a different profession on its own.
+              {shortfall.adjacentTitles.length > 0
+                ? ' To widen, pick which neighbouring specialties to include and search again:'
+                : ' To widen, run a new search and adjust the titles yourself.'}
+            </div>
+          </div>
+          {shortfall.adjacentTitles.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center', paddingLeft: 24 }}>
+              {shortfall.adjacentTitles.map((t) => {
+                const on = widenPicked.has(t);
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setWidenPicked((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(t)) next.delete(t); else next.add(t);
+                      return next;
+                    })}
+                    style={{
+                      padding: '5px 12px', borderRadius: 999, fontSize: 12.5, fontWeight: 600,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                      border: on ? '1px solid #D97706' : '1px solid #FDE68A',
+                      background: on ? '#FEF3C7' : '#FFF', color: '#92400E',
+                    }}
+                  >
+                    {on ? '✓ ' : ''}{t}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10, paddingLeft: 24 }}>
+            {shortfall.adjacentTitles.length > 0 && (
+              <button
+                onClick={onWidenSearch}
+                disabled={widenBusy || widenPicked.size === 0}
+                style={{
+                  height: 32, padding: '0 14px', borderRadius: 6, fontSize: 12.5, fontWeight: 700,
+                  cursor: widenBusy || widenPicked.size === 0 ? 'not-allowed' : 'pointer',
+                  border: 'none', background: '#D97706', color: '#FFF', fontFamily: 'inherit',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  opacity: widenBusy || widenPicked.size === 0 ? 0.6 : 1,
+                }}
+              >
+                <Icon name={widenBusy ? 'loader' : 'search'} size={13} />
+                Search wider ({widenPicked.size} added title{widenPicked.size === 1 ? '' : 's'})
+              </button>
+            )}
+            <button
+              onClick={() => setDiscoverOpen(true)}
+              style={{
+                height: 32, padding: '0 14px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                cursor: 'pointer', border: '1px solid #FDE68A', background: '#FFF',
+                color: '#92400E', fontFamily: 'inherit',
+              }}
+            >
+              Edit the search
+            </button>
+            <button
+              onClick={() => setDismissedShortfall(true)}
+              style={{
+                height: 32, padding: '0 14px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                cursor: 'pointer', border: 'none', background: 'transparent',
+                color: '#92400E', fontFamily: 'inherit', textDecoration: 'underline',
+              }}
+            >
+              Keep as is
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Search transparency — every attempt the discovery ran, and what the
+          pre-screen gate kept/dropped. A thin list should be explainable, not
+          mysterious: this is the proof the tool searched correctly. */}
+      {(jobEntry?.searchAttempts?.length ?? 0) > 0 && (
+        <details style={{
+          padding: '8px 24px', borderBottom: '1px solid var(--border-default)',
+          background: 'var(--bg-app)', fontSize: 12.5,
+        }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--fg-secondary)' }}>
+            How this search ran — {jobEntry!.searchAttempts!.length} attempt(s)
+            {jobEntry?.prescreen
+              ? ` · ${jobEntry.prescreen.total} raw hit(s), ${jobEntry.prescreen.kept} kept, ${jobEntry.prescreen.dropped} screened out`
+              : ''}
+          </summary>
+          <div style={{ padding: '10px 0 6px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {jobEntry!.searchAttempts!.map((a) => (
+              <div key={a.attempt} style={{ display: 'flex', gap: 8, lineHeight: 1.5 }}>
+                <span style={{
+                  flexShrink: 0, width: 20, height: 20, borderRadius: 999, fontSize: 11, fontWeight: 700,
+                  background: a.resultCount > 0 ? '#DCFCE7' : a.error ? '#FEE2E2' : '#F3F4F6',
+                  color: a.resultCount > 0 ? '#166534' : a.error ? '#991B1B' : 'var(--fg-muted)',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {a.attempt}
+                </span>
+                <div style={{ color: 'var(--fg-secondary)' }}>
+                  <b>{a.action === 'initial' ? 'Your search' : a.action.replace(/_/g, ' ')}</b>
+                  {' — '}
+                  {a.resultCount} result(s)
+                  {a.channelCounts && Object.keys(a.channelCounts).length > 1 && (
+                    <span style={{ color: 'var(--fg-muted)' }}>
+                      {' '}({Object.entries(a.channelCounts).map(([k, v]) => `${v} via ${k}`).join(', ')})
+                    </span>
+                  )}
+                  {a.error && <span style={{ color: '#B91C1C' }}> · {a.error}</span>}
+                  {a.reasoning && <div style={{ color: 'var(--fg-muted)' }}>{a.reasoning}</div>}
+                  {(a.filters as any)?.currentJobTitles?.length > 0 && (
+                    <div style={{ color: 'var(--fg-muted)' }}>
+                      Titles: {((a.filters as any).currentJobTitles as string[]).join(' · ')}
+                      {(a.filters as any)?.locations?.length > 0 && <> · in {((a.filters as any).locations as string[]).join(', ')}</>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {(jobEntry?.prescreen?.droppedSamples?.length ?? 0) > 0 && (
+              <div style={{ color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+                <b>Screened out (title unrelated to the role):</b>{' '}
+                {jobEntry!.prescreen!.droppedSamples!.slice(0, 6).map((d) => `${d.name || '—'} (“${d.title || '—'}”)`).join(', ')}
+                {jobEntry!.prescreen!.dropped > 6 ? ` +${jobEntry!.prescreen!.dropped - 6} more` : ''}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+
       {/* Filter strip */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
@@ -565,38 +890,51 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
           </>
         )}
         <div style={{ flex: 1 }} />
-        {selected.size > 0 && (
+        {/* Selection-driven actions. Enrichment is HUMAN-CONTROLLED and follows
+            the selection: tick the candidates (or the header checkbox for all),
+            then Enrich. Both buttons stay visible whenever candidates exist so
+            the flow is discoverable; they enable once something is selected. */}
+        {total > 0 && (
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginRight: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 600 }}>
-              {selected.size} selected
+              {selected.size > 0 ? `${selected.size} selected` : 'Select candidates to act'}
             </span>
             <button
               onClick={onBulkEnrich}
-              disabled={bulkBusy !== null}
-              title="Apollo /people/match → Apify deep profile for the selected candidates (background). Skips already-enriched."
+              disabled={bulkBusy !== null || selected.size === 0 || selected.size > ENRICH_MAX}
+              title={selected.size === 0
+                ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
+                : selected.size > ENRICH_MAX
+                ? `Enrichment is capped at ${ENRICH_MAX} per batch — pick your ${ENRICH_MAX} strongest candidates. You can enrich more in a second batch.`
+                : 'Pull full LinkedIn work history/skills for the selected candidates (background). Skips already-enriched. This is the paid step.'}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
                 borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
-                cursor: bulkBusy ? 'not-allowed' : 'pointer', border: '1px solid var(--primary)',
-                background: '#FFF', color: 'var(--primary)', opacity: bulkBusy ? 0.6 : 1,
+                cursor: bulkBusy || selected.size === 0 || selected.size > ENRICH_MAX ? 'not-allowed' : 'pointer',
+                border: `1px solid ${selected.size > ENRICH_MAX ? '#DC2626' : 'var(--primary)'}`,
+                background: '#FFF', color: selected.size > ENRICH_MAX ? '#DC2626' : 'var(--primary)',
+                opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
               }}
             >
               <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
-              Enrich ({selected.size})
+              Enrich{selected.size > 0 ? ` (${selected.size}/${ENRICH_MAX})` : ''}
             </button>
             <button
               onClick={onRunMatch}
-              disabled={bulkBusy !== null}
-              title="Score this job's JD against the selected candidates (auto-enriches any that aren't yet)."
+              disabled={bulkBusy !== null || selected.size === 0}
+              title={selected.size === 0
+                ? 'Tick candidates first, then run the match.'
+                : 'Review the must-have skills, then score this job against the selected candidates.'}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
                 borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
-                cursor: bulkBusy ? 'not-allowed' : 'pointer', border: 'none',
-                background: 'var(--primary)', color: '#FFF', opacity: bulkBusy ? 0.6 : 1,
+                cursor: bulkBusy || selected.size === 0 ? 'not-allowed' : 'pointer', border: 'none',
+                background: 'var(--primary)', color: '#FFF',
+                opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
               }}
             >
               <Icon name={bulkBusy === 'match' ? 'loader' : 'target'} size={13} />
-              Run Match ({selected.size})
+              Run Match{selected.size > 0 ? ` (${selected.size})` : ''}
             </button>
           </div>
         )}
@@ -628,9 +966,15 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                   <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--fg-primary)', marginBottom: 6 }}>
                     {jobEntry?.searchStatus === 'queued' || jobEntry?.searchStatus === 'running'
                       ? 'Search in progress…'
+                      : jobEntry?.searchShortfall
+                      ? 'No candidates matched this exact specialty'
                       : 'No candidates found'}
                   </div>
-                  <div style={{ fontSize: 13 }}>No candidates match the current filter.</div>
+                  <div style={{ fontSize: 13 }}>
+                    {jobEntry?.searchShortfall && jobEntry?.searchStatus !== 'running'
+                      ? 'The search stayed strictly on-specialty. Use “Search wider” above, or edit the search.'
+                      : 'No candidates match the current filter.'}
+                  </div>
                 </>
               )}
             </div>
@@ -715,7 +1059,6 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                     onClear={() => clearFilter('status')}
                   />
                 </th>
-                <th style={{ ...thStyle, width: 200, textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -792,6 +1135,18 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                       >
                         {c.currentTitle || c.headline || '—'}
                       </span>
+                      {/* WHY this person is in the list — the pre-screen evidence. */}
+                      {c.prescreen?.matchedVia && (
+                        <span
+                          title={(c.prescreen.reasons || []).join(' ')}
+                          style={{
+                            display: 'block', overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap', maxWidth: 180, fontSize: 11, color: 'var(--fg-muted)',
+                          }}
+                        >
+                          ≈ {c.prescreen.matchedVia}
+                        </span>
+                      )}
                     </td>
                     <td style={{ ...tdStyle, color: 'var(--fg-secondary)' }}>
                       {formatDate(c.createdAt)}
@@ -806,7 +1161,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                       </span>
                     </td>
                     <td style={tdStyle}>
-                      <MatchBadge score={c.matchScore} />
+                      <MatchBadge score={c.matchScore} provisional={c.matchScoreSource !== 'match_run'} />
                     </td>
                     <td style={tdStyle}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -829,47 +1184,34 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                             <Icon name="sparkles" size={10} />Profile
                           </span>
                         )}
+                        {c.openToWork && (
+                          <span title="LinkedIn: open to work — likely to respond" style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 3,
+                            padding: '2px 7px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
+                            background: '#ECFDF5', color: '#047857', border: '1px solid #A7F3D0',
+                          }}>
+                            <Icon name="hand" size={10} />Open to work
+                          </span>
+                        )}
+                        {(c.sourceChannels?.length ?? 0) > 1 && (
+                          <span title="Found independently by BOTH the title search and the keyword search — the strongest pre-enrichment signal" style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 3,
+                            padding: '2px 7px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
+                            background: '#F0F9FF', color: '#0369A1', border: '1px solid #BAE6FD',
+                          }}>
+                            <Icon name="target" size={10} />2× found
+                          </span>
+                        )}
+                        {c.sourceChannels?.length === 1 && c.sourceChannels[0] === 'keyword' && (
+                          <span title="Their profile content matches the search keywords even though the job title alone doesn't show it — worth a look" style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 3,
+                            padding: '2px 7px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
+                            background: '#FAF5FF', color: '#7C3AED', border: '1px solid #E9D5FF',
+                          }}>
+                            <Icon name="search" size={10} />Keyword find
+                          </span>
+                        )}
                       </span>
-                    </td>
-                    <td style={{ ...tdStyle, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                        {/* Accept / Reject toggle */}
-                        <button
-                          disabled={busyId === c._id}
-                          onClick={() => toggleAccept(c)}
-                          title={c.isAccepted ? 'Reject candidate' : 'Accept candidate'}
-                          style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 5,
-                            padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                            cursor: busyId === c._id ? 'not-allowed' : 'pointer',
-                            border: `1px solid ${c.isAccepted ? 'var(--status-danger)40' : 'var(--status-success)40'}`,
-                            background: c.isAccepted ? 'var(--status-danger)1A' : 'var(--status-success)1A',
-                            color: c.isAccepted ? 'var(--status-danger)' : 'var(--status-success)',
-                            fontFamily: 'inherit',
-                          }}
-                        >
-                          <Icon name={c.isAccepted ? 'x' : 'check'} size={12} />
-                          {c.isAccepted ? 'Reject' : 'Accept'}
-                        </button>
-                        {/* Enrich */}
-                        <button
-                          disabled={busyId === c._id || c.isEnriched}
-                          onClick={() => onEnrich(c._id)}
-                          title={c.isEnriched ? 'Already enriched — open to view Apollo data' : 'Pull full profile from Apollo'}
-                          style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 5,
-                            padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700,
-                            cursor: busyId === c._id || c.isEnriched ? 'not-allowed' : 'pointer',
-                            border: 'none',
-                            background: c.isEnriched ? 'var(--bg-app)' : 'var(--primary)',
-                            color: c.isEnriched ? 'var(--fg-muted)' : '#FFF',
-                            fontFamily: 'inherit',
-                          }}
-                        >
-                          {busyId === c._id ? <Icon name="loader" size={12} /> : <Icon name="sparkles" size={12} />}
-                          {c.isEnriched ? 'Enriched' : 'Enrich'}
-                        </button>
-                      </div>
                     </td>
                   </tr>
                 );
@@ -961,6 +1303,101 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
             >
               <Icon name="chevron-right" size={14} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Review-before-match: what the run will score against, editable. */}
+      {reviewOpen && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setReviewOpen(false); }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+          }}
+        >
+          <div style={{
+            width: '100%', maxWidth: 560, background: '#FFF', borderRadius: 12,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.25)', maxHeight: '84vh',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{ padding: '18px 22px 14px', borderBottom: '1px solid var(--border-card)' }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--fg-primary)' }}>
+                Check the matching criteria
+              </div>
+              <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', marginTop: 3, lineHeight: 1.5 }}>
+                These keywords were read from the job description — the match scores every
+                candidate against them. Is this enough? Add what&apos;s missing, remove what&apos;s wrong,
+                then run.
+              </div>
+            </div>
+            <div style={{ padding: '16px 22px', overflow: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {reqLoading ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--fg-muted)', padding: '12px 0' }}>
+                  <Icon name="loader" size={14} /> Reading the job description…
+                </div>
+              ) : (
+                <>
+                  {reqError && (
+                    <div style={{
+                      padding: '9px 12px', borderRadius: 8, background: '#FFFBEB',
+                      border: '1px solid #FDE68A', fontSize: 12.5, color: '#92400E', lineHeight: 1.5,
+                    }}>
+                      {reqError}
+                    </div>
+                  )}
+                  <SkillChips
+                    label="Must-have skills"
+                    hint="Hard requirements. Candidates missing these are capped, whatever else their profile says."
+                    skills={mustHave}
+                    onChange={(next) => { setMustHave(next); setReqEdited(true); }}
+                    accent="#B91C1C"
+                  />
+                  <SkillChips
+                    label="Nice-to-have skills"
+                    hint="A plus, not a requirement — shown to the reviewer, never a hard filter."
+                    skills={niceToHave}
+                    onChange={(next) => { setNiceToHave(next); setReqEdited(true); }}
+                    accent="#4F46E5"
+                  />
+                </>
+              )}
+            </div>
+            <div style={{
+              padding: '14px 22px', borderTop: '1px solid var(--border-card)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
+            }}>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                {reqEdited ? 'Your edits will be saved for this job.' : 'Looks right? Run it as-is.'}
+              </span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => setReviewOpen(false)}
+                  style={{
+                    height: 34, padding: '0 14px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                    cursor: 'pointer', border: '1px solid var(--border-card)', background: '#FFF',
+                    color: 'var(--fg-primary)', fontFamily: 'inherit',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={startMatch}
+                  disabled={reqLoading}
+                  title={mustHave.length === 0 ? 'No must-have skills — the score will rest on overall profile fit only.' : undefined}
+                  style={{
+                    height: 34, padding: '0 16px', borderRadius: 6, fontSize: 12.5, fontWeight: 700,
+                    cursor: reqLoading ? 'not-allowed' : 'pointer', border: 'none',
+                    background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit',
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    opacity: reqLoading ? 0.6 : 1,
+                  }}
+                >
+                  <Icon name="target" size={13} />
+                  Run Match ({selected.size})
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

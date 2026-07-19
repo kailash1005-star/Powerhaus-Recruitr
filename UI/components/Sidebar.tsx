@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useUser } from '@auth0/nextjs-auth0';
 import { Icon } from './Icon';
+import { fetchQaAccess } from '@/lib/api';
 import { useI18n, type TKey } from '@/lib/i18n';
 
 interface NavItem {
@@ -208,6 +210,19 @@ export function Sidebar() {
   // this is a client component, and anything it touched would be in the bundle.
   const { user, isLoading } = useUser();
 
+  // Operator-only QA nav item. The backend is the authority (its routes 403
+  // non-admins regardless); this probe only decides whether to RENDER the item,
+  // so a beta client never sees that an internal QA ledger exists. Defaults to
+  // hidden; stays hidden on any error.
+  const [isQaAdmin, setIsQaAdmin] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    fetchQaAccess()
+      .then((r) => { if (alive) setIsQaAdmin(!!r.isAdmin); })
+      .catch(() => { /* hidden */ });
+    return () => { alive = false; };
+  }, []);
+
   const displayName = user?.email ?? user?.name ?? '';
 
   const navItemStyle = (active: boolean): React.CSSProperties => ({
@@ -247,7 +262,10 @@ export function Sidebar() {
         {NAV_GROUPS.map((g) => (
           <div key={g.labelKey} style={sidebarStyles.group}>
             <div style={sidebarStyles.groupLabel}>{t(g.labelKey)}</div>
-            {g.items.map((item) => {
+            {(g.labelKey === 'group.monitor' && isQaAdmin
+              ? [...g.items, { href: '/qa', icon: 'shield-check', labelKey: 'nav.qa' as TKey, matchPrefix: '/qa' }]
+              : g.items
+            ).map((item) => {
               const active = isActive(pathname, item);
               return (
                 <Link

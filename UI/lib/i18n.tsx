@@ -29,6 +29,7 @@ const en = {
   'nav.outreach': 'Outreach',
   'nav.dashboards': 'Dashboards',
   'nav.costs': 'Cost Analyser',
+  'nav.qa': 'QA Reports',
   'nav.settings': 'Settings',
   'nav.integrations': 'Integrations',
 
@@ -55,6 +56,7 @@ const de: Dict = {
   'nav.outreach': 'Ansprache',
   'nav.dashboards': 'Dashboards',
   'nav.costs': 'Kostenanalyse',
+  'nav.qa': 'QA-Berichte',
   'nav.settings': 'Einstellungen',
   'nav.integrations': 'Integrationen',
 

@@ -79,9 +79,17 @@ class BulkEnrichSchema(BaseModel):
 
 
 class JobMatchSchema(BaseModel):
-    """Selected candidate ids to match against the job's JD."""
+    """Selected candidate ids to match against the job's JD.
+
+    The three requirement fields carry the recruiter's edits from the
+    review-before-match step. None = keep the parsed value; an empty list is a
+    deliberate edit ("no must-haves") and is honoured as such.
+    """
     candidateIds: Optional[List[str]] = None
     returnTop: Optional[int] = None
+    mustHaveSkills: Optional[List[str]] = None
+    niceToHaveSkills: Optional[List[str]] = None
+    minYears: Optional[float] = None
 
 
 class SuggestFiltersSchema(BaseModel):
@@ -120,6 +128,13 @@ class DiscoverSchema(BaseModel):
     brief: Optional[SuggestFiltersSchema] = None
     # The Strategist's pre-planned fallbacks, echoed back from suggest-filters.
     broadeningLadder: Optional[List[Dict[str, Any]]] = None
+    # The Strategist's two-tier domain anchor ({coreTerms, ecosystemTerms}),
+    # echoed back from suggest-filters. Guards broadening against changing the
+    # target profession.
+    domainAnchor: Optional[Dict[str, Any]] = None
+    # Adjacent-specialty titles from the Strategist — NEVER searched
+    # automatically; offered as opt-in chips when the search comes up short.
+    adjacentTitles: Optional[List[str]] = None
     locations: Optional[List[str]] = None
     currentJobTitles: Optional[List[str]] = None
     pastJobTitles: Optional[List[str]] = None
@@ -138,7 +153,12 @@ class DiscoverSchema(BaseModel):
     seniorityLevel: Optional[str] = None
     function: Optional[str] = None
     companyHeadcount: Optional[str] = None
+    # The actor key is PLURAL. The singular field stayed accepted for
+    # back-compat, but it used to be silently dropped by the filter mapping —
+    # a recruiter's language choice never reached the search. Both now work
+    # (normalized in apify_search_service._build_input).
     profileLanguage: Optional[str] = None
+    profileLanguages: Optional[List[str]] = None
     recentlyChangedJobs: Optional[bool] = None
     recentlyPostedOnLinkedin: Optional[bool] = None
 
@@ -469,9 +489,12 @@ async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverS
         auto_broaden = bool(payload.pop("autoBroaden", True))
         hints = payload.pop("brief", None)
         ladder = payload.pop("broadeningLadder", None)
+        anchor = payload.pop("domainAnchor", None)
+        adjacent = payload.pop("adjacentTitles", None)
         result = await enqueue_job_discover(
             pipeline_id, job_id, payload, max_items,
             auto_broaden=auto_broaden, hints=hints, ladder=ladder,
+            anchor=anchor, adjacent_titles=adjacent,
         )
         return {"success": True, **result}
     except ValueError as ve:
@@ -488,7 +511,23 @@ async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichS
     """Queue a background bulk enrichment (Apollo /people/match → Apify profile)
     for the selected candidates (or all candidates in the job). Idempotent — each
     stage skips candidates already enriched. Poll the pipeline for the job's
-    ``enrichStatus``."""
+    ``enrichStatus``.
+
+    Selections are capped at ``JOB_ENRICH_SELECTION_MAX`` (default 10): one
+    enrichment click = one Apify actor run, and the free-tier run budget is the
+    scarce resource, not the dollars. The cap is enforced here — not only in the
+    UI — so no client can silently burn the budget.
+    """
+    from app.config import settings
+
+    cap = max(1, int(settings.JOB_ENRICH_SELECTION_MAX))
+    if body.candidateIds is not None and len(body.candidateIds) > cap:
+        raise HTTPException(
+            400,
+            f"Enrichment is capped at {cap} candidates per request — you sent "
+            f"{len(body.candidateIds)}. Pick your {cap} strongest candidates; "
+            f"you can always enrich more in a second batch.",
+        )
     try:
         result = await enqueue_job_enrich(pipeline_id, job_id, body.candidateIds)
         return {"success": True, **result}
@@ -508,17 +547,71 @@ async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSche
     a ``matchRunId`` to poll at ``GET /matching/run/{id}``."""
     from app.services.pipeline_match_service import start_pipeline_match
     try:
+        # Only forward requirement fields the recruiter actually sent — None
+        # means "keep the parsed value", an empty list is a deliberate edit.
+        override = {
+            k: v for k, v in (
+                ("mustHaveSkills", body.mustHaveSkills),
+                ("niceToHaveSkills", body.niceToHaveSkills),
+                ("minYears", body.minYears),
+            ) if v is not None
+        }
         match_run_id = await start_pipeline_match(
             pipeline_id=pipeline_id,
             job_id=job_id,
             candidate_ids=body.candidateIds,
             return_top=body.returnTop,
+            requirements_override=override or None,
         )
         return {"success": True, "matchRunId": match_run_id}
     except ValueError as ve:
         raise HTTPException(400, str(ve))
     except Exception as e:
         raise HTTPException(500, f"Error starting match: {e}")
+
+
+# ── GET /{id}/jobs/{jobId}/requirements (review-before-match) ────────────────
+
+
+@router.get("/{pipeline_id}/jobs/{job_id}/requirements")
+async def get_job_requirements(pipeline_id: str, job_id: str):
+    """The parsed hiring requirements for a job — what a match run will score
+    against. Parses the JD on first ask (cached by JD-text hash afterwards).
+
+    This powers the review step before Run Match: the recruiter sees the
+    extracted must-have / nice-to-have skills, adjusts them, and the match runs
+    with their corrected list. 404 when the job has no description or title to
+    parse.
+    """
+    from app.database import get_database
+    from app.services import role_spec_service
+    from app.services.llm_extraction_service import ExtractionError
+
+    try:
+        db = await get_database()
+        spec = await role_spec_service.get_or_create_for_job(db, job_id)
+        if not spec:
+            raise HTTPException(404, "job has no description or title to parse")
+        req = spec.get("requirements") or {}
+        return {
+            "success": True,
+            "jdId": spec["_id"],
+            "requirements": {
+                "title": req.get("title"),
+                "mustHaveSkills": req.get("mustHaveSkills") or [],
+                "niceToHaveSkills": req.get("niceToHaveSkills") or [],
+                "minYears": req.get("minYears"),
+                "location": req.get("location"),
+                "seniority": req.get("seniority"),
+            },
+            "requirementsSource": spec.get("requirementsSource") or "parsed",
+        }
+    except HTTPException:
+        raise
+    except ExtractionError as e:
+        raise HTTPException(502, f"JD parsing failed: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Error resolving requirements: {e}")
 
 
 # ── GET /{id}/jobs/{jobId}/candidates ────────────────────────────────────

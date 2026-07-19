@@ -69,6 +69,10 @@ async def startup_db_client():
     except Exception as e:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning("[Cost] price book init skipped: %s", e)
+    # Fail-forward any run orphaned by the previous process dying mid-flight —
+    # otherwise the UI polls a "running" status no worker is executing, forever.
+    from app.services.run_reaper import reap_stale_runs
+    await reap_stale_runs()
  
  
 @app.on_event("shutdown")

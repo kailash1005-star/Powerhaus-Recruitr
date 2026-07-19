@@ -7,7 +7,7 @@ about FastAPI or Mongo — see deps.py for the request-facing layer.
 
 Why PyJWT + PyJWKClient rather than Auth0's own `auth0-fastapi-api`: the latter is
 still a beta (1.0.0b5) at the time of writing, and this is the code path that
-decides who may read candidate PII. See AUTH0_SETUP.md.
+decides who may read candidate PII. See docs/engineering/AUTH0_SETUP.md.
 
 The security of this module rests on three checks that are easy to get wrong:
 

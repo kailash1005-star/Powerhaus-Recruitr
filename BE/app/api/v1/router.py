@@ -4,7 +4,7 @@ API Router - Aggregates all v1 routers
 import logging
 
 from fastapi import APIRouter, Depends
-from app.api.v1 import icp, runs, analytics, jobs, pipelines, companies, matching, outreach, candidates, cost
+from app.api.v1 import icp, runs, analytics, jobs, pipelines, companies, matching, outreach, candidates, cost, qa
 from app.security.deps import require_auth
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ api_router.include_router(matching.router, prefix="/matching", tags=["Matching"]
 api_router.include_router(outreach.router, prefix="/outreach", tags=["Outreach"])
 api_router.include_router(candidates.router, prefix="/candidates", tags=["Candidates"])
 api_router.include_router(cost.router, prefix="/cost", tags=["Cost"])
+# Operator-only QA metrics. The router carries its own per-route admin gate on
+# top of the aggregate auth — reports quantify the system's own mistakes and are
+# for the people running it, never the client.
+api_router.include_router(qa.router, prefix="/qa", tags=["QA"])
 
 # ── Unauthenticated provider callbacks ───────────────────────────────────────
 # Same URL paths as before auth landed, so no provider dashboard needs updating:

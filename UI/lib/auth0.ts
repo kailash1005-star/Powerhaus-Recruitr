@@ -7,7 +7,7 @@ import { Auth0Client } from '@auth0/nextjs-auth0/server';
  * This is the BFF hinge. Tokens live in an AES-encrypted, httpOnly cookie that
  * JavaScript cannot read, so an XSS bug anywhere in the app cannot steal an API
  * token. That property is why we hold candidate PII behind this rather than the
- * SPA model. See AUTH0_SETUP.md for the full reasoning.
+ * SPA model. See docs/engineering/AUTH0_SETUP.md for the full reasoning.
  *
  * Configuration comes from the environment (never hardcoded):
  *   AUTH0_DOMAIN         tenant host, no scheme     e.g. recruitr-prod.eu.auth0.com

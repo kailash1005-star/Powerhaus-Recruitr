@@ -31,14 +31,42 @@ Cost & safety
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import re
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def call_actor_bounded(client: Any, actor_id: str, run_input: Dict[str, Any],
+                       *, timeout_secs: int) -> Any:
+    """Run an actor with a bounded server run-time AND client wait.
+
+    Without a timeout, ``ActorClient.call()`` waits indefinitely and a hung
+    actor leaves the job stuck on "running" forever. The kwarg NAMES differ by
+    apify-client version (3.x: ``run_timeout``/``wait_duration`` as timedeltas;
+    1.x/2.x: ``timeout_secs``/``wait_secs`` as ints), and our pin is loose
+    (``>=1.7.0``), so we introspect the installed ``.call()`` and pass whichever
+    it accepts. That way a version bump can't silently reintroduce the unbounded
+    wait, and can't crash with "unexpected keyword argument" either.
+    """
+    actor = client.actor(actor_id)
+    params = inspect.signature(actor.call).parameters
+    kwargs: Dict[str, Any] = {"run_input": run_input}
+    if "run_timeout" in params:            # apify-client 3.x
+        kwargs["run_timeout"] = timedelta(seconds=timeout_secs)
+        if "wait_duration" in params:
+            kwargs["wait_duration"] = timedelta(seconds=timeout_secs + 60)
+    elif "timeout_secs" in params:         # apify-client 1.x / 2.x
+        kwargs["timeout_secs"] = timeout_secs
+        if "wait_secs" in params:
+            kwargs["wait_secs"] = timeout_secs + 60
+    return actor.call(**kwargs)
 
 # Apify pay-per-event price for the profile-only mode ($4 / 1000 profiles).
 # Used only for a cost log line, not billing.
@@ -312,7 +340,10 @@ class ApifyProfileService:
             len(chunk), self._actor, len(chunk) * _COST_PER_PROFILE,
         )
         try:
-            run = client.actor(self._actor).call(run_input=run_input)
+            run = call_actor_bounded(
+                client, self._actor, run_input,
+                timeout_secs=settings.APIFY_CALL_TIMEOUT_SECS,
+            )
         except Exception as exc:  # network / actor-call failure
             raise ApifyRunFailed(f"Apify actor call failed: {exc}") from exc
 
@@ -359,7 +390,8 @@ class ApifyProfileService:
                 results.setdefault(chunk[chunk_idx], item)
             chunk_idx += 1
 
-        # Meter only the profiles this chunk actually added.
+        # Meter only the profiles this chunk actually added. Best-effort (metering
+        # must not fail an enrichment that already succeeded) — but logged.
         added = len(results) - n_found_before
         try:
             from app.services import cost_service
@@ -371,8 +403,8 @@ class ApifyProfileService:
                     cost_override=(float(vendor_usd) if vendor_usd else None),
                     vendor_ref=str(run_info.get("id") or dataset_id),
                 )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Apify] cost metering failed (enrichment succeeded): %s", exc)
 
 
 # Process-wide default instance (cheap; holds only config).

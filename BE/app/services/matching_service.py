@@ -188,7 +188,26 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
 
 # ── Deterministic scoring ────────────────────────────────────────────────────
 # Bump whenever the scoring maths changes, so a stored run says which rules made it.
-SCORING_VERSION = "match-scoring-4"
+# v5: calibrated semantic component (was raw cosine — compressed into ~0.2-0.5
+#     for related JD↔profile pairs and discontinuous at 0), plus the anchored-
+#     rubric judge blend (see apply_judge).
+SCORING_VERSION = "match-scoring-6"
+
+# Cosine similarity from text-embedding-3-small does not use the 0..1 range the
+# weighted blend assumes: unrelated professional texts still land ~0.1, and an
+# excellent JD↔profile pair rarely clears ~0.6. Feeding it in raw meant the
+# LARGEST-weighted component could barely reach half its points for a perfect
+# candidate. This affine calibration maps the observed working range onto 0..1;
+# it is monotone and continuous (the old code had a jump at exactly 0), and the
+# RAW similarity is still stored on every breakdown for audit.
+SIM_CALIBRATION_FLOOR = 0.10   # at/below: reads as unrelated → 0
+SIM_CALIBRATION_CEIL = 0.60    # at/above: reads as excellent → 1
+
+
+def calibrate_similarity(sim: float) -> float:
+    """Map a raw cosine similarity onto the 0..1 scale the blend expects."""
+    span = SIM_CALIBRATION_CEIL - SIM_CALIBRATION_FLOOR
+    return max(0.0, min(1.0, (sim - SIM_CALIBRATION_FLOOR) / span))
 
 # Nominal weights. A component only spends its weight when the JD actually states
 # the requirement — see _score_candidate for the renormalisation.
@@ -239,6 +258,37 @@ def _norm_skill(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _skill_variants(jd_skill: str) -> List[str]:
+    """The names a JD requirement actually goes by in profiles.
+
+    JDs write "Payroll (PY)" — profiles write either word alone ("SAP HCM PA,
+    PY, OM"). Treating the parenthesised abbreviation as part of ONE literal
+    string meant the scorer demanded both words together and credited neither.
+    Each parenthesised group becomes its own variant (split on /,; for
+    "(PY/PT)"-style lists), alongside the base with the parens removed.
+    """
+    raw = (jd_skill or "").strip()
+    if not raw:
+        return []
+    variants: List[str] = [raw]
+    stripped = re.sub(r"\([^)]*\)", " ", raw).strip()
+    if stripped and _norm_skill(stripped) != _norm_skill(raw):
+        variants.append(stripped)
+    for group in re.findall(r"\(([^)]{1,60})\)", raw):
+        for part in re.split(r"[/,;]", group):
+            part = part.strip()
+            if part:
+                variants.append(part)
+    seen: set = set()
+    out: List[str] = []
+    for v in variants:
+        key = _norm_skill(v)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
+
+
 def _tokens_in(needle: str, haystack: str) -> bool:
     """True when `needle` appears in `haystack` on WHOLE-TOKEN boundaries.
 
@@ -252,29 +302,58 @@ def _tokens_in(needle: str, haystack: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE) is not None
 
 
-def _match_skill(jd_skill: str, cand_skills: List[str]) -> Dict[str, Any]:
-    """Credit one must-have skill against a candidate's skill list.
+def _snippet_for(variant_n: str, text: str, width: int = 60) -> str:
+    """A short display excerpt of `text` around the first occurrence of the
+    normalized variant — tolerant of the hyphens/commas normalization removed."""
+    pattern = r"[\s\-_/,.]*".join(re.escape(t) for t in variant_n.split())
+    m = re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE)
+    if not m:
+        return text[: width * 2].strip()
+    start = max(0, m.start() - width)
+    end = min(len(text), m.end() + width)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    return (prefix + text[start:end].strip() + suffix)
 
-    Returns the evidence for the decision — credit 0..1, which candidate skill
-    earned it and by what rule — so a run can explain every point it awarded
-    rather than just asserting a coverage percentage.
+
+def _match_skill(
+    jd_skill: str,
+    cand_skills: List[str],
+    free_texts: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Credit one must-have skill against a candidate's evidence.
+
+    Two evidence tiers, checked strongest-first:
+      * `cand_skills` — SHORT items (skills list, titles, headline). Matched with
+        the full rule set including fuzzy and the broader/half-credit rule.
+      * `free_texts` — free-text entries (profile summary, one per experience
+        entry). LinkedIn profiles routinely carry an EMPTY skills array while the
+        experience bullet points name every module the person works in
+        ("Schwerpunkte SAP HCM PA, PY, OM…"); scoring the short items alone
+        reported exactly those people as having no evidence — the costliest
+        false negative this scorer can produce. Free text only credits on
+        containment of a whole variant (full credit) or co-occurrence of all its
+        terms inside ONE entry (partial) — never fuzzy, never cross-entry
+        scatter, so a long profile can't buy credit by accident.
+
+    Returns the evidence for the decision — credit 0..1, which evidence earned
+    it and by what rule — so a run can explain every point it awarded.
     """
+    variants = _skill_variants(jd_skill)
     jd_n = _norm_skill(jd_skill)
     best: Dict[str, Any] = {
         "skill": jd_skill, "credit": 0.0, "method": "none", "via": None,
         "confidence": 0.0, "note": "No candidate skill matched this requirement.",
     }
-    if not jd_n:
+    if not jd_n or not variants:
         return best
+
+    variant_ns = [_norm_skill(v) for v in variants]
 
     for cs_raw in cand_skills:
         cs_n = _norm_skill(cs_raw)
         if not cs_n:
             continue
-
-        if cs_n == jd_n:
-            return {"skill": jd_skill, "credit": 1.0, "method": "exact", "via": cs_raw,
-                    "confidence": 100.0, "note": f"Exact match on “{cs_raw}”."}
 
         # Every rule is evaluated and the STRONGEST wins. Not first-match-wins: a
         # weaker rule that happens to fire first would otherwise cap the credit —
@@ -282,23 +361,36 @@ def _match_skill(jd_skill: str, cand_skills: List[str]) -> Dict[str, Any]:
         # (0.5), and short-circuiting on the compound silently downgraded it.
         cands: List[Dict[str, Any]] = []
 
-        # The candidate names a MORE specific variant of what the JD asked for —
-        # JD "SAP" vs candidate "SAP HR3 Payroll". Full credit.
-        if _tokens_in(jd_n, cs_n):
-            cands.append({"skill": jd_skill, "credit": 1.0, "method": "specific", "via": cs_raw,
-                          "confidence": 95.0,
-                          "note": f"“{cs_raw}” covers the required “{jd_skill}”."})
-        # German compounds: "Entgeltabrechnung" ⊂ "Personalsachbearbeiterin
-        # Entgeltabrechnung" needs no space to be real evidence, once the term is
-        # long enough that the overlap can't be coincidence.
-        elif len(jd_n) >= _COMPOUND_MIN_LEN and jd_n in cs_n:
-            cands.append({"skill": jd_skill, "credit": 1.0, "method": "specific", "via": cs_raw,
-                          "confidence": 90.0,
-                          "note": f"“{cs_raw}” contains the required “{jd_skill}”."})
+        for v_raw, v_n in zip(variants, variant_ns):
+            if cs_n == v_n:
+                return {"skill": jd_skill, "credit": 1.0, "method": "exact", "via": cs_raw,
+                        "confidence": 100.0, "note": f"Exact match on “{cs_raw}”."}
+
+            # The candidate names a MORE specific variant of what the JD asked
+            # for — JD "SAP" vs candidate "SAP HR3 Payroll". Full credit.
+            if _tokens_in(v_n, cs_n):
+                cands.append({"skill": jd_skill, "credit": 1.0, "method": "specific", "via": cs_raw,
+                              "confidence": 95.0,
+                              "note": f"“{cs_raw}” covers the required “{jd_skill}”."})
+            # German compounds: "Entgeltabrechnung" ⊂ "Personalsachbearbeiterin
+            # Entgeltabrechnung" needs no space to be real evidence, once the term
+            # is long enough that the overlap can't be coincidence.
+            elif len(v_n) >= _COMPOUND_MIN_LEN and v_n in cs_n:
+                cands.append({"skill": jd_skill, "credit": 1.0, "method": "specific", "via": cs_raw,
+                              "confidence": 90.0,
+                              "note": f"“{cs_raw}” contains the required “{jd_skill}”."})
+            # All the variant's terms appear in the item, just not adjacently —
+            # "SAP-HCM" vs the title "SAP-Spezialistin HCM". Short items only
+            # (a title carries a few words; every term present IS the claim).
+            elif len(v_n.split()) > 1 and all(_tokens_in(t, cs_n) for t in v_n.split()):
+                cands.append({"skill": jd_skill, "credit": 1.0, "method": "all-terms", "via": cs_raw,
+                              "confidence": 90.0,
+                              "note": f"“{cs_raw}” carries every term of “{jd_skill}”."})
 
         # The candidate names a BROADER term than the JD asked for — JD "SAP HR3"
         # vs candidate "SAP", or "Lohnsteuer" for "Lohnsteuerrecht". Related, but
-        # not proof of the specific requirement.
+        # not proof of the specific requirement. Base form only: an abbreviation
+        # variant ("PY") sitting inside an unrelated phrase is not a broader hit.
         if _tokens_in(cs_n, jd_n) or (len(cs_n) >= _COMPOUND_MIN_LEN and cs_n in jd_n):
             cands.append({"skill": jd_skill, "credit": 0.5, "method": "broader", "via": cs_raw,
                           "confidence": 50.0,
@@ -323,6 +415,32 @@ def _match_skill(jd_skill: str, cand_skills: List[str]) -> Dict[str, Any]:
             if cand["credit"] > best["credit"]:
                 best = cand
 
+    # ── Free-text tier — only consulted when the short items fell short. ──
+    if best["credit"] < 1.0:
+        for text in (free_texts or []):
+            text_n = _norm_skill(text)
+            if not text_n:
+                continue
+            for v_raw, v_n in zip(variants, variant_ns):
+                # Whole variant present in the entry (token-bounded, or embedded
+                # in a German compound when long enough) → full credit.
+                if _tokens_in(v_n, text_n) or (len(v_n) >= _COMPOUND_MIN_LEN and v_n in text_n):
+                    snippet = _snippet_for(v_n, text)
+                    best = {"skill": jd_skill, "credit": 1.0, "method": "profile-text",
+                            "via": snippet, "confidence": 85.0,
+                            "note": f"The profile text evidences “{jd_skill}”: “{snippet}”."}
+                    return best
+                # All terms of a multi-word variant inside this ONE entry — the
+                # words co-occur in the same role description. Partial credit:
+                # co-occurrence is strong but not the literal phrase.
+                terms = v_n.split()
+                if len(terms) > 1 and all(_tokens_in(t, text_n) for t in terms):
+                    if 0.75 > best["credit"]:
+                        snippet = _snippet_for(terms[0], text)
+                        best = {"skill": jd_skill, "credit": 0.75, "method": "profile-text-terms",
+                                "via": snippet, "confidence": 70.0,
+                                "note": (f"Every term of “{jd_skill}” appears in one experience "
+                                         f"entry: “{snippet}”.")}
     return best
 
 
@@ -332,7 +450,7 @@ def _skill_present(jd_skill: str, cand_skills: List[str]) -> bool:
 
 
 def _skill_evidence_pool(profile: Dict[str, Any]) -> List[str]:
-    """Everything the candidate says about themselves that can evidence a skill.
+    """Every SHORT self-description that can evidence a skill.
 
     NOT just `skills`. A German payroll clerk titled "Personalsachbearbeiterin
     Entgeltabrechnung" frequently does not repeat "Entgeltabrechnung" in her skills
@@ -341,13 +459,17 @@ def _skill_evidence_pool(profile: Dict[str, Any]) -> List[str]:
     the clearest possible false negative: the requirement is her actual job.
 
     Titles are appended after skills so a real skills-list hit still wins the
-    evidence race and gets named as the source.
+    evidence race and gets named as the source. Free-text evidence (summaries)
+    lives in _free_text_entries — different matching rules apply there.
     """
     pool: List[str] = [s for s in (profile.get("skills") or []) if s]
     if profile.get("currentTitle"):
         pool.append(str(profile["currentTitle"]))
+    if profile.get("headline"):
+        pool.append(str(profile["headline"]))
     pool += [str(t) for t in (profile.get("titles") or []) if t]
     pool += [str(e.get("title")) for e in (profile.get("experience") or []) if e.get("title")]
+    pool += [str(c) for c in (profile.get("certifications") or []) if c]
     # Preserve order (evidence priority) while dropping repeats.
     seen: set = set()
     out: List[str] = []
@@ -357,6 +479,31 @@ def _skill_evidence_pool(profile: Dict[str, Any]) -> List[str]:
             seen.add(key)
             out.append(item)
     return out
+
+
+def _free_text_entries(profile: Dict[str, Any]) -> List[str]:
+    """Free-text evidence, one entry per coherent block.
+
+    Each experience entry is its own block (title + summary together, so the
+    words of one role's description can co-occur) rather than one concatenated
+    corpus — the co-occurrence rule in _match_skill must never credit terms
+    scattered across UNRELATED roles.
+    """
+    entries: List[str] = []
+    for key in ("summary", "about"):
+        v = (profile.get(key) or "").strip()
+        if v:
+            entries.append(v[:2000])
+    for e in (profile.get("experience") or [])[:12]:
+        e = e or {}
+        block = " — ".join(filter(None, [str(e.get("title") or ""), str(e.get("summary") or "")])).strip(" —")
+        if block:
+            entries.append(block[:2000])
+    for e in (profile.get("education") or [])[:6]:
+        s = str(e or "").strip()
+        if s and s.lower() not in ("none", "{}"):
+            entries.append(s[:400])
+    return entries
 
 
 def _coverage_ceiling(coverage: float) -> float:
@@ -369,7 +516,8 @@ def _coverage_ceiling(coverage: float) -> float:
 
 
 def _score_candidate(
-    jd: Dict[str, Any], profile: Dict[str, Any], sim: float
+    jd: Dict[str, Any], profile: Dict[str, Any], sim: float,
+    *, forced_credits: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[float, Dict[str, float], List[str], Dict[str, Any]]:
     """Blend semantic similarity with deterministic constraints.
 
@@ -384,17 +532,35 @@ def _score_candidate(
       * Must-have coverage caps the final score. Prose can't buy a candidate past
         a ceiling their missing must-haves set.
 
+    `forced_credits` is the QA auditor's channel: {skill: {"quote": …}} entries
+    whose quotes were MECHANICALLY verified against the profile text override a
+    lower deterministic credit. The override flows through the normal coverage →
+    ceiling → score math and is labelled `qa_verified` in the evidence, so a
+    corrected score is exactly as auditable as an uncorrected one. It can only
+    RAISE a skill's credit — QA never argues a candidate downward (see
+    match_qa_service for why that asymmetry is the whole point).
+
     `breakdown` records every input, weight, awarded point and lost point, plus
     per-skill evidence — it is what the UI renders as "why this score".
     """
     cand_skills = _skill_evidence_pool(profile)
+    free_texts = _free_text_entries(profile)
     must = [s for s in (jd.get("mustHaveSkills") or []) if s]
 
     # ── semantic (always applicable) ──
-    sim_norm = max(0.0, min(1.0, (sim + 1) / 2)) if sim < 0 else max(0.0, min(1.0, sim))
+    sim_norm = calibrate_similarity(sim)
 
     # ── must-have coverage ──
-    skill_evidence = [_match_skill(s, cand_skills) for s in must]
+    skill_evidence = [_match_skill(s, cand_skills, free_texts) for s in must]
+    for i, e in enumerate(skill_evidence):
+        forced = (forced_credits or {}).get(e["skill"])
+        if forced and e["credit"] < 1.0:
+            quote = str(forced.get("quote") or "")[:160]
+            skill_evidence[i] = {
+                "skill": e["skill"], "credit": 1.0, "method": "qa_verified",
+                "via": quote, "confidence": 80.0,
+                "note": f"QA auditor verified evidence in the profile: “{quote}”.",
+            }
     if must:
         coverage = sum(e["credit"] for e in skill_evidence) / len(must)
         # A GAP is an absence — nothing in the profile evidences it. A partial hit
@@ -514,6 +680,10 @@ def _score_candidate(
             if score < round(base, 1) else None
         ),
         "similarity": round(sim, 4),
+        # The calibrated value that actually entered the blend, plus the mapping
+        # that produced it — a stored run must be able to explain its own maths.
+        "similarityCalibrated": round(sim_norm, 4),
+        "similarityCalibration": {"floor": SIM_CALIBRATION_FLOOR, "ceil": SIM_CALIBRATION_CEIL},
         "components": components,
         "formula": " + ".join(
             f"{weights[k]:.3f}×{values[k] * 100:.1f}" for k in BASE_WEIGHTS if applicable[k]
@@ -527,6 +697,43 @@ def _score_candidate(
         "location": round(loc_score * 100, 1),
     }
     return score, subscores, gaps, breakdown
+
+
+def apply_judge(scored: Dict[str, Any], judge_item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Blend the anchored-rubric judge verdict into a scored candidate, in place.
+
+    Final = (1-w)·deterministic + w·judgeFit, then re-capped by the must-have
+    coverage ceiling: the judge can pull a score down or up, but prose can never
+    lift a candidate past what their evidenced must-haves allow. Every input to
+    the blend is recorded on the breakdown so a stored run can show exactly why
+    the number moved — which candidate the judge disagreed on, by how much, and
+    against which rubric.
+
+    `judge_item` is a validated JudgeItem dict (or None when the judge call was
+    unavailable — the deterministic score then stands, visibly unblended).
+    """
+    bd = scored.get("breakdown") or {}
+    if not judge_item:
+        bd["judge"] = None
+        return scored
+    w = max(0.0, min(1.0, float(settings.MATCH_JUDGE_WEIGHT)))
+    det = float(scored["score"])
+    fit = float(judge_item.get("fitScore") or 0.0)
+    ceiling = float(bd.get("ceiling") or 100.0)
+    uncapped = (1 - w) * det + w * fit
+    blended = round(min(uncapped, ceiling), 1)
+    bd["judge"] = {
+        "fitScore": round(fit, 1),
+        "verdict": judge_item.get("verdict") or "",
+        "weight": w,
+        "deterministicScore": det,
+        "blended": blended,
+        "cappedByCeiling": blended < round(uncapped, 1),
+        "rubric": "fit-rubric-1",
+    }
+    bd["total"] = blended
+    scored["score"] = blended
+    return scored
 
 
 # ── The match run (button) ───────────────────────────────────────────────────
@@ -543,7 +750,31 @@ async def run_match(
 
     `job_id` links the JD's role spec to a pipeline job, so a JD matched here also
     becomes the requirement that drives that job's sourcing.
+
+    The whole run is metered under the "matching" cost stage — this engine's
+    embedding/extraction/judge spend used to land as orphan events with no
+    attribution while only the pipeline engine metered properly.
     """
+    from app.services import cost_service
+
+    async with cost_service.cost_context(
+        cost_service.STAGE_MATCHING, label=(jd_filename or "CV corpus match"), jobId=job_id,
+    ):
+        return await _run_match_impl(
+            db, jd_text=jd_text, jd_bytes=jd_bytes, jd_filename=jd_filename,
+            return_top=return_top, job_id=job_id,
+        )
+
+
+async def _run_match_impl(
+    db,
+    *,
+    jd_text: Optional[str] = None,
+    jd_bytes: Optional[bytes] = None,
+    jd_filename: Optional[str] = None,
+    return_top: Optional[int] = None,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
     return_top = return_top or settings.MATCH_RETURN_TOP
 
     # 1. JD → markdown
@@ -567,6 +798,21 @@ async def run_match(
     jd_vector = spec["embedding"]["vector"]
     jd_id = spec["_id"]
 
+    # A rich JD that parsed to zero must-haves means the checklist components all
+    # drop out and "Profile fit" carries the whole score. That is a legitimate
+    # outcome for a two-line brief, but for a real JD it usually means the parse
+    # missed — say so on the run instead of silently shipping a similarity-only
+    # ranking that looks like a normal one.
+    requirements_warning: Optional[str] = None
+    if not (requirements.get("mustHaveSkills") or []) and len(jd_markdown) > 400:
+        requirements_warning = (
+            "No must-have skills were extracted from this job description, so the "
+            "score is driven by overall profile fit (plus experience/location where "
+            "stated) with no skills checklist. Review the JD text or the parsed "
+            "requirements before trusting this ranking."
+        )
+        logger.warning("[Matching] %s (jd=%s)", requirements_warning, jd_id)
+
     # 4. retrieve candidates by similarity
     store = get_vector_store(db)
     hits = await store.query(jd_vector, top_k=settings.MATCH_RETRIEVE_K)
@@ -579,44 +825,66 @@ async def run_match(
         async for doc in cv_col.find({"_id": {"$in": obj_ids}}):
             candidates.append(doc)
 
-    # 5. deterministic score
+    # 5. deterministic score — per-candidate isolated. One unreadable profile
+    # used to 500 the whole run; now it is recorded on the run and skipped.
     scored: List[Dict[str, Any]] = []
+    scoring_errors: List[Dict[str, Any]] = []
     for doc in candidates:
         cid = str(doc["_id"])
-        profile = doc.get("profile") or {}
-        score, subscores, gaps, breakdown = _score_candidate(
-            requirements, profile, sim_by_id.get(cid, 0.0)
-        )
-        scored.append({"doc": doc, "cid": cid, "score": score, "subscores": subscores,
-                       "gaps": gaps, "breakdown": breakdown})
+        try:
+            profile = doc.get("profile") or {}
+            score, subscores, gaps, breakdown = _score_candidate(
+                requirements, profile, sim_by_id.get(cid, 0.0)
+            )
+            scored.append({"doc": doc, "cid": cid, "score": score, "subscores": subscores,
+                           "gaps": gaps, "breakdown": breakdown})
+        except Exception as e:  # noqa: BLE001 — isolate, record, continue
+            logger.exception("[Matching] scoring failed for candidate %s", cid)
+            scoring_errors.append({"candidateId": cid, "error": str(e)[:200]})
     # Tie-break on the UNCAPPED base: when several candidates are pinned to the
     # same must-have ceiling their displayed scores are legitimately equal, but the
     # ordering underneath still carries signal.
     scored.sort(key=lambda x: (x["score"], x["breakdown"]["base"]), reverse=True)
 
-    # 6. LLM reasoning for the top N (then keep return_top)
+    # 6. Anchored-rubric judge for the top N. One batched call; the verdicts are
+    # blended into the deterministic score (apply_judge), then the list is
+    # re-ranked. Best-effort: a lost judge call leaves deterministic scores,
+    # visibly marked `reasoning: "deterministic"` — never a hidden default.
     reason_n = min(settings.MATCH_REASON_TOP_N, len(scored))
     top = scored[:reason_n]
-    anonymized = [{
-        "id": s["cid"],
-        "currentTitle": (s["doc"].get("profile") or {}).get("currentTitle"),
-        "totalYears": (s["doc"].get("profile") or {}).get("totalYears"),
-        "skills": (s["doc"].get("profile") or {}).get("skills") or [],
-        "missingMustHave": s["gaps"],
-        # Without this the model sees a must-have absent from `skills` and calls it
-        # missing, even when the scorer credited it from the title or a variant.
-        "partialMustHave": s["breakdown"]["partialMustHave"],
-    } for s in top]
 
-    reasons_by_id: Dict[str, Dict[str, Any]] = {}
-    if anonymized:
+    def _judge_view(s: Dict[str, Any]) -> Dict[str, Any]:
+        p = s["doc"].get("profile") or {}
+        return {
+            "id": s["cid"],
+            "currentTitle": p.get("currentTitle"),
+            "titles": (p.get("titles") or [])[:8],
+            "totalYears": p.get("totalYears"),
+            "skills": (p.get("skills") or [])[:40],
+            "experience": [
+                {"title": (e or {}).get("title"), "summary": ((e or {}).get("summary") or "")[:300]}
+                for e in (p.get("experience") or [])[:6]
+            ],
+            "education": (p.get("education") or [])[:4],
+            "certifications": (p.get("certifications") or [])[:6],
+            # The deterministic scorer's findings — authoritative in the rubric.
+            "missingMustHave": s["gaps"],
+            "partialMustHave": s["breakdown"]["partialMustHave"],
+        }
+
+    judge_by_id: Dict[str, Dict[str, Any]] = {}
+    if top and settings.MATCH_JUDGE_ENABLED:
         try:
-            resp = await llm.reason_candidates(requirements, anonymized)
+            resp = await llm.judge_candidates(requirements, [_judge_view(s) for s in top])
             for item in (resp.get("candidates") or []):
                 if item.get("id"):
-                    reasons_by_id[str(item["id"])] = item
-        except Exception:  # noqa: BLE001 — reasoning is best-effort
-            logger.warning("[Matching] reasoning step failed; using deterministic reasons")
+                    judge_by_id[str(item["id"])] = item
+        except Exception:  # noqa: BLE001 — judge is best-effort
+            logger.warning("[Matching] judge step failed; keeping deterministic scores",
+                           exc_info=True)
+    for s in top:
+        apply_judge(s, judge_by_id.get(s["cid"]))
+    scored.sort(key=lambda x: (x["score"], x["breakdown"].get("base", 0.0)), reverse=True)
 
     # 7. assemble a full entry for EVERY scored candidate — not just the top N.
     # The recruiter can only judge whether the ranking is right by seeing what it
@@ -625,7 +893,7 @@ async def run_match(
         doc = s["doc"]
         profile = doc.get("profile") or {}
         contact = doc.get("contact") or {}
-        rid = reasons_by_id.get(s["cid"], {})
+        rid = judge_by_id.get(s["cid"], {})
         return {
             "candidateId": s["cid"],
             "source": "cv",
@@ -637,7 +905,8 @@ async def run_match(
             "subscores": s["subscores"],
             "breakdown": s["breakdown"],
             "reasons": rid.get("reasons") or _fallback_reasons(requirements, profile, s),
-            "reasoning": "llm" if rid.get("reasons") else "deterministic",
+            "reasoning": "judge" if rid.get("reasons") else "deterministic",
+            "judge": (s["breakdown"] or {}).get("judge"),
             # Deterministic, NOT the model's prose. The scorer knows exactly which
             # must-haves nothing evidences; letting the LLM's wording override it is
             # how "Missing SAP HR3" ended up next to evidence crediting SAP HR at
@@ -672,29 +941,72 @@ async def run_match(
         },
         "candidatesConsidered": len(scored),
         "results": results,
+        "requirementsWarning": requirements_warning,
         "analysis": {
             "scoringVersion": SCORING_VERSION,
             "baseWeights": BASE_WEIGHTS,
+            "judgeWeight": settings.MATCH_JUDGE_WEIGHT if settings.MATCH_JUDGE_ENABLED else 0.0,
             "reasonedTopN": reason_n,
             "candidates": all_entries,
+            # Candidates that could not be scored — the run is honest about them
+            # instead of pretending they were never considered.
+            "errors": scoring_errors,
         },
         "modelVersions": {
             "extract": llm.extraction_version(),
             "embed": embeddings.embedding_version(),
             "reason": llm.reasoning_version(),
+            "judge": llm.reasoning_version(),
+            # Which OpenAI backend served this run — with `seed`, the pair that
+            # makes a score drift between identical runs attributable.
+            "systemFingerprint": llm.last_system_fingerprint(),
+            "seed": settings.OPENAI_SEED,
         },
         "vectorBackend": settings.VECTOR_BACKEND,
         "createdAt": _now(),
     }
     match_run_id = str((await runs_col.insert_one(run_doc)).inserted_id)
 
+    # 9. QA audit — same adversarial pass the pipeline engine runs. Verified
+    # false negatives are corrected through the scorer and the persisted run is
+    # updated; the response carries the corrected ranking. Fail-open by design.
+    qa_summary: Optional[Dict[str, Any]] = None
+    if settings.MATCH_QA_ENABLED and all_entries:
+        from app.services import match_qa_service
+
+        profiles_by_cid = {str(d["_id"]): (d.get("profile") or {}) for d in candidates}
+        qa_summary = await match_qa_service.audit_run(
+            db,
+            match_run_id=match_run_id,
+            pipeline_id=None,
+            job_id=job_id,
+            jd_title=requirements.get("title") or (jd_filename or "CV match"),
+            requirements=requirements,
+            entries=all_entries,
+            profiles_by_cid=profiles_by_cid,
+            sims_by_cid={cid: float(sim_by_id.get(cid, 0.0)) for cid in profiles_by_cid},
+        )
+        if qa_summary["status"] == "completed" and qa_summary["fnCorrected"]:
+            all_entries.sort(
+                key=lambda r: (r["score"], (r.get("breakdown") or {}).get("base", 0.0)),
+                reverse=True,
+            )
+            results = all_entries[:return_top]
+        await runs_col.update_one(
+            {"_id": ObjectId(match_run_id)},
+            {"$set": {"results": results, "analysis.candidates": all_entries,
+                      "qa": qa_summary, "modelVersions.qa": match_qa_service.qa_model()}},
+        )
+
     return {
         "matchRunId": match_run_id,
         "jdId": jd_id,
         "jdTitle": requirements.get("title"),
         "requirements": requirements,
+        "requirementsWarning": requirements_warning,
         "candidatesConsidered": len(scored),
         "results": results,
+        "qa": qa_summary,
     }
 
 

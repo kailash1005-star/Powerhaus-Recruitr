@@ -296,12 +296,19 @@ def merge_enriched(
         "education": education,
         "certifications": certifications,
         "languages": languages,
+        # LinkedIn's own "open to work" flag from the scraped profile — a
+        # recruiter-facing signal, so it survives the merge instead of living
+        # only in raw.apify where nothing reads it.
+        "openToWork": bool(apify_profile.get("openToWork")),
     }
 
     contact = {
         # Keep Apollo's verified email; Apify profile-only mode returns none.
         "email": _s(apollo.get("email")) or None,
-        "phone": None,  # neither source reliably provides candidate mobile here
+        # The profile scrape carries a phone when the member lists one publicly
+        # (usually null). Apollo's projection here has none, so Apify is the
+        # only source.
+        "phone": _s(apify_profile.get("phone")) or None,
         "linkedin": _s(apify_profile.get("linkedinUrl")) or _s(apollo.get("linkedin_url")) or None,
         "emailStatus": _s(apollo.get("email_status")) or None,
     }

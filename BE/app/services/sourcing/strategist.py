@@ -23,10 +23,13 @@ from typing import Optional
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from app.services.sourcing.common import get_model, llm_available
+from app.services.sourcing.common import (
+    GENERIC_ROLE_WORDS, derive_anchor_terms, get_model, llm_available,
+    title_in_domain,
+)
 from app.services.sourcing.models import (
-    BroadeningStep, FilterRationale, SearchBrief, SearchFilters, SearchStrategy,
-    enum_vocabulary_prompt,
+    BroadeningStep, DomainAnchor, FilterRationale, SearchBrief, SearchFilters,
+    SearchStrategy, enum_vocabulary_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,11 +55,16 @@ Examples of the translation you must perform:
     Architect", "Cloud Solutions Architect".
 
 Rules for the filters you produce:
-1. `currentJobTitles` — 4 to 8 titles people ACTUALLY carry on LinkedIn. Include
-   the common abbreviation AND the expanded form when both are in use (SAP FICO /
-   SAP Finance). Order strongest-match first. Never include internal grades
-   (II, L3, Band 4), employment types (Contract, Permanent), or req codes.
-   Never invent a title nobody uses just to look thorough.
+1. `currentJobTitles` — 4 to 10 titles people ACTUALLY carry on LinkedIn, and
+   ALL of them inside the SAME specialization. This is the full within-specialty
+   synonym family: the common abbreviation AND the expanded form (SAP FICO / SAP
+   Finance), the local-language and English variants, the vendor's product names
+   for the same job (SAP HCM → SAP SuccessFactors, SAP HR, SAP Payroll/PY).
+   Order strongest-match first. Never include internal grades (II, L3, Band 4),
+   employment types (Contract, Permanent), or req codes. Never invent a title
+   nobody uses just to look thorough — and NEVER pad the list with a
+   neighbouring specialization (an SAP HCM search must not contain SAP FICO:
+   same platform, different profession; that goes in `adjacentTitles`).
 2. `searchQuery` — a SHORT fuzzy keyword phrase (2-4 words), NOT the full title
    string. It is a broad keyword match, so put the domain in it ("SAP FICO"),
    not the whole posting title.
@@ -99,12 +107,30 @@ Also produce:
     and reference the actual title.
   • `rationale` — one short entry per non-empty filter, saying why. `field` must
     be the exact filter name.
+  • `domainAnchor` — the words that make this role THIS role, in two tiers.
+    `coreTerms`: the specialization words that separate it from its neighbours
+    (for SAP HCM: hcm, successfactors, payroll, hr, personal). `ecosystemTerms`:
+    the platform/vendor words it SHARES with different professions (for SAP HCM:
+    sap — FI/CO consultants and Basis admins carry it too). Single lowercase
+    words. This is enforced in code: any title that carries no core term is
+    dropped as off-domain, so a core-term list that is too narrow throws away
+    good titles and one that wrongly contains an ecosystem word lets the wrong
+    profession in.
+  • `adjacentTitles` — 3 to 6 titles from NEIGHBOURING specializations that a
+    recruiter might deliberately widen into when the exact specialty pool is
+    thin ("HRIS Consultant", "Workday HCM Consultant" for an SAP HCM role).
+    These are NEVER searched automatically — they become opt-in suggestions the
+    recruiter can click. Do NOT put in-specialty synonyms here; those belong in
+    `currentJobTitles`.
   • `broadeningLadder` — 3 fallback attempts, tried in order ONLY if the search
     returns zero. Each step carries a COMPLETE filter set (not a diff), and each
-    must be strictly broader than the one before. Sensible progression: drop the
-    narrowest enum → generalise the titles → widen the location to the country.
-    Step 3 should be broad enough that returning zero means the talent genuinely
-    isn't on LinkedIn.
+    must be strictly broader than the one before. The titles and searchQuery are
+    LOCKED: every step keeps `currentJobTitles` and `searchQuery` exactly as in
+    your main filters — steps relax ONLY the other dimensions (drop the
+    narrowest enum → drop companies → widen the location to the country → drop
+    profileLanguages). Changing the target is the recruiter's decision, never a
+    fallback's. Step 3 should be broad enough that returning zero means the
+    talent genuinely isn't findable this way.
   • `confidence` — 0..1. Be honest: a vague one-line JD with no location is 0.3,
     not 0.9.
   • `warnings` — anything the recruiter should know (title is region-specific,
@@ -130,6 +156,7 @@ def _fallback(brief: SearchBrief) -> SearchStrategy:
     still gets a usable form — just without the translation — and `confidence: 0`
     plus a warning tells the UI (and them) that the AI did not run.
     """
+    core, eco = derive_anchor_terms([brief.jobTitle])
     return SearchStrategy(
         interpretedRole=brief.jobTitle,
         titleReasoning="AI suggestions unavailable — prefilled from the job title as-is.",
@@ -138,6 +165,7 @@ def _fallback(brief: SearchBrief) -> SearchStrategy:
             currentJobTitles=[brief.jobTitle] if brief.jobTitle else [],
             locations=[brief.jobLocation] if brief.jobLocation else [],
         ),
+        domainAnchor=DomainAnchor(coreTerms=core, ecosystemTerms=eco),
         confidence=0.0,
         warnings=["AI suggestions unavailable — review these filters before searching."],
     )
@@ -205,10 +233,51 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     if brief.jobLocation and not f.locations:
         f.locations = [brief.jobLocation]
 
-    # Renumber the ladder so `step` is authoritative regardless of what came back.
+    # ── Domain anchor: validate the LLM's, or derive one ────────────────────
+    # The anchor is load-bearing (the Broadener guard and the widen-suggestions
+    # flow both read it), so it must ALWAYS exist and always be self-consistent
+    # with the proposed titles.
+    anchor = strategy.domainAnchor
+    anchor.coreTerms = [t.strip().lower() for t in anchor.coreTerms if t and t.strip()][:12]
+    anchor.ecosystemTerms = [t.strip().lower() for t in anchor.ecosystemTerms if t and t.strip()][:6]
+    # A "core" term that is really a generic role word (consultant, manager…)
+    # would let every profession through — strip them.
+    anchor.coreTerms = [t for t in anchor.coreTerms if t not in GENERIC_ROLE_WORDS]
+    if anchor.is_empty():
+        core, eco = derive_anchor_terms([brief.jobTitle, *f.currentJobTitles])
+        anchor.coreTerms, anchor.ecosystemTerms = core, eco
+    else:
+        # Self-consistency: if the anchor rejects most of the model's OWN titles,
+        # the anchor is wrong (too narrow), not the titles — rebuild it from them.
+        titles = f.currentJobTitles or []
+        if titles:
+            passing = sum(1 for t in titles if title_in_domain(t, anchor.coreTerms))
+            if passing * 2 < len(titles):
+                logger.warning(
+                    "[Strategist] anchor %s rejects %d/%d of its own titles — rebuilt",
+                    anchor.coreTerms, len(titles) - passing, len(titles),
+                )
+                core, eco = derive_anchor_terms([brief.jobTitle, *titles])
+                anchor.coreTerms, anchor.ecosystemTerms = core, eco
+
+    # Adjacent titles are recruiter-opt-in ONLY. Anything that is actually
+    # IN-specialty belongs in currentJobTitles, so de-dupe across the two lists,
+    # cap, and drop empties.
+    seen = {t.strip().lower() for t in f.currentJobTitles}
+    strategy.adjacentTitles = [
+        t.strip() for t in strategy.adjacentTitles
+        if t and t.strip() and t.strip().lower() not in seen
+    ][:6]
+
+    # Renumber the ladder so `step` is authoritative regardless of what came
+    # back — and LOCK its titles/query: a fallback step may relax enums,
+    # companies, location and language, never the target. This is the code-level
+    # guarantee behind "widening never means a different job".
     ladder: list[BroadeningStep] = []
     for i, step in enumerate(strategy.broadeningLadder[:5], start=1):
         step.step = i
+        step.filters.currentJobTitles = list(f.currentJobTitles)
+        step.filters.searchQuery = f.searchQuery
         if not step.filters.is_empty():
             ladder.append(step)
     strategy.broadeningLadder = ladder

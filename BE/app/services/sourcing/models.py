@@ -133,6 +133,40 @@ class BroadeningStep(BaseModel):
     )
 
 
+class DomainAnchor(BaseModel):
+    """The two-tier statement of what makes this role THIS role.
+
+    ``coreTerms`` are the specialization words — the ones that separate this
+    profession from its neighbours ("HCM", "SuccessFactors", "Payroll",
+    "Entgeltabrechnung" for an SAP HCM role). ``ecosystemTerms`` are the
+    platform/vendor words the role SHARES with different professions ("SAP" is
+    carried by FI/CO consultants, Basis admins and HCM consultants alike).
+
+    The distinction exists because the old single-tier anchor let "SAP FICO
+    Consultant" pass as in-domain for an SAP HCM search — they share "SAP", the
+    ecosystem word, which is precisely the part that carries no specialization
+    signal. A proposed title is in-domain only if it carries a CORE term.
+    """
+    coreTerms: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Specialization words that make this role distinct from neighbouring "
+            "roles on the same platform. Single words, lowercase. A title without "
+            "any of these is a DIFFERENT profession."
+        ),
+    )
+    ecosystemTerms: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Platform/vendor words shared across many professions (SAP, Oracle, "
+            "AWS…). Matching one of these alone does NOT make a title in-domain."
+        ),
+    )
+
+    def is_empty(self) -> bool:
+        return not self.coreTerms
+
+
 class SearchStrategy(BaseModel):
     """The Strategist's full proposal for one job — the prefill payload."""
     # The interpreted role, in words a LinkedIn member would recognise.
@@ -141,6 +175,15 @@ class SearchStrategy(BaseModel):
     titleReasoning: str = ""
     filters: SearchFilters
     rationale: List[FilterRationale] = Field(default_factory=list)
+    # What may never be relaxed away — see DomainAnchor. Enforced in code by the
+    # discovery loop, not just prompted.
+    domainAnchor: DomainAnchor = Field(default_factory=DomainAnchor)
+    # Adjacent-specialty titles (same platform, neighbouring profession — e.g.
+    # "HRIS Consultant" for an SAP HCM role). NEVER searched automatically:
+    # they are offered to the recruiter as opt-in chips when the in-specialty
+    # search comes up short. A recruiter click is the only thing that turns one
+    # of these into a search term.
+    adjacentTitles: List[str] = Field(default_factory=list)
     # Pre-planned fallbacks, ordered widest-last. The loop uses these as the
     # Broadener's hint and as its fallback if the Broadener call fails.
     broadeningLadder: List[BroadeningStep] = Field(default_factory=list)
@@ -192,6 +235,9 @@ class SearchAttempt(BaseModel):
     reasoning: str = ""
     filters: Dict[str, Any] = Field(default_factory=dict)
     resultCount: int = 0
+    # Per-channel raw counts when the attempt ran more than one search page
+    # (e.g. {"title": 18, "keyword": 12}). Feeds the UI transparency panel.
+    channelCounts: Optional[Dict[str, int]] = None
     at: datetime = Field(default_factory=datetime.utcnow)
     error: Optional[str] = None
 

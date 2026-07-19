@@ -314,7 +314,13 @@ export function PipelinesPage() {
       <CreatePipelineModal
         isOpen={showCreate}
         onClose={() => setShowCreate(false)}
-        onCreated={() => { setShowCreate(false); load(); }}
+        onCreated={(p, jobId) => {
+          setShowCreate(false);
+          // Straight into the flow: the job's candidates page auto-opens the
+          // AI-prefilled search questionnaire (?search=1) — no extra clicks.
+          if (jobId) router.push(`/candidates/${p._id}/jobs/${jobId}?search=1`);
+          else load();
+        }}
       />
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }`}</style>

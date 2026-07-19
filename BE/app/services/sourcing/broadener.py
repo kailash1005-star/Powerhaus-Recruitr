@@ -4,24 +4,40 @@ Called ONLY when a search attempt returns zero candidates. It sees the full
 attempt history — every filter set already tried and what each returned — and
 decides the next, strictly broader attempt.
 
+THE TARGET IS LOCKED. The Broadener relaxes the net around the target —
+enum filters, companies, location, profile language — and never the target
+itself: ``currentJobTitles`` and ``searchQuery`` are clamped in code to the
+initial attempt's values, whatever the model proposes. This is deliberate and
+load-bearing: told "the titles are too specific", a model will happily relax
+"SAP HCM Consultant" into "SAP Consultant" — a different profession sharing a
+platform brand — and the actor ORs titles, so ONE off-domain entry floods the
+results with the wrong people. Since the Strategist now emits the full
+within-specialty synonym family up front, any title widening beyond that set
+IS a change of target, and changing the target is the recruiter's decision
+(the awaiting-input widen flow), never a fallback's.
+
 Why an agent instead of just walking the Strategist's pre-planned ladder: the
 ladder is written blind, before any evidence. Once we know that "SAP FICO
-Consultant" in "Walldorf" returned zero, the reason matters — a dead title needs
+Consultant" in "Walldorf" returned zero, the reason matters — dead enums need
 different relaxation than a dead location, and only the failure tells you which.
-The ladder is still passed in as a hint, and is used verbatim as the fallback
-when this call fails, so we degrade to the planned path rather than to nothing.
+The ladder is still passed in as a hint, and is used verbatim (titles clamped)
+as the fallback when this call fails, so we degrade to the planned path rather
+than to nothing.
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from app.services import prescreen_service as prescreen
-from app.services.sourcing.common import get_model, llm_available
+from app.services.sourcing.common import (
+    ECOSYSTEM_TOKENS, GENERIC_ROLE_WORDS, get_model, llm_available,
+    title_in_domain,
+)
 from app.services.sourcing.models import (
     BroadenDecision, BroadeningStep, SearchAttempt, SearchBrief, SearchFilters,
     enum_vocabulary_prompt,
@@ -36,18 +52,13 @@ Given the job brief and the full history of what was tried, produce the NEXT
 search attempt. It must be STRICTLY BROADER than every attempt already made —
 repeating or narrowing is a wasted paid API call.
 
-THE ONE RULE YOU MUST NOT BREAK: widening means casting a wider net for THIS job.
-It NEVER means searching for a different job. The role's domain vocabulary — the
-words that make this role this role ("Entgeltabrechnung", "Payroll", "FICO",
-"S/4HANA") — must survive every attempt. Relaxing "Entgeltabrechner" to "SAP
-Consultant" or "HR Specialist" is NOT broadening: payroll clerks and SAP
-consultants are different professions, and that search returns a pile of people
-who cannot do the job. Zero results means "widen the net", never "change the
-target". If the only way you can widen further is by abandoning the domain, the
-answer is `give_up`, not a search for someone else.
+THE TARGET IS LOCKED. `currentJobTitles` and `searchQuery` must be copied
+UNCHANGED from the initial attempt — they already contain every title this
+profession actually uses, and any further title change means searching for a
+DIFFERENT job, which is the recruiter's decision, not yours. (This is also
+enforced in code: title changes you propose are discarded.)
 
-Relax in THIS order — cheapest, most speculative filters FIRST, and touch the
-titles LAST:
+What you MAY relax, in THIS order — cheapest, most speculative filters first:
   1. Enum filters (`seniorityLevel`, `yearsOfExperience`, `function`,
      `companyHeadcount`). ALWAYS start here. They are INFERRED from the JD, not
      stated by the member, and profiles routinely leave the underlying data
@@ -58,24 +69,20 @@ titles LAST:
   3. `locations` — widen the city to the metro, then to the country. Talent
      clusters in a few metros, not the town the office is in.
   4. `profileLanguages` — only if the role plausibly exists in English too.
-  5. TITLES, and only once 1-4 are exhausted. Generalise WITHIN the domain and
-     keep the domain word: "Sachbearbeiter Entgeltabrechnung" → "Entgeltabrechner"
-     → "Payroll Specialist" → "Payroll" (all still payroll). Add adjacent titles
-     people genuinely move between INSIDE the profession. Never climb out to a
-     generic title ("Consultant", "Specialist", "Manager") — those match everyone
-     and nobody.
 
 Widen ONE dimension per attempt where possible, so the result stays attributable.
 Only widen two when the remaining budget is nearly spent.
 
-Choose `decision: "broaden"` whenever ANY filter is still left to relax — that is
-the normal case, and it means "run the filters I'm giving you next".
+Choose `decision: "broaden"` whenever ANY of those four dimensions is still left
+to relax — that is the normal case, and it means "run the filters I'm giving you
+next".
 
-Choose `decision: "give_up"` ONLY when the last attempt was already a bare title
-plus a country with no enum filters and STILL returned zero. That means the
-talent isn't findable this way and another paid attempt only burns money. Say so
-in `reasoning`. If you are proposing a filter set you believe in, the decision is
-"broaden" — never pair a real proposal with "give_up".
+Choose `decision: "give_up"` when the last attempt was already the bare titles
+plus a country with no enum filters and STILL returned zero. That means this
+exact specialty isn't findable this way, another paid attempt only burns money,
+and the recruiter will be shown the option to deliberately widen the specialty
+instead. Say so in `reasoning`. If you are proposing a filter set you believe
+in, the decision is "broaden" — never pair a real proposal with "give_up".
 
 `reasoning` is shown to the recruiter: one plain sentence on what you changed and
 why, referencing the actual values (e.g. "Dropped the Senior filter and widened
@@ -94,80 +101,122 @@ def _build_agent() -> Agent:
     )
 
 
+def lock_target(
+    decision: BroadenDecision, attempts: List[SearchAttempt],
+) -> BroadenDecision:
+    """Clamp the decision's titles + query to the INITIAL attempt's values.
+
+    The structural guarantee behind "widening never means a different job":
+    whatever the model proposed, the target it searches is the target the
+    recruiter approved. Runs on every path that produces a next attempt —
+    agent proposal and planned-ladder fallback alike.
+    """
+    if not attempts:
+        return decision
+    initial = attempts[0].filters
+    decision.filters.currentJobTitles = list(initial.get("currentJobTitles") or [])
+    decision.filters.searchQuery = str(initial.get("searchQuery") or "")
+    return decision
+
+
 def _ladder_fallback(
     ladder: List[BroadeningStep], attempt_number: int,
+    attempts: List[SearchAttempt],
 ) -> Optional[BroadenDecision]:
     """Use the Strategist's pre-planned step for this attempt, if there is one.
 
     `attempt_number` is 1-based over retries, matching BroadeningStep.step.
+    Titles/query are clamped: new strategies already lock them at generation
+    time, but ladders persisted before that change still carry
+    "generalise_titles" steps — the clamp makes those safe too.
     """
     step = next((s for s in ladder if s.step == attempt_number), None)
     if step is None:
         return None
-    return BroadenDecision(
+    return lock_target(BroadenDecision(
         decision="broaden",
         action=step.action,
         reasoning=step.detail or f"Planned fallback: {step.action}",
         filters=step.filters,
-    )
+    ), attempts)
 
 
-# Role-suffix words that describe SENIORITY or FORM, not the profession. They are
-# what every title has in common, so they can never evidence that a proposed title
-# is still the same job: "Payroll Specialist" and "HR Specialist" share
-# "specialist" and are different professions.
-_GENERIC_ROLE_WORDS = {
-    "consultant", "consulting", "berater", "beratung", "specialist", "spezialist",
-    "manager", "management", "engineer", "analyst", "administrator", "admin",
-    "coordinator", "officer", "lead", "leader", "senior", "junior", "principal",
-    "director", "head", "expert", "professional", "associate", "assistant",
-    "sachbearbeiter", "mitarbeiter", "referent", "clerk", "staff", "team",
-    "developer", "architect", "advisor", "generalist", "partner", "executive",
-}
-
-
-def _domain_anchor(attempts: List[SearchAttempt]) -> List[str]:
-    """The words that make the role THIS role, taken from the FIRST attempt.
-
-    The initial titles are the Strategist's read of the job before any relaxation,
-    so they are the only uncontaminated statement of the domain we have. Generic
-    role suffixes are stripped: they match every profession and would let any
-    drift through.
-    """
-    if not attempts:
+def _anchor_from_strategy(anchor: Optional[Dict[str, Any]]) -> List[str]:
+    """Core terms from a persisted Strategist DomainAnchor dict, if usable."""
+    if not isinstance(anchor, dict):
         return []
-    initial = attempts[0].filters.get("currentJobTitles") or []
-    anchor: set[str] = set()
-    for title in initial:
-        anchor |= {t for t in prescreen.tokens(title) if t not in _GENERIC_ROLE_WORDS}
-    return sorted(anchor)
+    core = anchor.get("coreTerms") or []
+    return [str(t).strip().lower() for t in core if t and str(t).strip()]
+
+
+def _domain_anchor(
+    attempts: List[SearchAttempt], brief: Optional[SearchBrief] = None,
+    strategy_anchor: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """The CORE terms that make the role THIS role.
+
+    Two-tier: the Strategist's declared ``coreTerms`` win when present — it
+    knows "HCM" is the specialty and "SAP" merely the platform. The fallback
+    derives terms from the FIRST attempt's titles (the only uncontaminated
+    statement of the domain), stripping generic role suffixes AND demoting
+    ecosystem brands: "SAP" alone must never satisfy the anchor when a more
+    specific word exists, because that is exactly how "SAP FICO Consultant"
+    passed as in-domain for an SAP HCM search.
+
+    When the initial attempt carried NO titles (a searchQuery-only search), the
+    brief's job title is the next-best uncontaminated statement of the domain.
+    """
+    declared = _anchor_from_strategy(strategy_anchor)
+    if declared:
+        return sorted(t for t in declared if t not in GENERIC_ROLE_WORDS)
+
+    core: set[str] = set()
+    eco: set[str] = set()
+
+    def _absorb(text: str) -> None:
+        for t in prescreen.tokens(text):
+            if t in GENERIC_ROLE_WORDS:
+                continue
+            (eco if t in ECOSYSTEM_TOKENS else core).add(t)
+
+    if attempts:
+        for title in attempts[0].filters.get("currentJobTitles") or []:
+            _absorb(title)
+    if not (core or eco) and brief is not None:
+        for source in (brief.jobTitle, (attempts[0].filters.get("searchQuery") if attempts else "")):
+            _absorb(source or "")
+    if not core:
+        # Brand-only domain ("Workday Consultant"): the brand IS the specialty.
+        return sorted(eco)
+    return sorted(core)
 
 
 def _enforce_domain(
     decision: BroadenDecision, attempts: List[SearchAttempt],
+    brief: Optional[SearchBrief] = None,
+    strategy_anchor: Optional[Dict[str, Any]] = None,
 ) -> Optional[BroadenDecision]:
-    """Strip proposed titles that abandoned the role's domain.
+    """Strip proposed titles that abandoned the role's specialization.
 
-    The prompt tells the model to widen the net, not change the target — but a
-    model told "the titles are too specific" will happily relax a payroll clerk
-    into an "SAP Consultant", and the actor ORs the titles, so ONE off-domain
-    entry is enough to flood the results with the wrong profession. Enforce it in
-    code rather than trusting the instruction.
+    Defense-in-depth behind ``lock_target``: the clamp makes agent/ladder drift
+    structurally impossible, and this guard covers every other path a title
+    list can travel (recruiter-supplied widen sets are validated elsewhere;
+    tests pin the semantics here). A title passes only if it carries a CORE
+    term — an ecosystem brand ("SAP") alone is NOT enough, because that is the
+    part of the title every neighbouring profession shares.
 
-    Returns the decision with off-domain titles removed, or None to fall back to
-    the Strategist's planned ladder when nothing on-domain survives.
+    Returns the decision with off-domain titles removed, or None to fall back
+    to the Strategist's planned ladder when nothing on-domain survives.
     """
-    anchor = _domain_anchor(attempts)
+    anchor = _domain_anchor(attempts, brief, strategy_anchor)
     if not anchor:
         return decision  # nothing to anchor to — don't invent a constraint
     proposed = decision.filters.currentJobTitles or []
     if not proposed:
         return decision
 
-    kept, dropped = [], []
-    for title in proposed:
-        toks = prescreen.tokens(title)
-        (kept if any(prescreen.token_present(a, toks) for a in anchor) else dropped).append(title)
+    kept = [t for t in proposed if title_in_domain(t, anchor)]
+    dropped = [t for t in proposed if t not in kept]
 
     if not dropped:
         return decision
@@ -184,7 +233,8 @@ def _enforce_domain(
     return decision
 
 
-def _history_prompt(brief: SearchBrief, attempts: List[SearchAttempt]) -> str:
+def _history_prompt(brief: SearchBrief, attempts: List[SearchAttempt],
+                    strategy_anchor: Optional[Dict[str, Any]] = None) -> str:
     payload = brief.model_dump(exclude_defaults=True)
     payload.pop("jobDescription", None)  # the titles carry the signal by now
     lines = [
@@ -192,13 +242,11 @@ def _history_prompt(brief: SearchBrief, attempts: List[SearchAttempt]) -> str:
     ]
     # Name the domain explicitly. The brief's must-haves are what the candidate
     # will actually be scored against, so they define what may never be relaxed.
-    anchor = _domain_anchor(attempts)
+    anchor = _domain_anchor(attempts, brief, strategy_anchor)
     if anchor:
         lines.append(
-            "\nDOMAIN — every title you propose must still be about this. These are "
-            "the words the role's original titles were built from, and at least one "
-            "of them (or an obvious inflection) must appear in each title you "
-            f"propose:\n  {', '.join(anchor)}"
+            "\nDOMAIN (locked) — the titles and query are about this and must be "
+            f"copied unchanged from attempt #1:\n  {', '.join(anchor)}"
         )
     if brief.mustHaveSkills:
         lines.append(
@@ -221,11 +269,14 @@ async def next_attempt(
     brief: SearchBrief,
     attempts: List[SearchAttempt],
     ladder: Optional[List[BroadeningStep]] = None,
+    strategy_anchor: Optional[Dict[str, Any]] = None,
 ) -> Optional[BroadenDecision]:
     """Decide the next broadened search, or None to stop.
 
     Returns None when the agent says stop, when no LLM is configured and the
-    ladder is exhausted, or when the proposal is unusable.
+    ladder is exhausted, or when the proposal is unusable. Every returned
+    decision has its titles/query clamped to the initial attempt's — see
+    ``lock_target``.
     """
     ladder = ladder or []
     # attempts includes the initial search, so the 1st retry is attempt len(...).
@@ -233,37 +284,37 @@ async def next_attempt(
 
     if not llm_available():
         logger.info("[Broadener] no LLM key — using planned ladder step %d", retry_number)
-        return _ladder_fallback(ladder, retry_number)
+        return _ladder_fallback(ladder, retry_number, attempts)
 
     try:
         result = await _build_agent().run(
-            _history_prompt(brief, attempts),
+            _history_prompt(brief, attempts, strategy_anchor),
             usage_limits=UsageLimits(request_limit=3),
         )
         decision = result.output
     except Exception as exc:  # noqa: BLE001 — degrade to the planned ladder
         logger.error("[Broadener] failed (%s) — planned ladder step %d",
                      exc, retry_number, exc_info=True)
-        return _ladder_fallback(ladder, retry_number)
+        return _ladder_fallback(ladder, retry_number, attempts)
 
     if decision.decision == "give_up":
         logger.info("[Broadener] stopping: %s", decision.reasoning)
         return None
+
+    # The target is not the model's to change — clamp before any other check,
+    # so "already tried" is judged on what would actually run.
+    decision = lock_target(decision, attempts)
+
     if decision.filters.is_empty():
         logger.warning("[Broadener] proposed an empty filter set — planned ladder")
-        return _ladder_fallback(ladder, retry_number)
+        return _ladder_fallback(ladder, retry_number, attempts)
     if _already_tried(decision.filters, attempts):
         logger.warning("[Broadener] proposed a filter set already tried — planned ladder")
-        return _ladder_fallback(ladder, retry_number)
-
-    # Widening must not become "search for a different job" — see _enforce_domain.
-    guarded = _enforce_domain(decision, attempts)
-    if guarded is None:
-        return _ladder_fallback(ladder, retry_number)
-    if guarded.filters.is_empty() or _already_tried(guarded.filters, attempts):
-        # Stripping the drift can leave a set we've already run.
-        return _ladder_fallback(ladder, retry_number)
-    return guarded
+        fallback = _ladder_fallback(ladder, retry_number, attempts)
+        if fallback is not None and _already_tried(fallback.filters, attempts):
+            return None
+        return fallback
+    return decision
 
 
 def _already_tried(filters: SearchFilters, attempts: List[SearchAttempt]) -> bool:

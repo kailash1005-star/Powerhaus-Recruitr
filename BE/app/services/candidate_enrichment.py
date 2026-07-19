@@ -209,6 +209,9 @@ async def enrich_candidates(
                     "apifyEnrichedAt": now,
                     "apifyEnrichment": enriched,
                     "apifyEnrichmentStatus": "enriched",
+                    # Top-level copy so list views can badge it without digging
+                    # into the nested enrichment.
+                    "openToWork": bool((enriched.get("profile") or {}).get("openToWork")),
                     "updatedAt": now,
                 }},
             )

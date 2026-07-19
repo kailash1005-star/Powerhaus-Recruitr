@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 from app.config import settings
 from app.services.apify_profile_service import (
     ApifyEnrichmentError, ApifyNotConfigured, ApifyRunFailed, _run_to_dict,
+    call_actor_bounded,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,12 @@ def _raise_if_quota_exhausted(info: Dict[str, Any]) -> None:
 
 def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
     """Build the actor run input, dropping empty filters."""
+    # The questionnaire's singular `profileLanguage` predates the plural actor
+    # key; every consumer here reads the plural. Normalize instead of dropping —
+    # this field was dead for months because nothing read the singular.
+    if filters.get("profileLanguage") and not filters.get("profileLanguages"):
+        filters = {**filters, "profileLanguages": [filters["profileLanguage"]]}
+
     run_input: Dict[str, Any] = {
         "profileScraperMode": settings.APIFY_SEARCH_MODE,
         "maxItems": max_items,
@@ -272,7 +279,13 @@ class ApifySearchService:
 
         client = self._client()
         try:
-            run = client.actor(self._actor).call(run_input=run_input)
+            # Bounded run + client wait so a hung actor can't leave the job stuck
+            # on "running" forever. Version-tolerant kwarg names — see
+            # apify_profile_service.call_actor_bounded.
+            run = call_actor_bounded(
+                client, self._actor, run_input,
+                timeout_secs=settings.APIFY_CALL_TIMEOUT_SECS,
+            )
         except Exception as exc:
             raise ApifyRunFailed(f"Apify search actor call failed: {exc}") from exc
 
@@ -291,6 +304,8 @@ class ApifySearchService:
         logger.info("[ApifySearch] got %d profiles", len(items))
 
         # Meter the search cost (vendor actual if reported, else Short-mode page).
+        # Best-effort by design (metering must not fail a paid search that already
+        # succeeded) — but LOGGED: a silent pass here hid every gap in the ledger.
         try:
             from app.services import cost_service
             vendor = info.get("usageTotalUsd") or info.get("usage_total_usd")
@@ -299,8 +314,8 @@ class ApifySearchService:
                 cost_override=(float(vendor) if vendor else _COST_PER_PAGE),
                 vendor_ref=str(info.get("id") or dataset_id),
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ApifySearch] cost metering failed (search succeeded): %s", exc)
         return items[:max_items]
 
 

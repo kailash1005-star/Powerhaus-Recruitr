@@ -29,7 +29,8 @@ export function fmtRunDate(d?: string | null): string {
 
 // ── Score bar ─────────────────────────────────────────────────────────────────
 export function ScoreBar({ value }: { value: number }) {
-  const color = value >= 75 ? 'var(--status-success)' : value >= 50 ? 'var(--status-info)' : 'var(--status-warning)';
+  // Same cut points as BANDS below — every view must tell the same story.
+  const color = value >= 75 ? 'var(--status-success)' : value >= 60 ? 'var(--status-info)' : 'var(--status-warning)';
   return (
     <div style={{ width: '100%', height: 6, background: 'var(--bg-app)', borderRadius: 9999, overflow: 'hidden' }}>
       <div style={{ width: `${Math.max(0, Math.min(100, value))}%`, height: '100%', background: color }} />
@@ -52,10 +53,12 @@ export function bandFor(score: number): Band {
 }
 
 /** Plain-language verdict for the whole-profile read. The underlying number is a
- *  similarity score; nobody outside engineering needs to know that. */
+ *  similarity score; nobody outside engineering needs to know that.
+ *  Cut points match BANDS — the same number must never read as "Strong" in one
+ *  view and "Worth a look" in another. */
 function fitVerdict(v: number): { word: string; tone: string } {
-  if (v >= 70) return { word: 'Strong', tone: '#047857' };
-  if (v >= 55) return { word: 'Good', tone: '#047857' };
+  if (v >= 75) return { word: 'Strong', tone: '#047857' };
+  if (v >= 60) return { word: 'Good', tone: '#047857' };
   if (v >= 40) return { word: 'Moderate', tone: '#B45309' };
   return { word: 'Weak', tone: '#B45309' };
 }
@@ -256,6 +259,16 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
                 <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', color: 'var(--fg-primary)' }}>
                   {c.fullName || 'Unnamed candidate'}
                 </span>
+                {c.openToWork && (
+                  <span title="LinkedIn: open to work — likely to respond" style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    padding: '2px 8px', borderRadius: 9999, fontSize: 10.5, fontWeight: 700,
+                    textTransform: 'uppercase', letterSpacing: '0.04em',
+                    background: '#ECFDF5', color: '#047857', border: '1px solid #A7F3D0',
+                  }}>
+                    <Icon name="hand" size={10} />Open to work
+                  </span>
+                )}
                 {clickable && <Icon name="arrow-up-right" size={13} style={{ color: 'var(--fg-subtle)' }} />}
               </div>
               <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 3 }}>
@@ -332,6 +345,18 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
                 <Icon name="linkedin" size={13} />LinkedIn
               </a>
             ) : null}
+            {contact.phone && (
+              <a
+                href={`tel:${contact.phone}`} title={`Call ${contact.phone}`}
+                style={{
+                  height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                  border: '1px solid var(--border-card)', textDecoration: 'none', background: '#FFF',
+                  color: 'var(--fg-secondary)', display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <Icon name="phone" size={13} />{contact.phone}
+              </a>
+            )}
             <button
               onClick={() => onReachOut(c)}
               disabled={!contact.email}

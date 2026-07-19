@@ -132,10 +132,15 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
     if (!f.searchQuery?.trim() && !(f.currentJobTitles?.length)) { setError('Add a search query or a current job title.'); return; }
     setBusy(true); setError(null);
     try {
-      // Send the brief + ladder so the Broadener can recover from a zero-result
-      // search with the role's intent in hand, not just the bare filters.
+      // Send the brief + ladder + anchor so the recovery loop has the role's
+      // intent in hand, not just the bare filters — and the adjacent titles so
+      // a thin result can offer a recruiter-approved widening instead of
+      // silently drifting into a neighbouring profession.
       await discoverJobCandidates(pipelineId, jobId, {
-        ...f, brief, broadeningLadder: strategy?.broadeningLadder,
+        ...f, brief,
+        broadeningLadder: strategy?.broadeningLadder,
+        domainAnchor: strategy?.domainAnchor,
+        adjacentTitles: strategy?.adjacentTitles,
       });
       onSubmitted();
     } catch (e: any) {
@@ -279,7 +284,18 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
                           <li key={s.step} style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--fg-muted)' }}>{s.detail || s.action}</li>
                         ))}
                       </ol>
+                      <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5, color: 'var(--fg-muted)' }}>
+                        Retries widen the net (seniority, location, language) — the job titles above are never
+                        changed without your say-so.
+                      </div>
                     </details>
+                  )}
+                  {(strategy.adjacentTitles?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 12, fontSize: 12.5, lineHeight: 1.6, color: 'var(--fg-muted)' }}>
+                      <b style={{ color: 'var(--fg-secondary)' }}>Held in reserve (searched only if you approve):</b>{' '}
+                      {strategy.adjacentTitles.join(' · ')} — neighbouring specialties, offered as one-click
+                      options if the exact-specialty pool turns out thin.
+                    </div>
                   )}
                 </div>
               )}

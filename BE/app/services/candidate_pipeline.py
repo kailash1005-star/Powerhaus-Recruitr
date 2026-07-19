@@ -98,6 +98,10 @@ def _build_candidate_doc(
         ),
         "matchScore": match_score,
         "matchReasons": match_reasons,
+        # Provenance of matchScore. "sourcing_heuristic" = the cheap title-overlap
+        # number from search time; a real match run overwrites it and stamps
+        # "match_run". The UI renders heuristic scores as provisional.
+        "matchScoreSource": "sourcing_heuristic",
         "isAccepted": True,
         "rejectionReason": None,
         "decidedAt": None,
@@ -249,7 +253,18 @@ async def rerun_job_search(pipeline_id: str, job_id: str) -> Dict[str, Any]:
     Only allowed when the current searchStatus is completed or failed (we don't
     queue a second worker while one is already running). Atomic transition
     completed|failed → queued; if another caller wins, raises ``busy``.
+
+    ENGINE ROUTING — this used to be the single worst accuracy bug in sourcing:
+    "discover" ran the Apify/LinkedIn engine while this rerun silently ran the
+    legacy Apollo engine (country-only location, include_similar_titles, title
+    shrinking), so one click replaced LinkedIn-grade results with country-wide
+    noise. Rerun now re-executes the SAME agentic discovery the job last ran
+    (stored filters), or derives fresh filters via the Strategist for jobs that
+    never had any. Apollo remains only as the explicit fallback when Apify is
+    not configured at all, and the engine used is stamped on the job.
     """
+    from app.config import settings
+
     pipelines_col = await get_collection("candidatePipelines")
     pipeline_oid = ObjectId(pipeline_id)
 
@@ -275,8 +290,46 @@ async def rerun_job_search(pipeline_id: str, job_id: str) -> Dict[str, Any]:
     if result.modified_count == 0:
         raise ValueError("busy")
 
+    if settings.APIFY_TOKEN:
+        doc = await pipelines_col.find_one(
+            {"_id": pipeline_oid, "jobs.jobId": job_id}, {"jobs.$": 1})
+        entry = (doc or {}).get("jobs", [{}])[0]
+        filters = entry.get("lastDiscoverFilters")
+        max_items = int(entry.get("lastDiscoverMaxItems") or 25)
+        hints = entry.get("lastDiscoverHints")
+        ladder = entry.get("lastDiscoverLadder")
+        anchor = entry.get("lastDiscoverAnchor")
+        adjacent = entry.get("adjacentTitles")
+
+        if not filters:
+            # Legacy job that never went through discovery — let the Strategist
+            # derive filters from the JD (one LLM call, no vendor spend). Falls
+            # through to Apollo only if even that fails.
+            try:
+                from app.services.sourcing import build_brief, propose_strategy
+                brief = await build_brief(pipeline_id, job_id, None)
+                strategy = await propose_strategy(brief)
+                if not strategy.filters.is_empty():
+                    filters = strategy.filters.to_search_input()
+                    ladder = [s.model_dump(mode="json") for s in strategy.broadeningLadder]
+                    anchor = strategy.domainAnchor.model_dump(mode="json")
+                    adjacent = list(strategy.adjacentTitles)
+            except Exception as exc:  # noqa: BLE001 — Strategist prefill is best-effort
+                logger.warning("[Rerun] %s/%s Strategist prefill failed: %s",
+                               pipeline_id, job_id, exc)
+
+        if filters:
+            asyncio.create_task(_discover_candidates_for_job(
+                pipeline_id, job_id, filters, max_items,
+                auto_broaden=True, hints=hints, ladder=ladder,
+                anchor=anchor, adjacent_titles=adjacent,
+            ))
+            return {"queued": True, "engine": "apify_discovery"}
+        logger.warning("[Rerun] %s/%s no usable discovery filters — falling back to Apollo",
+                       pipeline_id, job_id)
+
     asyncio.create_task(_search_candidates_for_job(pipeline_id, job_id, is_rerun=True))
-    return {"queued": True}
+    return {"queued": True, "engine": "apollo_legacy"}
 
 
 # ── internal: the actual background search ────────────────────────────────
@@ -294,6 +347,7 @@ async def _claim_running(pipeline_id: str, job_id: str) -> Optional[dict]:
         {
             "$set": {
                 "jobs.$.searchStatus": "running",
+                "jobs.$.searchEngine": "apollo_legacy",
                 "jobs.$.lastSearchedAt": datetime.utcnow(),
                 "updatedAt": datetime.utcnow(),
             }
@@ -477,10 +531,13 @@ async def _search_candidates_for_job(
             )
             # Try insert; if the (pipelineId, apolloId) compound key already
             # exists, append this job to sourceJobIds + a runHistory entry.
+            # DuplicateKeyError ONLY — the old bare `except Exception` classified
+            # every write failure (validation, connection loss) as "duplicate"
+            # and silently mislabelled it as a re-surfaced candidate.
             try:
                 await candidates_col.insert_one(doc)
                 inserted += 1
-            except Exception:
+            except DuplicateKeyError:
                 # Duplicate (pipelineId, apolloId) — re-surfaced candidate.
                 await candidates_col.update_one(
                     {"pipelineId": pipeline_id, "apolloId": p["id"]},
@@ -565,21 +622,63 @@ async def enqueue_job_enrich(
     return {"queued": True}
 
 
+async def _enrich_for_job(
+    pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
+) -> Dict[str, Any]:
+    """Enrich a job's candidates, routing by SOURCE.
+
+    Apify-discovered candidates carry a LinkedIn URN in ``apolloId`` (not an
+    Apollo person id), so the Apollo /people/match stage in ``bulk_enrich`` can
+    only ever fail for them — one wasted, paid Apollo call each — before falling
+    through to the Apify scrape that actually works. When every target is
+    Apify-sourced we skip straight to the Apify-only path (exactly what the old
+    auto-enrich did). Candidates that came from Apollo still get both stages
+    (verified email + deep profile). The returned summary always carries the
+    ``apollo_enriched``/``apify_enriched``/``not_found`` keys the UI reads.
+    """
+    from app.services.candidate_enrichment import bulk_enrich, enrich_candidates
+
+    candidates_col = await get_collection("candidates")
+    scope: Dict[str, Any] = {"pipelineId": pipeline_id}
+    if candidate_ids:
+        scope["_id"] = {"$in": [ObjectId(c) for c in candidate_ids]}
+    else:
+        scope["sourceJobIds"] = job_id
+
+    needs_apollo = await candidates_col.count_documents(
+        {**scope, "source": {"$ne": "apify_search"}}) > 0
+
+    if needs_apollo:
+        if candidate_ids:
+            return await bulk_enrich(candidate_ids=candidate_ids)
+        return await bulk_enrich(pipeline_id=pipeline_id, job_id=job_id)
+
+    # Pure Apify discovery set → Apify-only, normalized to the UI's key shape.
+    if candidate_ids:
+        s = await enrich_candidates(candidate_ids=candidate_ids)
+    else:
+        s = await enrich_candidates(pipeline_id=pipeline_id, job_id=job_id)
+    return {
+        "selected": s.get("selected", 0),
+        "apollo_enriched": 0, "apollo_failed": 0,
+        "apify_enriched": s.get("enriched", 0),
+        "cached": s.get("cached", 0),
+        "not_found": s.get("not_found", 0),
+        "skipped": s.get("skipped", 0),
+    }
+
+
 async def _run_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
 ) -> None:
-    """Background worker: enrich the selected candidates through Apollo → Apify."""
-    from app.services.candidate_enrichment import bulk_enrich
+    """Background worker: enrich the selected candidates (or all in the job)."""
     from app.services import cost_service
     try:
         await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
         async with cost_service.cost_context(
             cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
         ):
-            if candidate_ids:
-                summary = await bulk_enrich(candidate_ids=candidate_ids)
-            else:
-                summary = await bulk_enrich(pipeline_id=pipeline_id, job_id=job_id)
+            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids)
         await _set_enrich(
             pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
         )
@@ -624,6 +723,10 @@ def _build_apify_candidate_doc(
         "pipelineId": pipeline_id,
         "apolloId": profile["profileId"],
         "source": "apify_search",
+        # Which search channel(s) found this person — "title" (filtered title
+        # search), "keyword" (fuzzy profile-keyword search), or both. Shown in
+        # the UI so the recruiter can see WHY each candidate is in the list.
+        "sourceChannels": list(profile.get("channels") or ["title"]),
         "externalLinkedinUrl": profile.get("linkedinUrl") or "",
         "firstName": profile.get("firstName") or "Unknown",
         "lastName": profile.get("lastName") or "",
@@ -636,6 +739,8 @@ def _build_apify_candidate_doc(
         "photoUrl": profile.get("photoUrl") or "",
         "matchScore": score,
         "matchReasons": reasons,
+        # See _build_candidate_doc — provisional until a match run rescores it.
+        "matchScoreSource": "sourcing_heuristic",
         "isAccepted": True,
         "rejectionReason": None,
         "decidedAt": None,
@@ -656,6 +761,7 @@ async def _claim_discover(pipeline_id: str, job_id: str) -> bool:
         {"_id": ObjectId(pipeline_id),
          "jobs": {"$elemMatch": {"jobId": job_id, "searchStatus": {"$ne": "running"}}}},
         {"$set": {"jobs.$.searchStatus": "running", "jobs.$.searchError": None,
+                  "jobs.$.searchEngine": "apify_discovery",
                   "jobs.$.lastSearchedAt": datetime.utcnow(), "updatedAt": datetime.utcnow()}},
     )
     return res.modified_count > 0
@@ -667,6 +773,8 @@ async def enqueue_job_discover(
     auto_broaden: bool = False,
     hints: Optional[Dict[str, Any]] = None,
     ladder: Optional[List[Dict[str, Any]]] = None,
+    anchor: Optional[Dict[str, Any]] = None,
+    adjacent_titles: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Kick off Apify search discovery for a job (background). Poll the job's
     ``searchStatus`` then ``enrichStatus``.
@@ -674,17 +782,32 @@ async def enqueue_job_discover(
     ``auto_broaden`` turns on the agentic recovery loop: a search that returns
     zero candidates is retried with agent-relaxed filters (see
     ``_discover_candidates_for_job``). ``hints`` is the recruiter's optional
-    brief, and ``ladder`` the Strategist's pre-planned fallbacks — both are
-    context for the Broadener and are safe to omit.
+    brief, ``ladder`` the Strategist's pre-planned fallbacks, ``anchor`` its
+    two-tier domain anchor and ``adjacent_titles`` the opt-in neighbouring
+    specialties — all context for the recovery/widen flows and safe to omit.
     """
     pipelines_col = await get_collection("candidatePipelines")
-    job_exists = await pipelines_col.find_one(
-        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id}, {"_id": 1})
-    if not job_exists:
+    # Persist what this discovery ran with, so "rerun" can replay the SAME
+    # search instead of falling back to a different engine (that fallback is
+    # exactly how vague Apollo results used to replace LinkedIn results).
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+        {"$set": {
+            "jobs.$.lastDiscoverFilters": filters,
+            "jobs.$.lastDiscoverMaxItems": max_items,
+            "jobs.$.lastDiscoverHints": hints,
+            "jobs.$.lastDiscoverLadder": ladder,
+            "jobs.$.lastDiscoverAnchor": anchor,
+            "jobs.$.adjacentTitles": adjacent_titles or [],
+            "updatedAt": datetime.utcnow(),
+        }},
+    )
+    if res.matched_count == 0:
         raise ValueError("job_not_found")
     asyncio.create_task(_discover_candidates_for_job(
         pipeline_id, job_id, filters, max_items,
         auto_broaden=auto_broaden, hints=hints, ladder=ladder,
+        anchor=anchor, adjacent_titles=adjacent_titles,
     ))
     return {"queued": True}
 
@@ -704,11 +827,111 @@ async def _run_search(
     return [p for p in (parse_short_profile(i) for i in items) if p and p.get("profileId")]
 
 
+def _keyword_channel_filters(filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The keyword-only variant of a filter set, or None when it adds nothing.
+
+    LinkedIn headlines are self-description: the SAP HCM consultant whose
+    headline says "IT-Consultant bei X" is invisible to a title-filtered search
+    but IS found by the fuzzy keyword channel, because the actor's searchQuery
+    matches profile keywords, not just the title line. This is one of the
+    signals LinkedIn's own search uses and a title-only search silently loses.
+
+    The variant drops the title filters and keeps everything else (locations,
+    languages, enum filters, exclusions) so the recruiter's explicit constraints
+    still hold. Returns None when the base search carries no titles (it already
+    IS a keyword search) or no query (nothing to search by).
+    """
+    if not (filters.get("currentJobTitles") or filters.get("pastJobTitles")):
+        return None
+    if not (filters.get("searchQuery") or "").strip():
+        return None
+    return {k: v for k, v in filters.items()
+            if k not in ("currentJobTitles", "pastJobTitles")}
+
+
+async def _run_search_channels(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+    *, include_keyword_channel: bool,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Run the title-channel search plus (optionally) the keyword channel, merged.
+
+    Returns (profiles, channel_counts). Each profile carries ``channels`` —
+    which searches found it — so ranking can prefer corroborated hits and the
+    UI can say WHY a candidate is in the list.
+
+    Failure model: the title channel is authoritative — its errors propagate
+    (the broadening loop owns retry/abort semantics, including the quota-abort).
+    The keyword channel is a recall add-on: its failure is logged and skipped,
+    never fatal to a search that already has results in hand.
+    """
+    primary = "title" if filters.get("currentJobTitles") else "keyword"
+    profiles = await _run_search(pipeline_id, job_id, filters, max_items)
+    for p in profiles:
+        p["channels"] = [primary]
+    counts = {primary: len(profiles)}
+
+    kw_filters = _keyword_channel_filters(filters) if include_keyword_channel else None
+    if kw_filters:
+        try:
+            kw_profiles = await _run_search(pipeline_id, job_id, kw_filters, max_items)
+        except Exception as exc:  # noqa: BLE001 — recall add-on, never fatal
+            logger.warning("[Discover] %s/%s keyword channel failed (title channel kept): %s",
+                           pipeline_id, job_id, exc)
+            kw_profiles = []
+        counts["keyword"] = len(kw_profiles)
+        by_id = {p["profileId"]: p for p in profiles}
+        for p in kw_profiles:
+            existing = by_id.get(p["profileId"])
+            if existing is not None:
+                # Found by BOTH channels — corroboration, the strongest signal.
+                if "keyword" not in existing["channels"]:
+                    existing["channels"].append("keyword")
+            else:
+                p["channels"] = ["keyword"]
+                profiles.append(p)
+                by_id[p["profileId"]] = p
+    return profiles, counts
+
+
+def _channel_screen_policy(
+    keep: bool, verdict: Dict[str, Any], channels: List[str],
+) -> Tuple[bool, Dict[str, Any]]:
+    """Channel-aware adjustments to the title-only prescreen verdict.
+
+    A keyword-channel hit whose TITLE shares no vocabulary with the role is not
+    a random stranger: the actor matched the query against the profile's own
+    content ("IT-Consultant bei X" whose profile says SAP HCM). The title-only
+    gate can't see that evidence, so it must not be allowed to drop on it —
+    false DROPs are unrecoverable, a false KEEP costs one $0.004 scrape and the
+    matcher catches it a minute later.
+
+    Corroboration: a hit found independently by BOTH the title search and the
+    keyword search is the strongest pre-enrichment signal there is — it gets a
+    small rank bonus (capped) so it sorts above single-channel hits.
+    """
+    if not keep and "keyword" in channels:
+        keep = True
+        verdict = {
+            **verdict,
+            "decision": "keep",
+            "score": max(float(verdict.get("score") or 0.0), 30.0),
+            "reasons": [
+                "Profile content matches the search keywords — kept for "
+                "enrichment even though the title alone doesn't show it.",
+                *(verdict.get("reasons") or []),
+            ],
+        }
+    if keep and len(channels) > 1 and verdict.get("score") is not None:
+        verdict = {**verdict, "score": min(95.0, float(verdict["score"]) + 5.0)}
+    return keep, verdict
+
+
 async def _store_profiles(
     profiles: List[Dict[str, Any]], *, pipeline_id: str, job_id: str,
     search_query: str, now: datetime,
     requirements: Optional[Dict[str, Any]] = None,
     target_titles: Optional[List[str]] = None,
+    requested_location: Optional[str] = None,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Upsert short profiles as candidates, pre-screening each against the role.
 
@@ -716,31 +939,85 @@ async def _store_profiles(
     still STORED — marked `isAccepted: False` with their verdict — never dropped
     on the floor. The recruiter can see who was skipped and why, and re-include
     them; only the Apify enrichment spend is withheld.
+
+    Two gates, cheapest-first:
+      1. Location (deterministic) — a candidate in the WRONG COUNTRY is rejected
+         outright (the Bavaria→India leak). Exact, free, and it cannot be wrong
+         about geography the way an LLM can. Wrong region / right country is kept
+         and flagged (remote and relocation are legitimate).
+      2. Title pre-screen (the existing role-relevance heuristic).
     """
     from app.config import settings
-    from app.services import prescreen_service
+    from app.services import location_resolver, prescreen_service
 
     candidates_col = await get_collection("candidates")
     cand_ids: List[str] = []
     verdicts: List[Dict[str, Any]] = []
+    gate_on = (settings.SOURCING_LOCATION_GATE or "off").lower() == "country"
 
     for p in profiles:
         doc = _build_apify_candidate_doc(
             p, pipeline_id=pipeline_id, search_query=search_query, now=now)
+        channels = list(p.get("channels") or ["title"])
 
+        # ── Gate 1: location (deterministic, runs before the title screen) ──
+        loc_verdict = None
+        if gate_on and requested_location:
+            loc_verdict = location_resolver.location_verdict(
+                requested_location, p.get("location") or doc.get("location"))
+
+        if loc_verdict and loc_verdict["decision"] == "country_mismatch":
+            verdict = {
+                "decision": "drop", "score": 0.0, "roleFit": 0.0, "matchedVia": None,
+                "reasons": [f"Location gate: {loc_verdict['reason']}"],
+                "location": loc_verdict, "at": now, "channels": channels,
+            }
+            verdicts.append({**verdict, "title": p.get("currentTitle"),
+                             "name": doc.get("displayName")})
+            doc["prescreen"] = verdict
+            doc["isAccepted"] = False
+            doc["rejectionReason"] = f"Location mismatch — {loc_verdict['reason']}"
+            doc["locationMismatch"] = True
+            doc["decidedAt"] = now
+            doc["matchScore"] = 0
+            doc["matchReasons"] = verdict["reasons"]
+            try:
+                await candidates_col.update_one(
+                    {"pipelineId": pipeline_id, "apolloId": doc["apolloId"]},
+                    {"$setOnInsert": doc, "$addToSet": {"sourceJobIds": job_id},
+                     "$set": {"updatedAt": now}}, upsert=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Discover] location-gated upsert failed: %s", exc)
+            continue
+
+        # ── Gate 2: title pre-screen ──
         if settings.PRESCREEN_ENABLED:
             keep, verdict = prescreen_service.screen(
                 p, requirements=requirements, target_titles=target_titles,
                 min_score=settings.PRESCREEN_MIN_SCORE,
             )
+            keep, verdict = _channel_screen_policy(keep, verdict, channels)
         else:
             keep, verdict = True, {"decision": "keep", "score": None,
                                    "reasons": ["Pre-screen disabled."]}
-        verdict = {**verdict, "at": now}
+        verdict = {**verdict, "at": now, "channels": channels}
+        if loc_verdict:
+            verdict["location"] = loc_verdict
+            if loc_verdict["decision"] == "region_mismatch":
+                doc["locationFlag"] = loc_verdict["reason"]
         verdicts.append({**verdict, "title": p.get("currentTitle"),
                          "name": doc.get("displayName")})
 
         doc["prescreen"] = verdict
+        # The prescreen score IS the sourcing heuristic: it grades the same
+        # free signal the old fixed 90/70/45/30 title-overlap score did, but
+        # against the ROLE (target titles + must-haves), continuously, and
+        # channel-aware — so the table's default matchScore sort is a real
+        # relevance ranking, not four buckets. Provisional either way
+        # (matchScoreSource: sourcing_heuristic) until a match run rescores.
+        if verdict.get("score") is not None:
+            doc["matchScore"] = int(round(float(verdict["score"])))
+            doc["matchReasons"] = list(verdict.get("reasons") or [])[:3]
         if not keep:
             doc["isAccepted"] = False
             doc["rejectionReason"] = verdict["reasons"][0] if verdict.get("reasons") else "Pre-screened out"
@@ -767,6 +1044,60 @@ async def _store_profiles(
             continue
 
     return cand_ids, verdicts
+
+
+def _settings_qa_enabled() -> bool:
+    from app.config import settings
+    return bool(settings.SOURCING_QA_ENABLED)
+
+
+async def _audit_sourcing_results(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any],
+    requirements: Dict[str, Any], cand_ids: List[str], location_rejected: int,
+) -> None:
+    """Run the sourcing auditor over the kept candidates and record the report.
+
+    Builds the auditor's view from the stored candidate rows (title/company/
+    channels) so it audits exactly what the recruiter will see."""
+    from app.services import sourcing_qa_service
+
+    candidates_col = await get_collection("candidates")
+    kept: List[Dict[str, Any]] = []
+    for cid in cand_ids:
+        try:
+            d = await candidates_col.find_one(
+                {"_id": ObjectId(cid)},
+                {"currentTitle": 1, "currentCompany": 1, "location": 1, "sourceChannels": 1})
+        except Exception:  # noqa: BLE001
+            d = None
+        if d:
+            kept.append({
+                "candidateId": cid,
+                "title": d.get("currentTitle"),
+                "company": d.get("currentCompany"),
+                "location": d.get("location"),
+                "channels": d.get("sourceChannels") or [],
+            })
+    if not kept:
+        return
+
+    query = {
+        "title": (requirements.get("title")
+                  or (filters.get("currentJobTitles") or [None])[0]),
+        "targetTitles": filters.get("currentJobTitles") or [],
+        "mustHaveSkills": requirements.get("mustHaveSkills") or [],
+        "seniority": requirements.get("seniority"),
+    }
+    from app.database import get_database
+    summary = await sourcing_qa_service.audit_results(
+        await get_database(),
+        pipeline_id=pipeline_id, job_id=job_id,
+        jd_title=query["title"] or "", query=query,
+        kept=kept, location_rejected=location_rejected,
+    )
+    if summary.get("mismatchesFlagged"):
+        logger.info("[Discover] %s/%s sourcing QA flagged %d off-specialty result(s)",
+                    pipeline_id, job_id, summary["mismatchesFlagged"])
 
 
 async def _record_prescreen(
@@ -819,15 +1150,23 @@ async def _search_with_broadening(
     pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
     *, auto_broaden: bool, hints: Optional[Dict[str, Any]],
     ladder: Optional[List[Dict[str, Any]]],
+    anchor: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Any], Dict[str, Any]]:
     """Search, and if it returns zero, let the Broadener retry with wider filters.
 
     Returns (profiles, attempts, winning_filters). Stops at the FIRST attempt that
-    returns anything — we're recovering from zero, not maximising recall.
+    returns anything — we're recovering from zero, not maximising recall. The
+    initial attempt runs BOTH channels (title + keyword) merged; retries rerun
+    only the title channel, because the keyword channel doesn't carry the
+    filters being relaxed.
 
     Cost is bounded three ways: ``SOURCING_MAX_BROADEN_ATTEMPTS`` caps the retries,
     the Broadener refuses to repeat a filter set it already tried, and it stops
     early once the filters are broad enough that zero means "not on LinkedIn".
+    The Broadener may relax enums/companies/location/language ONLY — the titles
+    and query are clamped in code to the recruiter-approved target
+    (``broadener.lock_target``), so drifting into a neighbouring profession is
+    structurally impossible.
     """
     from app.config import settings
     from app.services.apify_profile_service import ApifyRunFailed
@@ -849,8 +1188,12 @@ async def _search_with_broadening(
             logger.warning("[Discover] ignoring malformed broadening ladder: %s", exc)
 
     while True:
+        channel_counts: Optional[Dict[str, int]] = None
         try:
-            profiles = await _run_search(pipeline_id, job_id, current, max_items)
+            profiles, channel_counts = await _run_search_channels(
+                pipeline_id, job_id, current, max_items,
+                include_keyword_channel=not attempts,  # initial attempt only
+            )
             error = None
         except ApifyRunFailed as exc:
             # An account/billing refusal is not a filter problem: every retry hits
@@ -872,7 +1215,8 @@ async def _search_with_broadening(
 
         attempts.append(SearchAttempt(
             attempt=len(attempts) + 1, action=action, reasoning=reasoning,
-            filters=current, resultCount=len(profiles), error=error,
+            filters=current, resultCount=len(profiles),
+            channelCounts=channel_counts, error=error,
         ))
         await _record_attempts(pipeline_id, job_id, attempts)
 
@@ -885,7 +1229,7 @@ async def _search_with_broadening(
                     pipeline_id, job_id, len(attempts))
         if brief is None:
             brief = await build_brief(pipeline_id, job_id, hints)
-        decision = await next_attempt(brief, attempts, planned)
+        decision = await next_attempt(brief, attempts, planned, strategy_anchor=anchor)
         if decision is None:
             logger.info("[Discover] %s/%s broadening stopped after %d attempt(s)",
                         pipeline_id, job_id, len(attempts))
@@ -900,13 +1244,19 @@ async def _discover_candidates_for_job(
     auto_broaden: bool = False,
     hints: Optional[Dict[str, Any]] = None,
     ladder: Optional[List[Dict[str, Any]]] = None,
+    anchor: Optional[Dict[str, Any]] = None,
+    adjacent_titles: Optional[List[str]] = None,
 ) -> None:
-    """Background: search LinkedIn via Apify, store the results as candidates,
-    then auto-enrich every one via the profile scraper.
+    """Background: search LinkedIn via Apify (title + keyword channels), store
+    the results as candidates ranked by role relevance, and stop for the
+    recruiter's enrichment decision.
 
     With ``auto_broaden`` the search is agentic: a zero-result attempt is retried
     with filters the Broadener relaxes based on what already failed, instead of
-    handing the recruiter an empty list.
+    handing the recruiter an empty list. When the search still comes up short of
+    ``SOURCING_TARGET_CANDIDATES``, the job carries a ``searchShortfall`` payload
+    offering the Strategist's adjacent-specialty titles as recruiter-opt-in
+    chips — the tool never widens the specialty on its own.
     """
     if not await _claim_discover(pipeline_id, job_id):
         logger.info("[Discover] %s/%s already running — skip", pipeline_id, job_id)
@@ -915,7 +1265,7 @@ async def _discover_candidates_for_job(
     try:
         profiles, attempts, used_filters = await _search_with_broadening(
             pipeline_id, job_id, filters, max_items,
-            auto_broaden=auto_broaden, hints=hints, ladder=ladder,
+            auto_broaden=auto_broaden, hints=hints, ladder=ladder, anchor=anchor,
         )
         search_query = (used_filters.get("searchQuery") or "").strip()
 
@@ -932,6 +1282,12 @@ async def _discover_candidates_for_job(
             logger.warning("[Discover] %s/%s no role spec for pre-screen: %s",
                            pipeline_id, job_id, exc)
 
+        # The location the recruiter ASKED for — the original filters, not the
+        # broadened ones (the Broadener may relax location as a last resort; the
+        # gate must judge against the recruiter's actual instruction).
+        from app.services import location_resolver as _locres
+        req_location = _locres.requested_location(filters, requirements)
+
         now = datetime.utcnow()
         cand_ids, verdicts = await _store_profiles(
             profiles, pipeline_id=pipeline_id, job_id=job_id,
@@ -943,6 +1299,7 @@ async def _discover_candidates_for_job(
             # against what it relaxed TO would make broadening silently lower the
             # bar and rubber-stamp the drift. The role is the yardstick.
             target_titles=filters.get("currentJobTitles") or [],
+            requested_location=req_location,
         )
         dropped = [v for v in verdicts if v.get("decision") == "drop"]
         if dropped:
@@ -954,30 +1311,76 @@ async def _discover_candidates_for_job(
             )
         await _record_prescreen(pipeline_id, job_id, verdicts)
 
-        await _finish(pipeline_id, job_id, status="completed",
-                      lastSearchedAt=now, searchError=None)
+        # ── Sourcing QA audit — does the KEPT set genuinely match the query? ──
+        # Location leaks are already gone (the deterministic gate rejected
+        # wrong-country hits above); this LLM pass catches the fuzzy residue —
+        # an off-specialty profile the keyword channel let through (SAP FICO in
+        # an SAP HCM search). It FLAGS, never deletes, and reports to the admin
+        # QA page. Fail-open. Uses the stronger QA_AUDITOR_MODEL.
+        if _settings_qa_enabled() and cand_ids:
+            try:
+                loc_rejected = sum(
+                    1 for v in verdicts
+                    if (v.get("location") or {}).get("decision") == "country_mismatch")
+                await _audit_sourcing_results(
+                    pipeline_id, job_id, filters, requirements, cand_ids, loc_rejected)
+            except Exception as exc:  # noqa: BLE001 — QA never fails discovery
+                logger.warning("[Discover] %s/%s sourcing QA error: %s",
+                               pipeline_id, job_id, exc)
+
+        # ── Shortfall: the tool NEVER widens the specialty on its own. When
+        # the exact-specialty pool is thinner than the target, say so and offer
+        # the Strategist's adjacent-specialty titles as opt-in chips — the
+        # recruiter's click is the only thing that turns one into a search
+        # term. A thin-but-honest list with a clear "here's how to widen" beats
+        # a full list padded with the wrong profession.
+        from app.config import settings as _settings
+
+        kept = len(cand_ids)
+        target = max(1, int(_settings.SOURCING_TARGET_CANDIDATES))
+        shortfall = None
+        if kept < target:
+            shortfall = {
+                "found": kept,
+                "target": target,
+                "adjacentTitles": list(adjacent_titles or []),
+                "attempts": len(attempts),
+                "reason": (
+                    "No candidates matched this exact specialty."
+                    if kept == 0 else
+                    f"Only {kept} candidate(s) matched this exact specialty."
+                ),
+                "at": now,
+            }
+
+        await _finish(
+            pipeline_id, job_id,
+            # Zero kept = the recruiter must decide the next move (widen, edit,
+            # rerun) — that is awaiting_input, not a bare "completed" that the
+            # UI would render as a dead empty table.
+            status="completed" if kept else "awaiting_input",
+            lastSearchedAt=now, searchError=None, searchShortfall=shortfall,
+        )
         # Counts (per-job AND the pipeline rollup the list UI reads) come from
         # the shared recount — this path used to set candidateCount only, which
         # left every Apify-sourced pipeline showing "0 candidates".
         await recount_pipeline(pipeline_id)
-        logger.info("[Discover] %s/%s stored %d candidate(s) after %d attempt(s)",
-                    pipeline_id, job_id, len(cand_ids), len(attempts))
+        logger.info("[Discover] %s/%s stored %d candidate(s) after %d attempt(s)%s",
+                    pipeline_id, job_id, kept, len(attempts),
+                    f" · shortfall (target {target})" if shortfall else "")
 
-        # Auto-enrich every discovered candidate (Apify profile scraper only).
-        if cand_ids:
-            await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
-            from app.services.candidate_enrichment import enrich_candidates
-            from app.services import cost_service
-            try:
-                async with cost_service.cost_context(
-                    cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
-                ):
-                    summary = await enrich_candidates(candidate_ids=cand_ids)
-                await _set_enrich(pipeline_id, job_id, "completed",
-                                  enrichCounts=summary, enrichError=None)
-                logger.info("[Discover] %s/%s enriched: %s", pipeline_id, job_id, summary)
-            except Exception as e:  # noqa: BLE001 — enrichment failure mustn't fail discovery
-                await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(e)[:300])
+        # Deep enrichment is HUMAN-CONTROLLED, not automatic. Discovery shows
+        # the recruiter the short profiles (name, current title, company,
+        # location, photo) it found and STOPS — the paid Apify profile scrape
+        # that pulls full work history/skills/education runs only when the
+        # recruiter reviews the list and presses Enrich (→ enqueue_job_enrich).
+        # `ready` = candidates are in and awaiting that decision.
+        await _set_enrich(
+            pipeline_id, job_id,
+            "ready" if cand_ids else "none",
+            enrichError=None,
+            enrichReady=len(cand_ids),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("[Discover] %s/%s failed: %s", pipeline_id, job_id, exc, exc_info=True)
         try:

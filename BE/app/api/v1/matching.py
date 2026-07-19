@@ -20,6 +20,7 @@ from app.config import settings
 from app.database import get_database
 from app.services import matching_service
 from app.services import email_service
+from app.services import llm_extraction_service as llm_extraction
 from app.startup_checks import matching_readiness
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,11 @@ async def run_matching(
         return result
     except HTTPException:
         raise
+    except llm_extraction.ExtractionError as e:
+        # The JD parse failed after retries. This is deliberately a hard error:
+        # the old behavior silently scored on similarity alone and looked fine.
+        logger.exception("[Matching] JD extraction failed")
+        raise HTTPException(status_code=502, detail=f"JD parsing failed — run not scored: {e}")
     except Exception as e:  # noqa: BLE001
         logger.exception("[Matching] run failed")
         raise HTTPException(status_code=500, detail=f"matching failed: {e}")
@@ -220,6 +226,9 @@ async def run_matching_json(req: MatchTextRequest, db=Depends(get_db)):
     _require_matching_ready()
     try:
         return await matching_service.run_match(db, jd_text=req.jdText, return_top=req.returnTop)
+    except llm_extraction.ExtractionError as e:
+        logger.exception("[Matching] JD extraction failed")
+        raise HTTPException(status_code=502, detail=f"JD parsing failed — run not scored: {e}")
     except Exception as e:  # noqa: BLE001
         logger.exception("[Matching] run(json) failed")
         raise HTTPException(status_code=500, detail=f"matching failed: {e}")

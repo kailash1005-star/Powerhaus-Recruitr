@@ -83,7 +83,7 @@ def verify_auth_configuration() -> None:
     if settings.AUTH_ENABLED and not settings.auth0_configured:
         raise AuthMisconfigured(
             "AUTH_ENABLED=true but Auth0 is not configured. "
-            "Set AUTH0_DOMAIN and AUTH0_AUDIENCE (see AUTH0_SETUP.md), "
+            "Set AUTH0_DOMAIN and AUTH0_AUDIENCE (see docs/engineering/AUTH0_SETUP.md), "
             "or set AUTH_ENABLED=false for local development."
         )
 

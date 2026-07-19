@@ -40,6 +40,7 @@ from app.services.matching_service import (
     _embed_text_from_profile,
     _fallback_reasons,
     _score_candidate,
+    apply_judge,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,9 +73,16 @@ async def start_pipeline_match(
     job_id: str,
     candidate_ids: Optional[List[str]] = None,
     return_top: Optional[int] = None,
+    requirements_override: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Create a running match_run for this job's JD + selected candidates and
     kick off the background compute. Returns the match_run id.
+
+    ``requirements_override`` carries the recruiter's edits to the parsed
+    requirements (mustHaveSkills / niceToHaveSkills / minYears) from the
+    review-before-match step. Only the keys present are overridden; the edit is
+    also persisted onto the job's role spec so sourcing and future matches use
+    the recruiter's corrected list rather than re-deriving the old one.
 
     Raises ValueError if the job has no description or no candidates are selected.
     """
@@ -129,7 +137,8 @@ async def start_pipeline_match(
     match_run_id = str((await db["match_runs"].insert_one(run_doc)).inserted_id)
 
     asyncio.create_task(
-        _run_pipeline_match(match_run_id, pipeline_id, job_id, ids, jd_text, job_title, return_top)
+        _run_pipeline_match(match_run_id, pipeline_id, job_id, ids, jd_text, job_title,
+                            return_top, requirements_override)
     )
     return match_run_id
 
@@ -155,6 +164,7 @@ async def _run_pipeline_match(
     jd_text: str,
     job_title: str,
     return_top: Optional[int],
+    requirements_override: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Background worker — STREAMING.
 
@@ -177,6 +187,10 @@ async def _run_pipeline_match(
     all_entries: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
     excluded: List[Dict[str, Any]] = []
+    # Kept for the QA audit pass at the end — the auditor re-reads the same
+    # evidence and the rescore needs the same raw similarity.
+    profiles_by_cid: Dict[str, Dict[str, Any]] = {}
+    sims_by_cid: Dict[str, float] = {}
     total = len(candidate_ids)
     processed = 0
     considered = 0
@@ -243,12 +257,50 @@ async def _run_pipeline_match(
         )
         requirements = spec["requirements"]
         jd_vector = spec["embedding"]["vector"]
+
+        # Recruiter edits from the review-before-match step. Only the keys the
+        # recruiter actually touched are overridden, the edit is stamped on the
+        # run (auditability: this score used THESE requirements), and it is
+        # persisted onto the role spec so sourcing/matching stay in agreement.
+        if requirements_override:
+            edited = {k: v for k, v in requirements_override.items()
+                      if k in ("mustHaveSkills", "niceToHaveSkills", "minYears")
+                      and v is not None}
+            if edited:
+                requirements = {**requirements, **edited}
+                await log("Using the recruiter-reviewed requirements for this run")
+                try:
+                    await db[role_spec_service.COLLECTION].update_one(
+                        {"_id": ObjectId(spec["_id"])},
+                        {"$set": {"requirements": requirements,
+                                  "requirementsSource": "recruiter_edited",
+                                  "requirementsEditedAt": _now(),
+                                  "updatedAt": _now()}},
+                    )
+                except Exception as e:  # noqa: BLE001 — spec persist is best-effort
+                    logger.warning("[PipelineMatch] could not persist edited requirements: %s", e)
+
         must = requirements.get("mustHaveSkills") or []
-        await flush(extra={"requirements": requirements, "jdId": spec["_id"]})
+        # A rich JD that parsed to zero must-haves is almost always a parse miss,
+        # and it silently turns the ranking into similarity-only. Say so on the run.
+        requirements_warning = None
+        if not must and len(jd_text) > 400:
+            requirements_warning = (
+                "No must-have skills were extracted from this job description, so the "
+                "score is driven by overall profile fit (plus experience/location where "
+                "stated) with no skills checklist. Review the JD text before trusting "
+                "this ranking."
+            )
+        await flush(extra={"requirements": requirements, "jdId": spec["_id"],
+                           "requirementsWarning": requirements_warning,
+                           "requirementsSource": ("recruiter_edited" if requirements_override
+                                                  else "parsed")})
         await log(
             "Job description parsed"
             + (f" · {len(must)} must-have skill(s)" if must else ""),
         )
+        if requirements_warning:
+            await log("⚠ " + requirements_warning, level="warn")
 
         # Walk the queue one candidate at a time.
         for cid in candidate_ids:
@@ -288,34 +340,60 @@ async def _run_pipeline_match(
             if not already:
                 await log(f"✓ {name} enriched")
 
-            # Embed → score → reason for this one candidate.
+            # Embed → score → judge for this one candidate. Isolated: a transient
+            # embedding error or a scorer bug on one profile is recorded and
+            # skipped — it used to fail the WHOLE run.
             await log(f"Scoring {name}…", persist=False)
             contact = enrichment.get("contact") or {}
-            embed_text = _embed_text_from_profile(profile, profile.get("summary") or "")
-            vector = await embeddings.embed_text(embed_text)
-            sim = _cosine(jd_vector, vector)
-            score, subscores, gaps, breakdown = _score_candidate(requirements, profile, sim)
-            scored = {"gaps": gaps}
+            try:
+                embed_text = _embed_text_from_profile(profile, profile.get("summary") or "")
+                vector = await embeddings.embed_text(embed_text)
+                sim = _cosine(jd_vector, vector)
+                score, subscores, gaps, breakdown = _score_candidate(requirements, profile, sim)
+            except Exception as e:  # noqa: BLE001 — isolate, record, continue
+                processed += 1
+                excluded.append({"candidateId": cid, "fullName": name,
+                                 "reason": f"Scoring failed: {str(e)[:160]}"})
+                await log(f"✗ {name} — scoring error: {str(e)[:160]}", level="warn")
+                continue
+            scored = {"gaps": gaps, "breakdown": breakdown}
+            profiles_by_cid[cid] = profile
+            sims_by_cid[cid] = sim
 
             rid: Dict[str, Any] = {}
-            try:
-                resp = await llm.reason_candidates(requirements, [{
-                    "id": cid,
-                    "currentTitle": profile.get("currentTitle"),
-                    "totalYears": profile.get("totalYears"),
-                    "skills": profile.get("skills") or [],
-                    "missingMustHave": gaps,
-                    # Without this the model sees a must-have absent from `skills`
-                    # and calls it missing, even when the scorer credited it from
-                    # the title or a variant.
-                    "partialMustHave": breakdown["partialMustHave"],
-                }])
-                for item in (resp.get("candidates") or []):
-                    if str(item.get("id")) == cid:
-                        rid = item
-                        break
-            except Exception:  # noqa: BLE001 — reasoning is best-effort
-                logger.warning("[PipelineMatch] reasoning failed for %s; using deterministic", cid)
+            if settings.MATCH_JUDGE_ENABLED:
+                try:
+                    resp = await llm.judge_candidates(requirements, [{
+                        "id": cid,
+                        "currentTitle": profile.get("currentTitle"),
+                        "titles": (profile.get("titles") or [])[:8],
+                        "totalYears": profile.get("totalYears"),
+                        "skills": (profile.get("skills") or [])[:40],
+                        "experience": [
+                            {"title": (e or {}).get("title"),
+                             "summary": ((e or {}).get("summary") or "")[:300]}
+                            for e in (profile.get("experience") or [])[:6]
+                        ],
+                        "education": (profile.get("education") or [])[:4],
+                        "certifications": (profile.get("certifications") or [])[:6],
+                        "missingMustHave": gaps,
+                        # Without this the model sees a must-have absent from
+                        # `skills` and calls it missing, even when the scorer
+                        # credited it from the title or a variant.
+                        "partialMustHave": breakdown["partialMustHave"],
+                    }])
+                    for item in (resp.get("candidates") or []):
+                        if str(item.get("id")) == cid:
+                            rid = item
+                            break
+                except Exception:  # noqa: BLE001 — judge is best-effort
+                    logger.warning("[PipelineMatch] judge failed for %s; deterministic score stands", cid)
+
+            # Blend the rubric verdict into the score (never past the must-have
+            # ceiling); the breakdown records the whole blend for the UI.
+            entry_scored = {"score": score, "breakdown": breakdown}
+            apply_judge(entry_scored, rid or None)
+            score = entry_scored["score"]
 
             reasons = rid.get("reasons") or _fallback_reasons(requirements, profile, scored)
             all_entries.append({
@@ -328,11 +406,14 @@ async def _run_pipeline_match(
                 # few weeks — the UI falls back to initials rather than showing a
                 # broken image on an old run.
                 "photoUrl": profile_photo.pick(doc, min_px=200),
+                # LinkedIn's own signal — the shortlist highlights these people.
+                "openToWork": bool(profile.get("openToWork")),
                 "score": score,
                 "subscores": subscores,
                 "breakdown": breakdown,
                 "reasons": reasons,
-                "reasoning": "llm" if rid.get("reasons") else "deterministic",
+                "reasoning": "judge" if rid.get("reasons") else "deterministic",
+                "judge": breakdown.get("judge"),
                 # Deterministic, NOT the model's prose — see matching_service.
                 "gaps": gaps,
                 "partial": breakdown["partialMustHave"],
@@ -342,17 +423,99 @@ async def _run_pipeline_match(
                     "linkedin": contact.get("linkedin") or doc.get("externalLinkedinUrl"),
                 },
             })
+
+            # Write the REAL score back onto the candidate row. The candidates
+            # table used to sort on the throwaway title-overlap heuristic from
+            # sourcing time forever; after a match run it now shows this score.
+            try:
+                await cands_col.update_one(
+                    {"_id": ObjectId(cid)},
+                    {"$set": {
+                        "matchScore": score,
+                        "matchReasons": reasons,
+                        "matchScoreSource": "match_run",
+                        "matchScoringVersion": SCORING_VERSION,
+                        "lastMatchRunId": match_run_id,
+                        "matchScoredAt": _now(),
+                        "updatedAt": _now(),
+                    }},
+                )
+            except Exception as e:  # noqa: BLE001 — writeback must not fail the run
+                logger.warning("[PipelineMatch] score writeback failed for %s: %s", cid, e)
+
             considered += 1
             processed += 1
             _rank_results()
             await log(f"✓ {name} scored {score}")
 
+        # ── QA audit — the adversarial pass between scoring and completion. ──
+        # The run is not "completed" until the auditor has read every verdict
+        # against the full evidence. Verified false negatives are corrected
+        # through the real scorer (and written back to the candidate rows);
+        # false-positive flags annotate without downgrading. Fail-open: if the
+        # auditor is unavailable the run completes with qa.status="skipped".
+        qa_summary: Optional[Dict[str, Any]] = None
+        if settings.MATCH_QA_ENABLED and all_entries:
+            from app.services import match_qa_service
+
+            await log(f"QA audit — verifying {considered} verdict(s) against the evidence…")
+            qa_summary = await match_qa_service.audit_run(
+                db,
+                match_run_id=match_run_id,
+                pipeline_id=pipeline_id,
+                job_id=job_id,
+                jd_title=job_title,
+                requirements=requirements,
+                entries=all_entries,
+                profiles_by_cid=profiles_by_cid,
+                sims_by_cid=sims_by_cid,
+            )
+            if qa_summary["status"] == "completed":
+                _rank_results()
+                # Corrected scores must also reach the candidates table —
+                # otherwise the row keeps advertising the wrong number forever.
+                for e in all_entries:
+                    if (e.get("qa") or {}).get("corrected"):
+                        try:
+                            await cands_col.update_one(
+                                {"_id": ObjectId(str(e["candidateId"]))},
+                                {"$set": {
+                                    "matchScore": e["score"],
+                                    "matchReasons": e["reasons"],
+                                    "matchScoreSource": "match_run_qa",
+                                    "updatedAt": _now(),
+                                }},
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[PipelineMatch] QA writeback failed for %s: %s",
+                                           e.get("candidateId"), exc)
+                if qa_summary["fnCorrected"]:
+                    await log(
+                        f"⚠ QA audit corrected {qa_summary['fnCorrected']} score(s) — "
+                        f"the scorer had missed evidence the profile text contains",
+                        level="warn",
+                    )
+                else:
+                    await log("✓ QA audit passed — no verified scoring mistakes")
+            else:
+                await log(f"⚠ QA audit {qa_summary['status']} — results are un-audited",
+                          level="warn")
+
         await flush(status="completed", extra={
+            "qa": qa_summary,
             "modelVersions": {
                 "extract": llm.extraction_version(),
                 "embed": embeddings.embedding_version(),
                 "reason": llm.reasoning_version(),
+                "judge": llm.reasoning_version(),
+                "qa": (match_qa_service.qa_model()
+                       if settings.MATCH_QA_ENABLED and all_entries else None),
+                "systemFingerprint": llm.last_system_fingerprint(),
+                "seed": settings.OPENAI_SEED,
             },
+            "analysis.judgeWeight": (
+                settings.MATCH_JUDGE_WEIGHT if settings.MATCH_JUDGE_ENABLED else 0.0
+            ),
         })
         await log(f"Done — matched {considered} of {total} candidate(s)")
         logger.info(

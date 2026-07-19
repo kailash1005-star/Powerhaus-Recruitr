@@ -28,8 +28,8 @@ async def connect_to_mongo():
         maxPoolSize=10,              # Maximum connections in pool
         minPoolSize=2,               # Minimum connections to keep alive
         maxIdleTimeMS=60000,         # Close idle connections after 60s
-        serverSelectionTimeoutMS=5000,  # Server selection timeout
-        connectTimeoutMS=10000,      # Connection timeout
+        serverSelectionTimeoutMS=30000,  # Server selection timeout
+        connectTimeoutMS=20000,      # Connection timeout
         retryWrites=True,            # Retry writes on network errors
         w="majority"                 # Write concern: majority acknowledgment
     )

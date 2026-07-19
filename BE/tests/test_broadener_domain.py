@@ -69,18 +69,24 @@ def test_keeps_a_legitimate_within_domain_widening():
                                           "Lohnbuchhalter"]
 
 
-def test_sap_role_can_still_widen_within_sap():
-    """The anchor must not be so tight that a working job breaks: 'SAP' is the
-    domain here, so 'SAP Consultant' is a legitimate widening of 'SAP FICO'."""
+def test_sap_alone_is_not_the_specialty():
+    """FC-23 inverted the old semantics ON PURPOSE. 'SAP Consultant' used to
+    count as a legitimate widening of 'SAP FICO' because both carry 'SAP' —
+    which is exactly how an SAP-HCM search drifted into SAP FI-CO in
+    production. Two-tier anchor: 'SAP' is the ecosystem, 'FICO' the specialty,
+    and only the specialty satisfies the guard. A proposal that keeps the
+    brand but drops the specialty is total drift → None (planned ladder)."""
     initial = SearchAttempt(attempt=1, action="initial", resultCount=0,
                             filters={"currentJobTitles": ["SAP FICO Consultant",
                                                           "SAP S/4HANA Consultant"]})
     d = b._enforce_domain(_decide(["SAP Consultant", "SAP Berater", "ERP Consultant"]),
                           [initial])
+    assert d is None
+
+    # Widening WITHIN the specialty still passes.
+    d = b._enforce_domain(_decide(["SAP FICO Berater", "SAP Consultant"]), [initial])
     assert d is not None
-    assert "SAP Consultant" in d.filters.currentJobTitles
-    # "ERP Consultant" climbs out of SAP into a neighbouring domain.
-    assert "ERP Consultant" not in d.filters.currentJobTitles
+    assert d.filters.currentJobTitles == ["SAP FICO Berater"]
 
 
 def test_no_anchor_means_no_constraint():
