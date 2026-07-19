@@ -284,12 +284,19 @@ This is the seam that makes Organizations painless later. We stamp a `tenant_id`
 into every token *now*, hardcoded to one value. When you go multi-tenant, this
 Action changes and nothing else does — no data migration, no token format change.
 
+We also stamp `email` onto the access token: Auth0 access tokens do not carry
+`email` by default (that's an ID-token/userinfo claim), but the backend's admin
+allowlist (`ADMIN_EMAILS`, see [qa.py](BE/app/api/v1/qa.py)) checks the *access*
+token, since that's what every API call bears. Without this claim, `principal.email`
+is always `None` and the allowlist can never match — no email will ever be
+recognized as admin, no matter what's in `.env`.
+
 **Actions → Library → Create Action → Build from scratch**
 Name: `Add tenant and roles claims`, Trigger: **Login / Post Login**.
 
 ```js
 /**
- * Stamps tenant + roles onto tokens.
+ * Stamps tenant + roles + email onto tokens.
  *
  * Single-tenant today: every user gets tenantId "default", matching the tenantId
  * already used by the outreach collections. When Recruitr goes multi-tenant this
@@ -303,12 +310,15 @@ exports.onExecutePostLogin = async (event, api) => {
 
   const tenantId = event.organization?.id ?? 'default';
   const roles = event.authorization?.roles ?? [];
+  const email = event.user.email;
 
   // Both tokens: the ID token drives UI, the access token drives API authorization.
   api.idToken.setCustomClaim(NS + 'tenant_id', tenantId);
   api.accessToken.setCustomClaim(NS + 'tenant_id', tenantId);
   api.idToken.setCustomClaim(NS + 'roles', roles);
   api.accessToken.setCustomClaim(NS + 'roles', roles);
+  api.idToken.setCustomClaim(NS + 'email', email);
+  api.accessToken.setCustomClaim(NS + 'email', email);
 };
 ```
 

@@ -14,8 +14,13 @@ run.bat
 run.ps1
 run.sh
 *.log
-scratch_*.py
 .linkedin_cookies/
+
+# Tests and their tooling never ship in the production image
+tests/
+.pytest_cache/
+pytest.ini
+requirements-dev.txt
 
 Dockerfile
 .dockerignore
