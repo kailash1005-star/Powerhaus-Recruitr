@@ -1074,6 +1074,18 @@ export interface MatchedCandidate {
   gaps: string[];
   /** Must-haves with related-but-incomplete evidence. NOT gaps. */
   partial?: Array<{ skill: string; credit: number; via?: string | null; method: string; note: string }>;
+  /** Which retrieval channel(s) surfaced this candidate (hybrid runs).
+   *  "lexical"-only = found by the JD's own keywords, missed by pure semantics —
+   *  exactly the candidate the old retrieval silently dropped. */
+  retrieval?: { channels?: string[]; semanticRank?: number | null; lexicalRank?: number | null; rrf?: number } | null;
+  /** QA auditor outcome for this candidate: score corrected upward on verified
+   *  evidence, and/or credited skills flagged as unsupported (annotation only). */
+  qa?: {
+    corrected?: boolean;
+    originalScore?: number;
+    verifiedSkills?: Array<{ skill: string; quote?: string }>;
+    falsePositives?: Array<{ skill: string; why?: string }>;
+  } | null;
   contact: { email?: string | null; phone?: string | null; linkedin?: string | null };
 }
 
@@ -1126,6 +1138,16 @@ export function fetchCvs(page = 1, limit = 20): Promise<{ total: number; items: 
   return get(`/api/v1/matching/cv?page=${page}&limit=${limit}`);
 }
 
+/** Corpus health: CVs by status. `counts.failed` > 0 means unmatchable CVs. */
+export function fetchCvStats(): Promise<{ total: number; counts: Record<string, number> }> {
+  return get('/api/v1/matching/cv/stats');
+}
+
+/** Re-ingest every failed CV from its stored original file (current parser). */
+export function reprocessFailedCvs(): Promise<{ queued: number; unrecoverable: string[]; batchId: string | null }> {
+  return post('/api/v1/matching/cv/reprocess-failed', {});
+}
+
 /** Run matching from a pasted JD text. */
 export function runMatchingText(jdText: string, returnTop?: number): Promise<MatchResult> {
   return post('/api/v1/matching/run/json', { jdText, returnTop });
@@ -1161,7 +1183,20 @@ export interface SavedMatchRun {
   error?: string | null;
   /** Every candidate scored, not just the top-N in `results`. */
   analysis?: MatchAnalysis | null;
-  params?: { retrieveK?: number; reasonTopN?: number; returnTop?: number };
+  params?: { retrieveK?: number; reasonTopN?: number; returnTop?: number; hybrid?: boolean; semanticHits?: number; lexicalHits?: number };
+  /** Set when the JD parsed to zero must-haves despite being a real JD — the
+   *  ranking is similarity-driven and the recruiter must be told, not left to
+   *  assume a normal checklist run. */
+  requirementsWarning?: string | null;
+  /** Run-level QA audit summary (adversarial second reader). */
+  qa?: {
+    status?: string;
+    reviewed?: number;
+    fnFlagsRaised?: number;
+    fnFlagsVerified?: number;
+    fnCorrected?: number;
+    fpFlagsRaised?: number;
+  } | null;
   /** Live streaming progress for pipeline runs (per-candidate queue). */
   progress?: { total: number; processed: number; considered: number } | null;
   logs?: Array<{ ts?: string; message: string; level?: 'info' | 'warn' | 'error' }> | null;

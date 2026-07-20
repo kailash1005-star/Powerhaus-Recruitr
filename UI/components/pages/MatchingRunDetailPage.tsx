@@ -250,6 +250,40 @@ export function MatchingRunDetailPage({ runId }: Props) {
             </div>
           )}
 
+          {/* JD parsed to no must-haves — the ranking is similarity-only and the
+              recruiter must know before trusting it. Computed by the backend since
+              match-scoring-6; was persisted but never shown. */}
+          {run?.requirementsWarning && (
+            <div style={{
+              display: 'flex', gap: 10, alignItems: 'flex-start', margin: '0 0 16px',
+              padding: '11px 14px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.55,
+              background: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E',
+            }}>
+              <Icon name="alert-triangle" size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span><strong style={{ fontWeight: 600 }}>Check this ranking:</strong> {run.requirementsWarning}</span>
+            </div>
+          )}
+
+          {/* QA audit outcome — the adversarial second reader's verdict on this run. */}
+          {run?.qa && run.qa.status === 'completed' && (
+            <div style={{
+              display: 'flex', gap: 8, alignItems: 'center', margin: '0 0 16px',
+              padding: '9px 14px', borderRadius: 8, fontSize: 12.5,
+              background: (run.qa.fnCorrected || 0) > 0 ? '#EFF6FF' : 'var(--bg-chip)',
+              border: `1px solid ${(run.qa.fnCorrected || 0) > 0 ? '#BFDBFE' : 'var(--border-card)'}`,
+              color: 'var(--fg-secondary)',
+            }}>
+              <Icon name="shield" size={14} style={{ flexShrink: 0, color: (run.qa.fnCorrected || 0) > 0 ? '#2563EB' : 'var(--fg-muted)' }} />
+              <span>
+                Every result was double-checked by the QA auditor
+                {(run.qa.fnCorrected || 0) > 0
+                  ? <> — <strong style={{ fontWeight: 600 }}>{run.qa.fnCorrected} score{run.qa.fnCorrected === 1 ? '' : 's'} corrected upward</strong> on verified evidence the scorer missed</>
+                  : ' — no scoring mistakes found'}
+                {(run.qa.fpFlagsRaised || 0) > 0 && <>, {run.qa.fpFlagsRaised} credited skill{run.qa.fpFlagsRaised === 1 ? '' : 's'} flagged for review</>}.
+              </span>
+            </div>
+          )}
+
           {/* JD text */}
           {run?.jdText && (
             <details style={{ marginBottom: 16 }}>

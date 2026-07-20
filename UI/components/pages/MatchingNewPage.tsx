@@ -7,7 +7,8 @@ import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { card, label, primaryBtn } from '../matching/shared';
 import {
-  uploadCvs, fetchCvBatchStatus, fetchCvs, runMatchingText, runMatchingFile,
+  uploadCvs, fetchCvBatchStatus, fetchCvStats, reprocessFailedCvs,
+  runMatchingText, runMatchingFile,
 } from '@/lib/api';
 
 const MAX_JDS = 3;
@@ -23,7 +24,9 @@ export function MatchingNewPage() {
 
   // CV corpus
   const [corpusCount, setCorpusCount] = useState<number | null>(null);
+  const [failedCount, setFailedCount] = useState(0);
   const [uploading, setUploading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [batchMsg, setBatchMsg] = useState<string | null>(null);
   const cvInputRef = useRef<HTMLInputElement>(null);
 
@@ -33,9 +36,39 @@ export function MatchingNewPage() {
   const [error, setError] = useState<string | null>(null);
 
   const refreshCorpus = useCallback(async () => {
-    try { setCorpusCount((await fetchCvs(1, 1)).total); } catch { /* ignore */ }
+    try {
+      const stats = await fetchCvStats();
+      // Only embedded CVs are matchable — the headline count must not include
+      // failed/pending ones, or the pool looks bigger than what a run sees.
+      setCorpusCount(stats.counts.embedded || 0);
+      setFailedCount(stats.counts.failed || 0);
+    } catch { /* ignore */ }
   }, []);
   useEffect(() => { refreshCorpus(); }, [refreshCorpus]);
+
+  // ── Retry the CVs that failed to process (re-parsed from stored originals) ──
+  const onRetryFailed = async () => {
+    setRetrying(true);
+    setBatchMsg(null);
+    try {
+      const { queued, batchId } = await reprocessFailedCvs();
+      if (!queued || !batchId) { setBatchMsg('Nothing to retry.'); return; }
+      setBatchMsg(`Reprocessing ${queued} failed CV(s)…`);
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const st = await fetchCvBatchStatus(batchId);
+        const done = (st.counts.embedded || 0) + (st.counts.failed || 0);
+        setBatchMsg(`Reprocessed ${done}/${st.total} · recovered ${st.counts.embedded || 0}${st.counts.failed ? ` · still failing ${st.counts.failed}` : ''}`);
+        if (st.complete) break;
+      }
+      setBatchMsg((m) => (m ? m + ' — done ✓' : 'Done ✓'));
+      refreshCorpus();
+    } catch (e: any) {
+      setBatchMsg(`Retry failed: ${e.message || e}`);
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   // ── CV upload + poll ──
   const onCvFiles = async (files: FileList | null) => {
@@ -114,9 +147,37 @@ export function MatchingNewPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <span style={label}>Step 1 · Candidate CV pool</span>
               <span style={{ fontSize: 13, color: 'var(--fg-secondary)' }}>
-                {corpusCount === null ? '…' : <><strong>{corpusCount}</strong> CV(s) in pool</>}
+                {corpusCount === null ? '…' : <><strong>{corpusCount}</strong> matchable CV(s) in pool</>}
               </span>
             </div>
+            {/* Failed CVs are invisible to every match run — say so where the
+                recruiter uploads, with a one-click repair. */}
+            {failedCount > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                margin: '0 0 12px', padding: '9px 12px', borderRadius: 8, fontSize: 12.5,
+                background: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E',
+              }}>
+                <Icon name="alert-triangle" size={14} style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 200 }}>
+                  <strong style={{ fontWeight: 600 }}>{failedCount} CV{failedCount === 1 ? '' : 's'} failed to process</strong> and
+                  {' '}can’t be matched until reprocessed.
+                </span>
+                <button
+                  onClick={onRetryFailed}
+                  disabled={retrying}
+                  style={{
+                    height: 28, padding: '0 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                    cursor: retrying ? 'wait' : 'pointer', border: '1px solid #F59E0B',
+                    background: '#FFF', color: '#92400E', fontFamily: 'inherit',
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                  }}
+                >
+                  <Icon name={retrying ? 'loader' : 'refresh-cw'} size={12} />
+                  {retrying ? 'Reprocessing…' : 'Retry now'}
+                </button>
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <input ref={cvInputRef} type="file" multiple accept=".pdf,.docx,.txt,.html" style={{ display: 'none' }} onChange={(e) => onCvFiles(e.target.files)} />
               <button style={primaryBtn(uploading)} disabled={uploading} onClick={() => cvInputRef.current?.click()}>

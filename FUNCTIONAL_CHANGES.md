@@ -271,6 +271,62 @@ Every change below is independent and individually revertible. Nothing was commi
 **Files:** `BE/app/services/sourcing_qa_service.py` (new), `candidate_pipeline.py` (`_audit_sourcing_results`), `config.py` (`SOURCING_QA_ENABLED`, `QA_AUDITOR_MODEL`, `SOURCING_QA_MODEL`), `api/v1/qa.py` + `UI` (QA page now shows both auditors, `kind` badge, sourcing metrics).
 **Revert:** `SOURCING_QA_ENABLED=false` (no code change).
 
+## FC-34 — The dead half of the CV corpus, healed (22 of 44 CVs were unmatchable)
+
+**Was:** 22 of 44 uploaded CVs sat in `status:"failed"` — all crashed by the OLD Docling parser ("ConversionStatus.FAILURE, Page 1: std::bad_alloc") and never re-parsed after Docling was replaced with the pypdf stack. The only retry path was manually re-uploading each file. **Half the corpus was silently invisible to every match run**, and every run looked normal. This is the single largest false-negative source found in the audit: a candidate who cannot be retrieved cannot be scored, judged, audited, or shown.
+**Docling verdict (the founder asked):** Docling was already removed, and rightly — it crashed on these real PDFs, pulled a multi-GB torch stack, and slowed builds ~20 min for a text-extraction job. The current pypdf/python-docx stack parsed **all 22 previously-dead CVs on the first try** (see below). Remaining known gap: no OCR for scanned-image PDFs — those fail *visibly*, never silently.
+**Now:**
+- `POST /api/v1/matching/cv/reprocess-failed` re-ingests every failed CV from its stored original bytes through the CURRENT parser.
+- `GET /api/v1/matching/cv/stats` — corpus health by status, so a half-dead corpus can never be invisible again.
+- UI (Candidate Matching → Step 1): the pool count now shows only MATCHABLE CVs, and a banner appears whenever failed CVs exist, with a one-click **Retry now**.
+**Executed live:** all 22 recovered (22/22), corpus 22 → **44 embedded**. The very next match run considered 44 candidates — and its **top candidate (95.4) came from a healed CV**.
+**Files:** `BE/app/api/v1/matching.py`, `UI/components/pages/MatchingNewPage.tsx`, `UI/lib/api.ts`.
+**Revert:** endpoints are additive; ignore them.
+
+## FC-35 — Semantic chunking at CV ingestion
+
+**Was:** each CV was ONE embedding over composed profile text truncated at 8,000 chars. Long or multi-role CVs blurred into an average of themselves; everything past the truncation didn't exist for retrieval.
+**Now** ([semantic_chunking.py](BE/app/services/semantic_chunking.py), new): every CV becomes structure-aware semantic chunks — identity, skills block, ONE CHUNK PER EXPERIENCE ENTRY, education/certs, summary, plus section-bounded chunks of the RAW parsed text (heading/blank-line boundaries, sentence-aware packing, 40–1400 chars). Sections are never merged across boundaries — a chunk spanning the skills list and an unrelated role would let the co-occurrence evidence rule "prove" a skill from scattered words (a scoring false positive), so section purity beats size uniformity. Deterministic, no LLM. All chunks embedded in one batched call and stored on the doc (`chunks`, `chunksVersion: cv-chunks-1`); retrieval ranks candidates by **max chunk similarity** (a JD matches the *relevant part* of a CV, not its average) in both vector backends (Mongo brute-force reads chunk vectors; Pinecone gets them as `<id>#c<i>` and folds them back). Existing corpus backfilled live: **44/44 CVs chunked**.
+**Files:** `semantic_chunking.py` (new), `matching_service.ingest_cv`, `vector_store.py`.
+**Revert:** chunk fields are additive; the doc-level vector still exists and old queries still work.
+
+## FC-36 — Hybrid retrieval: BM25 keyword channel + reciprocal-rank fusion
+
+**Was:** retrieval was semantic-only, capped at `MATCH_RETRIEVE_K`. A CV that literally names every must-have skill could rank outside the semantic top-K — never scored, never judged, **and invisible to the QA auditor, which only sees retrieved candidates.** The recruiter's exact words in a CV bought nothing at the retrieval stage.
+**Now** ([lexical_index.py](BE/app/services/lexical_index.py), new): every match run queries two channels — semantic (chunk-max cosine, as before) and **BM25** over the full raw CV text + skills (pure Python, deterministic, no new dependency; IDF makes rare terms like "Entgeltabrechnung" dominate; term-frequency saturation stops keyword-stuffed CVs buying rank; 1-char tokens dropped — the "R" lesson, applied to retrieval). Must-have skills and their parenthesised variants ("Payroll (PY)" → payroll, py) are the query, **weighted double** vs nice-to-haves. Channels merge by **Reciprocal Rank Fusion** (rank-based — cosine and BM25 score scales never need calibrating against each other). Every candidate records `retrieval: {channels, semanticRank, lexicalRank, rrf}` on the run; the UI shows a **"Keyword find"** chip on candidates only the lexical channel surfaced — each one is a rescued false negative, visibly. Kill switch: `MATCH_HYBRID_ENABLED=false` reverts to pure semantic (no code change).
+**Files:** `lexical_index.py` (new), `matching_service._run_match_impl`, `config.py`, `UI/components/matching/shared.tsx`, `UI/lib/api.ts`.
+
+## FC-37 — Raw-CV-text evidence tier (the unrecoverable extraction-miss, closed)
+
+**Was:** the deterministic scorer's evidence was ONLY the LLM-extracted profile. If extraction dropped a skill plainly written in the CV: the scorer reported it missing → the judge was contractually FORBIDDEN from disagreeing (rubric hard rules) → **and the QA auditor couldn't rescue it either**, because its quote-verification corpus is deliberately identical to the scorer's evidence. One unlucky extraction made the false negative unrecoverable by the entire chain — hallucination-by-omission with no appeal.
+**Now:** the raw document sections (FC-35's `document` chunks) are appended as the LAST tier of `_free_text_entries` — so the scorer's containment/co-occurrence rules (never fuzzy, never cross-section) can credit a skill straight from the CV text, **and** the QA auditor can quote it verbatim and have the quote verify mechanically. Extracted evidence still wins the evidence race when both carry the same fact (higher precision names the source). Bounded: max 8 blocks × 2,000 chars. Pipeline-engine profiles don't carry `rawTextBlocks`, so that engine is byte-for-byte unaffected.
+**Also:** the QA auditor now processes candidates in groups of 12 per LLM call — one unbatched call over a growing corpus would eventually blow the context window and fail the WHOLE audit open, silently un-auditing exactly the large runs that need it most.
+**Files:** `matching_service._free_text_entries`, `_run_match_impl` (rawTextBlocks injection), `match_qa_service.py` (batching).
+**Revert:** delete the rawTextBlocks loop in `_free_text_entries`.
+
+## FC-38 — Location scored by geography, not string fuzz (SCORING_VERSION → match-scoring-7)
+
+**Was:** CV-match location used `partial_ratio ≥ 80` on raw strings: **"Frankfurt an der Oder" was a perfect location match for a JD in "Frankfurt am Main"** (~500 km apart). Meanwhile FC-32's deterministic geography already existed — but only sourcing used it.
+**Now:** `_score_candidate` asks [location_resolver.location_verdict](BE/app/services/location_resolver.py) FIRST: same country + region → 1.0 · right country, different region → 0.6 ("remote/relocation possible", stated in the note) · **wrong country → 0.1** · unresolvable (city-only strings) → the old fuzzy logic as fallback only. Both engines share `_score_candidate`, so pipeline matching gets the same fix for free. `SCORING_VERSION` bumped to `match-scoring-7` — stored runs name the rules that made them.
+**Revert:** restore the fuzzy-first location block, set version back.
+
+**Verification for FC-34…38:** 249/249 offline tests pass (26 new in `BE/tests/test_cv_hybrid_matching.py`: chunker section-purity/determinism, BM25 rare-term + anti-stuffing + 1-char-token guards, RRF single-channel rescue, raw-text-tier scorer credit + QA quote verification, location verdict scores, scoring-version pin). UI passes `tsc --noEmit`. **Live E2E run** (real JD, 44-CV corpus): 44 considered, hybrid channels + ranks recorded on every result, QA reviewed all 44 in batches → 13 FN flags verified, 9 scores corrected upward, 0 false-positive flags; top candidate was a healed FC-34 CV, QA-corrected to 95.4.
+
+## FC-39 — Production ANN retrieval for thousands of CVs (`VECTOR_BACKEND=atlas`)
+
+**Why now:** the 44-CV corpus is a test fixture — the client runs **thousands**. At that size both retrieval channels are O(corpus) *per query*: the default `MongoVectorStore` streams **every** vector into memory and brute-forces cosine each run ([vector_store.py](BE/app/services/vector_store.py)), and the BM25 channel **rebuilt a keyword index from every doc's full text on every request** ([matching_service.py](BE/app/services/matching_service.py)). At thousands→tens-of-thousands that is hundreds of MB→GB pulled per run and re-tokenising the corpus each query — latency in seconds and Cloud-Run memory pressure. (Points 1 & 2 the client raised — content dedup by `sha256` unique `contentHash`, and per-CV metadata/indexes — were **already** in place; points 3 & 4 — ANN + dense retrieval — are this change and were correct *at scale*, not at 44.)
+
+**Now:** a third, flag-gated backend `AtlasVectorStore` (mirrors the existing Pinecone-swap pattern; **Mongo stays the default for the test corpus, nothing existing changed**):
+- **ANN vectors** — MongoDB Atlas native `$vectorSearch` (HNSW) over the vectors **already stored on the docs** (no re-embedding, no data migration). Two indexed paths queried and **max-merged per candidate**: `chunks.vector` (Atlas returns each doc once at its best-matching chunk → the same *max-over-chunks* semantics the Mongo backend computes by hand) and `embedding.vector` (so pre-chunking legacy docs stay retrievable). A failing path never sinks the query.
+- **Score parity** — Atlas returns `vectorSearchScore = (1 + cosine)/2`; the backend converts it back to **raw cosine** (`2·score − 1`) so the semantic value handed to `_score_candidate` is on the *exact* scale the Mongo backend returns. **`SCORING_VERSION` unchanged** — a run scores identically on either backend.
+- **Persistent BM25** — Atlas `$search` (Lucene) serves the lexical channel from a server-side index; the per-query corpus rebuild is gone. Backend-agnostic: the matcher calls `store.lexical_query(...)` when the backend exposes it and **falls back to the in-process BM25 otherwise** (Mongo/Pinecone unchanged).
+- **Recall over-fetch** — `numCandidates = MATCH_RETRIEVE_K × ATLAS_NUM_CANDIDATES_MULT` (default 20×) so ANN approximation doesn't reintroduce the false-negatives FC-34…38 killed; the exact deterministic rerank still runs on the returned shortlist.
+- **Provisioning** — `ensure_atlas_indexes` creates both search indexes idempotently on startup when `VECTOR_BACKEND=atlas` (best-effort; requires an Atlas **M10+** tier — search indexes are unavailable on shared clusters; Atlas builds them asynchronously).
+
+**Config:** `VECTOR_BACKEND=atlas` + `ATLAS_VECTOR_INDEX` / `ATLAS_SEARCH_INDEX` / `ATLAS_NUM_CANDIDATES_MULT` (`.env.example` updated). Default stays `mongo`.
+**Revert:** set `VECTOR_BACKEND=mongo` — instant, no data change (vectors live on the docs either way).
+**Verification:** 258/258 offline tests pass (9 new in `BE/tests/test_atlas_vector_store.py`: factory routing + Mongo fallback, cosine-score conversion to Mongo scale, max-merge across both vector paths, per-path failure isolation, desc-sort/cap, `$search`→(id,score) mapping, empty-query guard). Not exercised against a live Atlas cluster here — the test corpus stays on `mongo`; enabling `atlas` needs an M10+ cluster with the indexes built (auto-created on first boot).
+
 ## FC-15 — Test infrastructure (support change, no runtime effect)
 
 - `BE/pytest.ini` — registers `tests/`, `asyncio_mode = auto` (fixes 2 previously-failing async tests), and keeps the live-DB diagnostic scripts in `tests/` from being collected as tests.

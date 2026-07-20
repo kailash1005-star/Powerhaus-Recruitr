@@ -269,6 +269,30 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
                     <Icon name="hand" size={10} />Open to work
                   </span>
                 )}
+                {c.qa?.corrected && (
+                  <span
+                    title={`The QA auditor verified evidence the scorer missed (${(c.qa.verifiedSkills || []).map((s) => s.skill).join(', ')}) and corrected the score from ${c.qa.originalScore ?? '—'} to ${c.score}.`}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      padding: '2px 8px', borderRadius: 9999, fontSize: 10.5, fontWeight: 700,
+                      textTransform: 'uppercase', letterSpacing: '0.04em',
+                      background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE',
+                    }}>
+                    <Icon name="shield" size={10} />QA verified
+                  </span>
+                )}
+                {c.retrieval?.channels?.length === 1 && c.retrieval.channels[0] === 'lexical' && (
+                  <span
+                    title="Surfaced by the job description's own keywords in the CV text — profile-meaning search alone would have missed this candidate."
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      padding: '2px 8px', borderRadius: 9999, fontSize: 10.5, fontWeight: 700,
+                      textTransform: 'uppercase', letterSpacing: '0.04em',
+                      background: '#FAF5FF', color: '#7E22CE', border: '1px solid #E9D5FF',
+                    }}>
+                    <Icon name="search" size={10} />Keyword find
+                  </span>
+                )}
                 {clickable && <Icon name="arrow-up-right" size={13} style={{ color: 'var(--fg-subtle)' }} />}
               </div>
               <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 3 }}>

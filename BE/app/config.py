@@ -192,17 +192,35 @@ class Settings(BaseSettings):
     EXTRACTION_MODEL: str = Field(default="gpt-4o-mini", description="LLM for CV/JD structured extraction")
     REASONING_MODEL: str = Field(default="gpt-4o-mini", description="LLM for top-N candidate reasoning")
 
-    # Vector backend: "mongo" (default — in-DB brute-force cosine, no extra infra,
-    # ideal for the 50-CV demo) or "pinecone" (for scale).
-    VECTOR_BACKEND: str = Field(default="mongo", description='Vector store backend: "mongo" or "pinecone"')
+    # Vector backend:
+    #   "mongo"    (default) — in-DB brute-force cosine, no extra infra, exact,
+    #              ideal for the ≤~1k-CV demo/test corpus.
+    #   "atlas"    — MongoDB Atlas native $vectorSearch (HNSW ANN) + $search
+    #              (Lucene BM25). The production path for thousands+ of CVs:
+    #              vectors stay co-located, no re-embedding, no per-query corpus
+    #              rebuild. Requires an Atlas M10+ cluster with the two search
+    #              indexes built (see ensure_atlas_indexes / ATLAS_* below).
+    #   "pinecone" — external ANN service; for non-Atlas deployments.
+    VECTOR_BACKEND: str = Field(default="mongo", description='Vector store backend: "mongo", "atlas", or "pinecone"')
     PINECONE_API_KEY: str = Field(default="", description="Pinecone API key (only if VECTOR_BACKEND=pinecone)")
     PINECONE_INDEX: str = Field(default="recruitr-cv", description="Pinecone index name")
     PINECONE_NAMESPACE: str = Field(default="default", description="Pinecone namespace (reserved for tenant isolation)")
+    # Atlas backend index names + recall knob (only if VECTOR_BACKEND=atlas).
+    ATLAS_VECTOR_INDEX: str = Field(default="cv_vectors", description="Atlas $vectorSearch index over cv_candidates vectors")
+    ATLAS_SEARCH_INDEX: str = Field(default="cv_lexical", description="Atlas $search (BM25) index over cv_candidates text")
+    # numCandidates = MATCH_RETRIEVE_K × this. Higher = better ANN recall, more
+    # work per query. Atlas recommends numCandidates ≫ limit; 20× is a safe floor.
+    ATLAS_NUM_CANDIDATES_MULT: int = Field(default=20, description="Atlas ANN over-fetch multiplier for recall")
 
     # Matching tunables
     MATCH_RETRIEVE_K: int = Field(default=50, description="How many candidates to pull from the vector store")
     MATCH_REASON_TOP_N: int = Field(default=10, description="How many top candidates get LLM reasoning")
     MATCH_RETURN_TOP: int = Field(default=5, description="Final number of candidates returned to the recruiter")
+    # Hybrid retrieval: BM25 keyword channel alongside the semantic channel,
+    # fused by reciprocal rank (see lexical_index.py). The kill switch exists so
+    # an emergent retrieval problem can be bisected to one channel in prod.
+    MATCH_HYBRID_ENABLED: bool = Field(
+        default=True, description="Fuse BM25 lexical retrieval with semantic retrieval (RRF)")
 
     # ── LLM judge (stage 2 of scoring) ─────────────────────────────────────
     # The deterministic blend produces the base ranking; the judge re-scores the

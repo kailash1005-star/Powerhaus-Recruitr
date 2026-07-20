@@ -26,7 +26,9 @@ from rapidfuzz import fuzz
 from app.config import settings
 from app.services import document_parsing_service as docparser
 from app.services import embedding_service as embeddings
+from app.services import lexical_index
 from app.services import llm_extraction_service as llm
+from app.services import semantic_chunking
 from app.services.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -143,7 +145,18 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
         }
 
         embed_text = _embed_text_from_profile(profile, markdown)
-        vector = await embeddings.embed_text(embed_text)
+
+        # Semantic chunks (see semantic_chunking.py): profile units + raw-document
+        # sections. Embedded alongside the doc-level vector in ONE batched call —
+        # the doc vector keeps retrieval back-compatible, the chunk vectors give
+        # it resolution (a JD matches the RELEVANT third of a CV, not its average).
+        chunks = semantic_chunking.chunk_cv(profile, markdown)
+        vectors = await embeddings.embed_texts([embed_text] + [c["text"] for c in chunks])
+        vector = vectors[0]
+        chunk_docs = [
+            {"kind": c["kind"], "text": c["text"], "vector": v}
+            for c, v in zip(chunks, vectors[1:])
+        ]
 
         await col.update_one(
             {"_id": cid},
@@ -157,6 +170,11 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
                     "version": embeddings.embedding_version(),
                     "vector": vector,
                 },
+                "chunks": chunk_docs,
+                "chunksVersion": semantic_chunking.CHUNKING_VERSION,
+                # Parse-quality telemetry: a 200-char "CV" almost certainly lost
+                # its text layer — surfaced in the UI instead of scoring garbage.
+                "parse": {"chars": len(markdown), "engine": "pypdf-stack"},
                 "status": "embedded",
                 "error": None,
                 "updatedAt": _now(),
@@ -164,15 +182,20 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
         )
 
         # External vector store (Pinecone) — Mongo backend is a no-op upsert.
+        # Chunk vectors ride along as "<cid>#c<i>" so a chunk hit maps back to
+        # its candidate at query time.
         store = get_vector_store(db)
-        await store.upsert([{
-            "id": str(cid),
-            "vector": vector,
-            "metadata": {
-                "location": profile.get("location") or "",
-                "totalYears": float(profile.get("totalYears") or 0),
-            },
-        }])
+        meta = {
+            "location": profile.get("location") or "",
+            "totalYears": float(profile.get("totalYears") or 0),
+        }
+        await store.upsert(
+            [{"id": str(cid), "vector": vector, "metadata": meta}]
+            + [
+                {"id": f"{cid}#c{i}", "vector": cd["vector"], "metadata": meta}
+                for i, cd in enumerate(chunk_docs)
+            ]
+        )
 
         return {"file": filename, "status": "embedded", "id": str(cid),
                 "name": profile.get("fullName")}
@@ -191,7 +214,11 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
 # v5: calibrated semantic component (was raw cosine — compressed into ~0.2-0.5
 #     for related JD↔profile pairs and discontinuous at 0), plus the anchored-
 #     rubric judge blend (see apply_judge).
-SCORING_VERSION = "match-scoring-6"
+# v7: location scored through the deterministic location_verdict (country/region
+#     arithmetic) before any fuzzy fallback — "Frankfurt am Main" no longer
+#     perfectly matches "Frankfurt an der Oder"; plus the raw-CV-text evidence
+#     tier (rawTextBlocks) in _free_text_entries.
+SCORING_VERSION = "match-scoring-7"
 
 # Cosine similarity from text-embedding-3-small does not use the 0..1 range the
 # weighted blend assumes: unrelated professional texts still land ~0.1, and an
@@ -488,6 +515,16 @@ def _free_text_entries(profile: Dict[str, Any]) -> List[str]:
     words of one role's description can co-occur) rather than one concatenated
     corpus — the co-occurrence rule in _match_skill must never credit terms
     scattered across UNRELATED roles.
+
+    `rawTextBlocks` — section chunks of the RAW parsed CV — are appended LAST.
+    They close the extraction-miss false negative: a skill the LLM extraction
+    dropped is still in the raw text, and without this tier neither the scorer
+    nor the QA auditor (whose quote-verification corpus is BY DESIGN identical
+    to the scorer's evidence) could ever see it, making the miss unrecoverable.
+    Each block is one document section, so the co-occurrence rule still cannot
+    credit terms scattered across unrelated parts of the CV. Last position
+    means the higher-precision extracted evidence keeps winning the evidence
+    race when both carry the same fact.
     """
     entries: List[str] = []
     for key in ("summary", "about"):
@@ -503,6 +540,10 @@ def _free_text_entries(profile: Dict[str, Any]) -> List[str]:
         s = str(e or "").strip()
         if s and s.lower() not in ("none", "{}"):
             entries.append(s[:400])
+    for block in (profile.get("rawTextBlocks") or [])[:8]:
+        s = str(block or "").strip()
+        if s:
+            entries.append(s[:2000])
     return entries
 
 
@@ -592,6 +633,13 @@ def _score_candidate(
         years_note = f"{cand_years} years vs {min_years} required — short by {min_years - cand_years}."
 
     # ── location ──
+    # Geography is exact, so the deterministic verdict (country/region
+    # arithmetic, same rules as the sourcing gate) speaks FIRST. The fuzzy
+    # fallback only handles what the verdict can't resolve (city-only strings) —
+    # it used to speak first, and partial_ratio ≥ 80 scored "Frankfurt am Main"
+    # as a perfect match for a JD in "Frankfurt an der Oder".
+    from app.services import location_resolver
+
     jd_loc = (jd.get("location") or "").lower().strip()
     cand_loc = (profile.get("location") or "").lower().strip()
     if not jd_loc:
@@ -600,12 +648,26 @@ def _score_candidate(
     elif not cand_loc:
         loc_score = 0.6
         loc_note = f"Job is in {jd.get('location')}; the CV states no location."
-    elif jd_loc in cand_loc or cand_loc in jd_loc or fuzz.partial_ratio(jd_loc, cand_loc) >= 80:
-        loc_score = 1.0
-        loc_note = f"{profile.get('location')} matches {jd.get('location')}."
     else:
-        loc_score = 0.3
-        loc_note = f"{profile.get('location')} is away from {jd.get('location')}."
+        verdict = location_resolver.location_verdict(jd.get("location"), profile.get("location"))
+        decision = verdict.get("decision")
+        if decision == "match":
+            loc_score = 1.0
+            loc_note = f"{profile.get('location')} matches {jd.get('location')}."
+        elif decision == "region_mismatch":
+            loc_score = 0.6
+            loc_note = (f"{profile.get('location')} is in the right country but a different "
+                        f"region than {jd.get('location')} — remote/relocation possible.")
+        elif decision == "country_mismatch":
+            loc_score = 0.1
+            loc_note = (f"{profile.get('location')} is in a different country than "
+                        f"{jd.get('location')}.")
+        elif jd_loc in cand_loc or cand_loc in jd_loc or fuzz.partial_ratio(jd_loc, cand_loc) >= 80:
+            loc_score = 1.0
+            loc_note = f"{profile.get('location')} matches {jd.get('location')}."
+        else:
+            loc_score = 0.3
+            loc_note = f"{profile.get('location')} is away from {jd.get('location')}."
 
     values = {"semantic": sim_norm, "skillCoverage": coverage,
               "experience": years_score, "location": loc_score}
@@ -813,16 +875,72 @@ async def _run_match_impl(
         )
         logger.warning("[Matching] %s (jd=%s)", requirements_warning, jd_id)
 
-    # 4. retrieve candidates by similarity
+    # 4. retrieve candidates — HYBRID: semantic (chunk-max cosine) + lexical
+    # (BM25 over the raw CV text), fused by reciprocal rank. Semantic-only
+    # retrieval had a named failure mode: a CV that literally states every
+    # must-have can still read "differently" as a whole document, miss the
+    # top-K, and become an invisible false negative no downstream QA can see.
+    # The lexical channel makes containing the JD's own words sufficient to be
+    # scored; fusion means neither channel needs the other's score scale.
     store = get_vector_store(db)
-    hits = await store.query(jd_vector, top_k=settings.MATCH_RETRIEVE_K)
-    sim_by_id = {cid: score for cid, score in hits}
+    k = settings.MATCH_RETRIEVE_K
+    sem_hits = await store.query(jd_vector, top_k=k)
+    sim_by_id = {cid: score for cid, score in sem_hits}
 
     cv_col = db["cv_candidates"]
+    lex_hits: List[Tuple[str, float]] = []
+    if settings.MATCH_HYBRID_ENABLED:
+        terms = lexical_index.build_query_terms(requirements, _skill_variants)
+        if hasattr(store, "lexical_query"):
+            # Persistent BM25 (Atlas $search): the whole corpus is indexed
+            # server-side, so we query it instead of rebuilding a BM25 index from
+            # every doc's text on this request. Joining the terms preserves the
+            # must-have doubling (a repeated term raises its query frequency).
+            lex_hits = await store.lexical_query(" ".join(terms), top_k=k)
+        else:
+            # In-process BM25 — exact and fine for the demo/test corpus, but
+            # O(corpus) per query: it re-reads and re-tokenises every doc.
+            corpus: List[Tuple[str, str]] = []
+            async for d in cv_col.find(
+                {"status": "embedded"}, {"markdown": 1, "profile.skills": 1, "profile.currentTitle": 1}
+            ):
+                p = d.get("profile") or {}
+                text = " ".join(filter(None, [
+                    d.get("markdown") or "",
+                    str(p.get("currentTitle") or ""),
+                    " ".join(str(s) for s in (p.get("skills") or [])),
+                ]))
+                corpus.append((str(d["_id"]), text))
+            if corpus:
+                index = lexical_index.BM25Index(corpus)
+                lex_hits = index.query(terms, top_k=k)
+
+    fused = lexical_index.rrf_fuse({"semantic": sem_hits, "lexical": lex_hits})
+    retrieval_by_id: Dict[str, Dict[str, Any]] = {
+        cid: {
+            "rrf": round(score, 6),
+            "semanticRank": ranks.get("semantic"),
+            "lexicalRank": ranks.get("lexical"),
+            "channels": sorted(ranks.keys()),
+        }
+        for cid, score, ranks in fused
+    }
+
     candidates: List[Dict[str, Any]] = []
-    if sim_by_id:
-        obj_ids = [ObjectId(cid) for cid in sim_by_id.keys()]
+    if retrieval_by_id:
+        obj_ids = [ObjectId(cid) for cid in retrieval_by_id.keys()]
         async for doc in cv_col.find({"_id": {"$in": obj_ids}}):
+            # Raw-document sections become the scorer's last evidence tier (and
+            # thereby the QA auditor's, which shares the corpus by design).
+            # Legacy docs ingested before chunking get them derived on the fly —
+            # same chunker, same output.
+            profile = doc.get("profile") or {}
+            raw_blocks = [c.get("text") for c in (doc.get("chunks") or [])
+                          if (c or {}).get("kind") == "document" and c.get("text")]
+            if not raw_blocks and doc.get("markdown"):
+                raw_blocks = semantic_chunking.chunk_markdown_sections(doc["markdown"], limit=8)
+            profile["rawTextBlocks"] = raw_blocks[:8]
+            doc["profile"] = profile
             candidates.append(doc)
 
     # 5. deterministic score — per-candidate isolated. One unreadable profile
@@ -904,6 +1022,9 @@ async def _run_match_impl(
             "score": s["score"],
             "subscores": s["subscores"],
             "breakdown": s["breakdown"],
+            # Which retrieval channel(s) surfaced this candidate — a "lexical"-only
+            # hit is a candidate the old semantic-only retrieval would have missed.
+            "retrieval": retrieval_by_id.get(s["cid"]),
             "reasons": rid.get("reasons") or _fallback_reasons(requirements, profile, s),
             "reasoning": "judge" if rid.get("reasons") else "deterministic",
             "judge": (s["breakdown"] or {}).get("judge"),
@@ -938,6 +1059,9 @@ async def _run_match_impl(
             "retrieveK": settings.MATCH_RETRIEVE_K,
             "reasonTopN": settings.MATCH_REASON_TOP_N,
             "returnTop": return_top,
+            "hybrid": settings.MATCH_HYBRID_ENABLED,
+            "semanticHits": len(sem_hits),
+            "lexicalHits": len(lex_hits),
         },
         "candidatesConsidered": len(scored),
         "results": results,

@@ -68,6 +68,12 @@ COLLECTION = "qa_reports"
 
 # Evidence corpus cap per candidate — keeps the batch prompt bounded.
 _MAX_EVIDENCE_CHARS = 6000
+# Candidates per auditor LLM call. The audit reviews EVERY scored candidate, so
+# a growing corpus grows the batch without bound — at ~6KB evidence each, an
+# unbatched 100-candidate run would blow the model's context and the whole
+# audit would fail-open, silently un-auditing exactly the big runs that need it
+# most. Groups keep each call bounded; metrics aggregate across groups.
+_AUDIT_BATCH_SIZE = 12
 # A flag's quote must be at least this long to be checkable — a two-character
 # "quote" would string-match half the corpus and verify nothing.
 _MIN_QUOTE_LEN = 6
@@ -298,8 +304,14 @@ async def audit_run(
                 _audit_view(e, profiles_by_cid[str(e["candidateId"])])
                 for e in auditable
             ]
-            resp = await asyncio.to_thread(_audit_sync, requirements, batch)
-            by_id = {str(c.get("id")): c for c in (resp.get("candidates") or [])}
+            # Bounded groups — one oversized call would fail the WHOLE audit open.
+            by_id: Dict[str, Dict[str, Any]] = {}
+            for i in range(0, len(batch), _AUDIT_BATCH_SIZE):
+                resp = await asyncio.to_thread(
+                    _audit_sync, requirements, batch[i:i + _AUDIT_BATCH_SIZE]
+                )
+                for c in (resp.get("candidates") or []):
+                    by_id[str(c.get("id"))] = c
 
             must_set = {s for s in (requirements.get("mustHaveSkills") or []) if s}
             for entry in auditable:

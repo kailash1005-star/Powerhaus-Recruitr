@@ -157,6 +157,17 @@ async def connect_to_mongo():
     except Exception as e:
         print(f"[WARN] Could not create cv_candidates indexes: {e}")
 
+    # Atlas native vector + lexical search indexes — only when the production
+    # ANN backend is selected (VECTOR_BACKEND=atlas). No-op otherwise. Requires
+    # an Atlas M10+ tier; builds asynchronously on the Atlas side.
+    try:
+        from app.services.vector_store import ensure_atlas_indexes
+        await ensure_atlas_indexes(database)
+        if (settings.VECTOR_BACKEND or "mongo").lower() == "atlas":
+            print("[OK] Atlas search indexes ensured")
+    except Exception as e:
+        print(f"[WARN] Could not ensure Atlas search indexes: {e}")
+
     # parsed_jds & match_runs — recency lookups / audit.
     try:
         await database["parsed_jds"].create_index("createdAt", name="idx_jd_createdAt")

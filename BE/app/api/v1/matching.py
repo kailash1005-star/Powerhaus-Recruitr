@@ -101,6 +101,51 @@ async def upload_cvs(
     return {"batchId": batch_id, "received": len(payload), "status": "processing"}
 
 
+@router.get("/cv/stats")
+async def cv_stats(db=Depends(get_db)):
+    """Corpus health at a glance: how many CVs are matchable vs dead.
+
+    Exists because 22 of 44 CVs sat in status=failed for days and every match
+    run looked normal — the UI needs one cheap number to make a silent half-dead
+    corpus impossible.
+    """
+    cursor = db["cv_candidates"].aggregate([
+        {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+    ])
+    counts = {row["_id"]: row["count"] async for row in cursor}
+    return {"total": sum(counts.values()), "counts": counts}
+
+
+@router.post("/cv/reprocess-failed")
+async def reprocess_failed_cvs(background_tasks: BackgroundTasks, db=Depends(get_db)):
+    """Re-ingest every failed CV from its stored original bytes.
+
+    Why this exists: 22 of 44 production CVs failed under the OLD parser
+    (Docling crashed on their first page) and stayed dead after it was replaced
+    — the only retry path was manually re-uploading each file, so half the
+    corpus was silently unmatchable. Every failed doc still has its original
+    bytes in `cv_files`; this re-runs them through the CURRENT parser.
+    """
+    _require_matching_ready()
+    payload: List[tuple] = []
+    unrecoverable: List[str] = []
+    async for doc in db["cv_candidates"].find({"status": "failed"}, {"sourceFileName": 1}):
+        f = await db["cv_files"].find_one({"_id": doc["_id"]})
+        if f and f.get("data"):
+            payload.append((f.get("filename") or doc.get("sourceFileName"), bytes(f["data"])))
+        else:
+            unrecoverable.append(doc.get("sourceFileName") or str(doc["_id"]))
+
+    if not payload:
+        return {"queued": 0, "unrecoverable": unrecoverable, "batchId": None,
+                "message": "No failed CVs with stored originals to reprocess."}
+
+    batch_id = uuid.uuid4().hex
+    background_tasks.add_task(_ingest_batch, db, payload, batch_id)
+    return {"queued": len(payload), "unrecoverable": unrecoverable,
+            "batchId": batch_id, "status": "processing"}
+
+
 @router.get("/cv/batch/{batch_id}")
 async def batch_status(batch_id: str, db=Depends(get_db)):
     col = db["cv_candidates"]
