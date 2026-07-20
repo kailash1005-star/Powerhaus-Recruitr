@@ -327,6 +327,22 @@ Every change below is independent and individually revertible. Nothing was commi
 **Revert:** set `VECTOR_BACKEND=mongo` — instant, no data change (vectors live on the docs either way).
 **Verification:** 258/258 offline tests pass (9 new in `BE/tests/test_atlas_vector_store.py`: factory routing + Mongo fallback, cosine-score conversion to Mongo scale, max-merge across both vector paths, per-path failure isolation, desc-sort/cap, `$search`→(id,score) mapping, empty-query guard). Not exercised against a live Atlas cluster here — the test corpus stays on `mongo`; enabling `atlas` needs an M10+ cluster with the indexes built (auto-created on first boot).
 
+## FC-40 — Location gate false-negative: metro labels wrongly rejected as foreign
+
+**Found in production** (run "Lead Consultant SAP SuccessFactors EC", 2026-07-20): the sourcing location gate **silently dropped 5 in-country candidates** — including a perfect "Senior Consultant **SAP SuccessFactors**" match and an "Inhouse Consultant SAP HCM" — because their LinkedIn location was the metro label **"Frankfurt Rhine-Main Metropolitan Area"**. A false negative is the most expensive error class (a dropped good candidate is never enriched, scored, or seen again), and the dedicated QA agent could not catch it: the sourcing QA audits only the KEPT set, so a wrong DROP is invisible to it by design.
+
+**Root cause** — [location_resolver.py](BE/app/services/location_resolver.py): `canonical_country` took the last comma-separated segment as the country. "Frankfurt Rhine-Main Metropolitan Area" has no comma, so the whole string became the "country", failed to equal "germany", and [location_verdict](BE/app/services/location_resolver.py) returned `country_mismatch` → REJECT. This **violated the gate's own documented invariant** ("a missing alias degrades to unknown/kept, never a false reject"): the only thing separating dropped from kept was whether the location string happened to be the structured `City, State, Country` form.
+
+**Now** — the gate is confident only when it truly is:
+- `country_mismatch` fires **only when BOTH sides resolve to a known country** (`_KNOWN_COUNTRIES`) and they differ. Anything unresolved → `unknown` → KEPT. This single rule would have prevented all 5 drops.
+- A DACH-heavy **place → country gazetteer** (cities, states, regions, metros; matched as whole-word contiguous sequences) resolves bare labels POSITIVELY: "Frankfurt Rhine-Main Metropolitan Area", "Munich Area", "Greater Zurich Area", "Munich, Bavaria" → their country. So they become `match`, not merely `unknown`.
+- The Bavaria→India leak (FC-32) stays firmly shut — India/EU anchors keep genuine wrong-country rejects firing **even when the string omits the country word** ("Bengaluru Area" → india → reject).
+
+**Systemic scope:** only two gates hard-drop a candidate — location (this fix) and the title pre-screen. The title gate already honored the invariant (keeps no-title hits, keyword-channel rescues, drops only on confident low title-overlap), so no change there. The principle now holds across every deterministic gate: **reject only on a positively-confirmed contradiction; keep-and-flag on ambiguity.**
+
+**Revert:** restore the old `canonical_country` (last-segment-as-country) and drop the gazetteer.
+**Verification:** 285/285 offline tests pass (27 new in `BE/tests/test_location_gate_metro.py`: the exact production strings → match, DACH cities/states/metros/"…Area" labels → match, unresolvable → unknown/kept, foreign metros without the country word → still reject, existing region/alias/missing-location contract preserved). **Validated against live production data:** re-running the corrected resolver over the run's real candidate locations flips all 5 wrongly-dropped candidates from `country_mismatch` to `match`, with the 6 previously-kept unchanged.
+
 ## FC-15 — Test infrastructure (support change, no runtime effect)
 
 - `BE/pytest.ini` — registers `tests/`, `asyncio_mode = auto` (fixes 2 previously-failing async tests), and keeps the live-DB diagnostic scripts in `tests/` from being collected as tests.
