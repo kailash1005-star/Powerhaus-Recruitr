@@ -343,6 +343,14 @@ Every change below is independent and individually revertible. Nothing was commi
 **Revert:** restore the old `canonical_country` (last-segment-as-country) and drop the gazetteer.
 **Verification:** 285/285 offline tests pass (27 new in `BE/tests/test_location_gate_metro.py`: the exact production strings → match, DACH cities/states/metros/"…Area" labels → match, unresolvable → unknown/kept, foreign metros without the country word → still reject, existing region/alias/missing-location contract preserved). **Validated against live production data:** re-running the corrected resolver over the run's real candidate locations flips all 5 wrongly-dropped candidates from `country_mismatch` to `match`, with the 6 previously-kept unchanged.
 
+## FC-41 — CV matching: only reason candidates above the fit floor (token saving)
+
+**Was:** the CV matcher's LLM judge ran on the top-N candidates (`MATCH_REASON_TOP_N`, default 10) **regardless of their fit** — so a run with only 3 strong candidates still paid for prose on 7 poor-fit ones that were rejected anyway.
+**Now:** the judge/prose runs only on candidates whose deterministic score ≥ `MATCH_REASON_MIN_SCORE` (default **60**), still capped at top-N. Below-floor candidates keep their deterministic score + fallback reasons at **zero LLM cost**. Set the knob to 0 to restore reasoning the full top-N.
+**Scope guard:** this gates **only reasoning**, never the QA auditor — QA still reviews every candidate, because its job is catching wrongly-LOW scores (false negatives), and gating it by score would reintroduce exactly that risk. Pipeline-engine reasoning is unchanged (CV section only, as requested).
+**Revert:** set `MATCH_REASON_MIN_SCORE=0`.
+**Verification:** 285/285 offline tests pass.
+
 ## FC-15 — Test infrastructure (support change, no runtime effect)
 
 - `BE/pytest.ini` — registers `tests/`, `asyncio_mode = auto` (fixes 2 previously-failing async tests), and keeps the live-DB diagnostic scripts in `tests/` from being collected as tests.

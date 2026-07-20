@@ -969,7 +969,13 @@ async def _run_match_impl(
     # re-ranked. Best-effort: a lost judge call leaves deterministic scores,
     # visibly marked `reasoning: "deterministic"` — never a hidden default.
     reason_n = min(settings.MATCH_REASON_TOP_N, len(scored))
-    top = scored[:reason_n]
+    # Only spend judge/prose tokens on candidates that clear the fit floor. `scored`
+    # is sorted desc, so the qualifying candidates are a prefix — cap it at top-N.
+    # Candidates below the floor keep their deterministic score + fallback reasons
+    # (no LLM). The floor gates ONLY reasoning, never the QA auditor below, which
+    # still reviews every candidate to catch wrongly-low scores (false negatives).
+    reason_min = float(settings.MATCH_REASON_MIN_SCORE or 0.0)
+    top = [s for s in scored[:reason_n] if s["score"] >= reason_min]
 
     def _judge_view(s: Dict[str, Any]) -> Dict[str, Any]:
         p = s["doc"].get("profile") or {}

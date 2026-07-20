@@ -214,7 +214,13 @@ class Settings(BaseSettings):
 
     # Matching tunables
     MATCH_RETRIEVE_K: int = Field(default=50, description="How many candidates to pull from the vector store")
-    MATCH_REASON_TOP_N: int = Field(default=10, description="How many top candidates get LLM reasoning")
+    MATCH_REASON_TOP_N: int = Field(default=10, description="Upper bound on how many top candidates get LLM reasoning")
+    # Fit floor for LLM reasoning: only candidates whose deterministic score is at
+    # least this get the (token-costly) judge/prose. A poor-fit candidate's prose
+    # never changes its rejection, so generating it just burns tokens. Set 0 to
+    # reason the full top-N regardless of score. Does NOT gate the QA auditor — QA
+    # must review every candidate to catch wrongly-LOW scores (false negatives).
+    MATCH_REASON_MIN_SCORE: float = Field(default=60.0, description="Min deterministic score (0-100) to spend LLM reasoning on a candidate")
     MATCH_RETURN_TOP: int = Field(default=5, description="Final number of candidates returned to the recruiter")
     # Hybrid retrieval: BM25 keyword channel alongside the semantic channel,
     # fused by reciprocal rank (see lexical_index.py). The kill switch exists so
