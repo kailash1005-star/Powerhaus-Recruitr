@@ -70,9 +70,9 @@ class _FakeDb(dict):
         return self.col
 
 
-def _entry_for_marina() -> Dict[str, Any]:
+def _entry_for_marina(sim: float = 0.45) -> Dict[str, Any]:
     from app.services.matching_service import _score_candidate
-    score, subscores, gaps, breakdown = _score_candidate(JD, MARINA, 0.45)
+    score, subscores, gaps, breakdown = _score_candidate(JD, MARINA, sim)
     return {
         "candidateId": "cid-marina", "fullName": "Marina W.",
         "score": score, "subscores": subscores, "gaps": gaps,
@@ -82,8 +82,8 @@ def _entry_for_marina() -> Dict[str, Any]:
     }
 
 
-async def _run_audit(monkeypatch, llm_response) -> tuple[Dict[str, Any], Dict[str, Any], _FakeDb]:
-    entry = _entry_for_marina()
+async def _run_audit(monkeypatch, llm_response, sim: float = 0.45) -> tuple[Dict[str, Any], Dict[str, Any], _FakeDb]:
+    entry = _entry_for_marina(sim)
     db = _FakeDb()
     if isinstance(llm_response, Exception):
         def fake_audit(requirements, batch):
@@ -96,7 +96,7 @@ async def _run_audit(monkeypatch, llm_response) -> tuple[Dict[str, Any], Dict[st
         db, match_run_id="run-1", pipeline_id="p", job_id="j",
         jd_title="SAP-HCM Specialist", requirements=JD,
         entries=[entry], profiles_by_cid={"cid-marina": MARINA},
-        sims_by_cid={"cid-marina": 0.45},
+        sims_by_cid={"cid-marina": sim},
     )
     return summary, entry, db
 
@@ -130,9 +130,11 @@ class TestAuditRun:
             "SAP HR", "SAP HR Processes"]
 
     async def test_correction_within_same_ceiling_band_is_a_noop(self, monkeypatch):
-        """One verified skill that doesn't cross a coverage-ceiling band leaves
-        the (capped) score unchanged — and the auditor must NOT claim a
-        correction it didn't make. The flag still lands in the report."""
+        """One verified skill that doesn't cross a coverage-ceiling band leaves a
+        CAPPED score unchanged — and the auditor must NOT claim a correction it
+        didn't make. The flag still lands in the report. sim=0.6 puts Marina's
+        base above her 0.25-band ceiling (50), so crediting SAP HR (still in that
+        band) can't move the capped score."""
         resp = {"candidates": [{
             "id": "cid-marina",
             "falseNegatives": [
@@ -142,10 +144,10 @@ class TestAuditRun:
             ],
             "falsePositives": [],
         }]}
-        summary, entry, db = await _run_audit(monkeypatch, resp)
+        summary, entry, db = await _run_audit(monkeypatch, resp, sim=0.6)
         assert summary["fnFlagsVerified"] == 1
         assert summary["fnCorrected"] == 0
-        assert entry["score"] == _entry_for_marina()["score"]
+        assert entry["score"] == _entry_for_marina(0.6)["score"]
         assert db.col.docs[0]["perCandidate"][0]["correctedScore"] is None
 
     async def test_unverifiable_quote_is_discarded_with_no_effect(self, monkeypatch):

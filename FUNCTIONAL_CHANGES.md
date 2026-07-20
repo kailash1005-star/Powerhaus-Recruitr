@@ -351,6 +351,20 @@ Every change below is independent and individually revertible. Nothing was commi
 **Revert:** set `MATCH_REASON_MIN_SCORE=0`.
 **Verification:** 285/285 offline tests pass.
 
+## FC-42 — Harder, evidence-led scoring: wrong-domain candidates score like it (match-scoring-8)
+
+**Problem (from production):** a candidate matching **0/11 must-haves** in a completely different profession (AWS Data Engineer / BI & AI vs a German SAP-HCM/Payroll role) scored **40 "WEAK"**, and 0-coverage candidates scored **25**. The number was being propped up by *semantic similarity + geography* — embedding cosine reads ~0.5 even for unrelated professional CVs, and a Frankfurt address is worth full location points regardless of fit. Recruiters can't trust a matcher that rates a data engineer 40% for a payroll job.
+
+**Root:** two soft levers. (1) The largest weight was **semantic 0.50** — vibes outweighed evidence. (2) The low-coverage ceilings were generous: `<25%` coverage capped at **40**, zero coverage at **25**.
+
+**Now (SCORING_VERSION → `match-scoring-8`):**
+- **Evidence leads over vibes** — weights rebalanced to skillCoverage **0.40** (was 0.30) > semantic **0.35** (was 0.50), experience 0.15, location 0.10. A fully-skilled candidate with only mediocre semantic now scores *higher*; a slick CV in the wrong profession can no longer be rescued by similarity.
+- **Strict bottom bands** — `<25%` coverage ceiling **40 → 22**, zero-coverage floor **25 → 8**. A candidate who evidences under a quarter (or none) of the required skills reads as weak / not-a-fit, plainly.
+- **Genuine specialists protected** — the mid/high bands are unchanged (0.25→50, 0.5→65, 0.75→85, 1.0→100). The Marina regression (real SAP-HCM specialist at ~0.3 coverage) still scores in the high-40s, nowhere near the wrong-domain cap. "Verify relevance, not keywords" is enforced by coverage, which is multi-tier evidence (skills + titles + free-text + raw-CV-text, fuzzy/compound-aware, each hit cited with a snippet), not string matching — and the QA auditor still quote-verifies every claim.
+
+**Revert:** restore `BASE_WEIGHTS` 0.50/0.30/0.12/0.08, ceilings 40/25, and the version string.
+**Verification:** 285/285 offline tests pass (weight-renormalisation, Marina score band, and QA within-band no-op fixtures updated to the new rubric). **Validated on live production data** (run "Senior Payroll & SAP HCM Spezialist", 34 CV candidates): the 91%-coverage genuine specialist is **unchanged at 85**; the wrong-domain data-engineer CVs drop **40 → 22**; the 0-coverage CVs drop **25 → 8**.
+
 ## FC-15 — Test infrastructure (support change, no runtime effect)
 
 - `BE/pytest.ini` — registers `tests/`, `asyncio_mode = auto` (fixes 2 previously-failing async tests), and keeps the live-DB diagnostic scripts in `tests/` from being collected as tests.
