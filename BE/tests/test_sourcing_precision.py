@@ -255,6 +255,40 @@ class TestStrategistSanitize:
         assert step.filters.currentJobTitles == out.filters.currentJobTitles
         assert step.filters.searchQuery == out.filters.searchQuery
 
+    # ── focusTitle + apolloPlan (unified discovery) ─────────────────────────
+    def test_focus_title_defaults_to_strongest_title(self):
+        s = self._strategy()  # no focusTitle set
+        out = _sanitize(s, SearchBrief(jobTitle="Senior SAP HCM Consultant"))
+        assert out.focusTitle == "SAP HCM Consultant"  # first currentJobTitle
+
+    def test_apollo_plan_derived_when_omitted(self):
+        s = self._strategy()  # apolloPlan left at its empty default
+        out = _sanitize(
+            s, SearchBrief(jobTitle="SAP HCM Consultant",
+                           mustHaveSkills=["SAP SuccessFactors", "Payroll", "EC", "Time"]))
+        # Titles fall back to the LinkedIn family; q_keywords capped at 3.
+        assert out.apolloPlan.titles
+        assert len(out.apolloPlan.qKeywords) <= 3
+
+    def test_apollo_seniorities_coerced_to_vocab(self):
+        from app.services.sourcing.models import ApolloPlan
+        s = self._strategy(apolloPlan=ApolloPlan(
+            titles=["SAP HCM Consultant"],
+            seniorities=["senior", "Wizard", "director"]))  # "Wizard" is invalid
+        out = _sanitize(s, SearchBrief(jobTitle="SAP HCM Consultant"))
+        assert "wizard" not in [x.lower() for x in out.apolloPlan.seniorities]
+        assert all(x in {"senior", "director"} for x in out.apolloPlan.seniorities)
+
+    def test_enum_filters_left_untouched_when_null(self):
+        """The prompt biases the 4 inferred filters to Any; sanitize must not
+        invent them."""
+        s = self._strategy()
+        out = _sanitize(s, SearchBrief(jobTitle="SAP HCM Consultant"))
+        assert out.filters.seniorityLevel is None
+        assert out.filters.yearsOfExperience is None
+        assert out.filters.function is None
+        assert out.filters.companyHeadcount is None
+
 
 # ── Channel-aware prescreen policy ───────────────────────────────────────────
 

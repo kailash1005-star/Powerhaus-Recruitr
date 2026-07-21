@@ -14,8 +14,8 @@ literal-title behaviour rather than blocking the recruiter.
 from app.services.sourcing.brief import build_brief
 from app.services.sourcing.broadener import next_attempt
 from app.services.sourcing.models import (
-    BroadenDecision, BroadeningStep, SearchAttempt, SearchBrief, SearchFilters,
-    SearchStrategy,
+    ApolloPlan, BroadenDecision, BroadeningStep, SearchAttempt, SearchBrief,
+    SearchFilters, SearchStrategy,
 )
 from app.services.sourcing.strategist import propose_strategy
 
@@ -23,6 +23,7 @@ __all__ = [
     "build_brief",
     "next_attempt",
     "propose_strategy",
+    "ApolloPlan",
     "BroadenDecision",
     "BroadeningStep",
     "SearchAttempt",

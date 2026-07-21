@@ -259,6 +259,104 @@ class ApolloService:
 
         return empty
 
+    def search_people(
+        self,
+        *,
+        titles: list[str] | None = None,
+        locations: list[str] | None = None,
+        skills: list[str] | None = None,
+        seniorities: list[str] | None = None,
+        industries: list[str] | None = None,
+        max_results: int = 50,
+    ) -> dict:
+        """Questionnaire-driven people search for the Apollo discovery flow.
+
+        Unlike ``search_candidates`` (single title + industry-fallback cascade),
+        this takes the recruiter's structured filters straight from the Apollo
+        questionnaire and ANDs them together in one search:
+
+          * titles       → ``person_titles[]`` (+ ``include_similar_titles``)
+          * locations     → ``person_locations[]`` (free text, lower-cased)
+          * seniorities  → ``person_seniorities[]`` (Apollo enum codes)
+          * industries   → ``person_industries[]``
+          * skills       → ``q_keywords`` — Apollo has NO structured skills
+                           filter, so key skills are matched as free text across
+                           the profile (a soft match, not a hard requirement).
+
+        Free people-search: no enrichment credits are consumed and contact info
+        (email/phone) comes back masked — reveal it later per-candidate via
+        ``/people/match``. Returns ``{"people": [...], "params_used": {...}}``.
+
+        FALLBACK CASCADE — mirrors the Apify Broadener's intent so an over-narrow
+        filter set doesn't just return zero. We relax, widest-signal-last, and
+        stop at the first attempt that returns anyone:
+          1. everything (titles + q_keywords + seniorities + locations)
+          2. drop q_keywords     (skills AND-narrow the hardest — case study §B1)
+          3. drop seniorities    (a title family already carries seniority signal)
+          4. drop locations      (country/geo may be mis-parsed; title is the anchor)
+
+        NOTE: ``industries`` no longer maps to ``person_industries[]`` — that is
+        not a documented Apollo people-search param and was silently ignored
+        (case study §B2). Any industry terms are folded into ``q_keywords``.
+        """
+        self._rate_limited = False
+        clean = lambda xs: [x.strip() for x in (xs or []) if x and x.strip()]  # noqa: E731
+
+        base_titles = clean(titles)
+        base_locations = [x.lower() for x in clean(locations)]
+        base_seniorities = clean(seniorities)
+        # Skills + industries both become free-text q_keywords (Apollo has no
+        # structured skills filter, and person_industries[] is not real).
+        keyword_terms = clean(skills) + clean(industries)
+        base_keywords = " ".join(keyword_terms)
+
+        if not base_titles and not base_keywords:
+            return {"people": [], "params_used": {}}
+
+        def _params(*, with_keywords: bool, with_seniorities: bool,
+                    with_locations: bool) -> dict:
+            p: dict = {}
+            if base_titles:
+                p["person_titles[]"] = base_titles
+                p["include_similar_titles"] = "true"
+            if with_locations and base_locations:
+                p["person_locations[]"] = base_locations
+            if with_seniorities and base_seniorities:
+                p["person_seniorities[]"] = base_seniorities
+            if with_keywords and base_keywords:
+                p["q_keywords"] = base_keywords
+            return p
+
+        # Each stage is strictly broader than the one before it.
+        stages = [
+            _params(with_keywords=True, with_seniorities=True, with_locations=True),
+            _params(with_keywords=False, with_seniorities=True, with_locations=True),
+            _params(with_keywords=False, with_seniorities=False, with_locations=True),
+            _params(with_keywords=False, with_seniorities=False, with_locations=False),
+        ]
+
+        last_params: dict = stages[0]
+        seen: list[dict] = []
+        for idx, params in enumerate(stages):
+            if not params or params in seen:
+                continue  # nothing left to search on, or identical to a prior try
+            seen.append(params)
+            last_params = params
+            logger.info("Apollo questionnaire search (stage %d): %s", idx, params)
+            people = self._paged_search_capped(
+                params, f"apollo questionnaire search s{idx}", max_results,
+            )
+            if people:
+                return {
+                    "people": people[:max_results],
+                    "params_used": params,
+                    "applied_fallback_stage": idx,
+                }
+            if self._rate_limited:
+                # Throttled — a broader stage would 429 too; stop here.
+                break
+        return {"people": [], "params_used": last_params, "applied_fallback_stage": None}
+
     def _paged_search_capped(
         self, extra_params: dict, label: str, max_results: int,
     ) -> list[dict]:

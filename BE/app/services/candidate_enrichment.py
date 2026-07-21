@@ -289,3 +289,55 @@ async def bulk_enrich(
     })
     logger.info("[BulkEnrich] done: %s", result)
     return result
+
+
+async def apollo_enrich_only(
+    *,
+    pipeline_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    candidate_ids: Optional[List[str]] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Apollo ``/people/match`` stage ONLY — reveal the verified email + real
+    name/location/LinkedIn URL, without the Apify deep-profile scrape.
+
+    This is stage 1 of ``bulk_enrich`` on its own, for candidates the recruiter
+    wants contact info on but no full work-history scrape (e.g. Apollo-sourced
+    candidates). Idempotent: a candidate already carrying ``isEnriched`` is
+    skipped unless ``force``. Returns the same key shape the UI reads, with the
+    Apify counters left at zero.
+    """
+    from app.database import get_database
+    from app.services.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
+
+    db = await get_database()
+    candidates_col = db["candidates"]
+
+    query: Dict[str, Any] = {}
+    if candidate_ids:
+        query["_id"] = {"$in": [ObjectId(cid) for cid in candidate_ids]}
+    elif pipeline_id:
+        query["pipelineId"] = pipeline_id
+        if job_id:
+            query["sourceJobIds"] = job_id
+    else:
+        raise ValueError("provide candidate_ids or pipeline_id")
+
+    docs: List[Dict[str, Any]] = [d async for d in candidates_col.find(query)]
+    result: Dict[str, Any] = {
+        "selected": len(docs), "apollo_enriched": 0, "apollo_failed": 0,
+        "apify_enriched": 0, "cached": 0, "not_found": 0, "skipped": 0,
+    }
+    for doc in docs:
+        if doc.get("isEnriched") and not force:
+            result["skipped"] += 1
+            continue
+        try:
+            await apollo_enrich_candidate(db, doc)
+        except ApolloEnrichError as e:
+            logger.warning("[ApolloEnrichOnly] failed for %s: %s", doc["_id"], e)
+            result["apollo_failed"] += 1
+            continue
+        result["apollo_enriched"] += 1
+    logger.info("[ApolloEnrichOnly] done: %s", result)
+    return result
