@@ -123,8 +123,13 @@ class TestMarinaRegression:
 
     def test_score_escapes_the_no_coverage_ceiling(self):
         score, subscores, gaps, breakdown = _score_candidate(JD, MARINA, 0.45)
+        # She evidences 2 of 7 must-haves (SAP-HCM, Payroll) → coverage lifts the
+        # ceiling off the zero-coverage floor (8) into the 0.25 band (50). Under
+        # match-scoring-8's evidence-led weights a 2-of-7 partial specialist lands
+        # in the high-40s — nowhere near the 16.2 false negative this guards, and
+        # far above the wrong-domain weak cap (22).
         assert breakdown["ceiling"] > 25.0, "coverage>0 must lift the zero-coverage cap"
-        assert score >= 50.0
+        assert score >= 48.0
         assert "SAP-HCM" not in gaps
         assert "Payroll (PY)" not in gaps
 

@@ -218,7 +218,7 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
 #     arithmetic) before any fuzzy fallback — "Frankfurt am Main" no longer
 #     perfectly matches "Frankfurt an der Oder"; plus the raw-CV-text evidence
 #     tier (rawTextBlocks) in _free_text_entries.
-SCORING_VERSION = "match-scoring-7"
+SCORING_VERSION = "match-scoring-8"
 
 # Cosine similarity from text-embedding-3-small does not use the 0..1 range the
 # weighted blend assumes: unrelated professional texts still land ~0.1, and an
@@ -238,11 +238,17 @@ def calibrate_similarity(sim: float) -> float:
 
 # Nominal weights. A component only spends its weight when the JD actually states
 # the requirement — see _score_candidate for the renormalisation.
+# Evidence leads, vibes support. skillCoverage (concrete, cited proof that the
+# candidate does the actual required work) outweighs semantic (whole-document
+# embedding similarity, which reads ~0.5 even for unrelated professional CVs and
+# must never rescue a candidate who evidences none of the requirements). A fully
+# skilled candidate with only mediocre semantic still scores high; a slick CV in
+# the wrong profession does not. Was 0.50/0.30/0.12/0.08 (match-scoring-7).
 BASE_WEIGHTS: Dict[str, float] = {
-    "semantic": 0.50,
-    "skillCoverage": 0.30,
-    "experience": 0.12,
-    "location": 0.08,
+    "semantic": 0.35,
+    "skillCoverage": 0.40,
+    "experience": 0.15,
+    "location": 0.10,
 }
 
 # Recruiter-facing names. "Semantic similarity" is what the maths is called, not
@@ -256,14 +262,24 @@ COMPONENT_LABELS: Dict[str, str] = {
 
 # A candidate missing the must-haves cannot be a strong match however well the
 # prose reads. Coverage buys a ceiling on the final score.
+# Must-have coverage HARD-caps the final score: no amount of semantic similarity,
+# geography, or prose can lift a candidate above what their evidenced requirements
+# allow. The high/mid bands are deliberately forgiving — a genuine specialist
+# often evidences only a third of a JD's enumerated sub-skills (see the Marina
+# regression: SAP-HCM specialist at ~0.3 coverage who must still read as a real
+# candidate). The bottom two bands are strict: a candidate who evidences under a
+# quarter — or NONE — of the required skills is, in the practical world, not doing
+# this job, and the score must say so plainly so recruiters trust it. Was 40/25
+# (match-scoring-7); a wrong-domain CV that reached 40 on vibes+geography now caps
+# at 22, and a 0-of-N candidate caps at 8 ("not a fit"), not 25.
 COVERAGE_CEILINGS: List[Tuple[float, float]] = [
     (1.0, 100.0),   # every must-have credited → no cap
     (0.75, 85.0),
     (0.5, 65.0),
-    (0.25, 50.0),
-    (0.0, 40.0),    # some credit, but under a quarter
+    (0.25, 50.0),   # a genuine partial specialist — kept scoreable (Marina guard)
+    (0.0, 22.0),    # some credit, but under a quarter → weak, hard cap
 ]
-NO_COVERAGE_CEILING = 25.0  # zero must-haves credited
+NO_COVERAGE_CEILING = 8.0  # zero must-haves credited → not a fit
 
 _FUZZY_MIN_LEN = 4    # below this, fuzzy ratios are noise ("R", "Go", "C#")
 _FUZZY_STRONG = 95    # spelling variant of the same thing

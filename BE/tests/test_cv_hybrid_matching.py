@@ -268,7 +268,7 @@ class TestLocationVerdictInScoring:
         assert self._loc_score("") == 60.0
 
     def test_scoring_version_bumped(self):
-        assert SCORING_VERSION == "match-scoring-7"
+        assert SCORING_VERSION == "match-scoring-8"
 
 
 if __name__ == "__main__":

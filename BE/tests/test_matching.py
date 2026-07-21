@@ -166,9 +166,9 @@ def test_unstated_requirement_is_not_free_points():
     assert comps["location"]["applicable"] is False
     assert comps["location"]["maxPoints"] == 0.0
     assert comps["experience"]["applicable"] is False
-    # semantic .50 + skillCoverage .30 = .80 live → renormalised to .625 / .375
-    assert comps["semantic"]["weight"] == pytest.approx(0.625, abs=1e-3)
-    assert comps["skillCoverage"]["weight"] == pytest.approx(0.375, abs=1e-3)
+    # semantic .35 + skillCoverage .40 = .75 live → renormalised to .4667 / .5333
+    assert comps["semantic"]["weight"] == pytest.approx(0.35 / 0.75, abs=1e-3)
+    assert comps["skillCoverage"]["weight"] == pytest.approx(0.40 / 0.75, abs=1e-3)
     assert sum(c["maxPoints"] for c in bd["components"]) == pytest.approx(100.0, abs=0.2)
 
 
