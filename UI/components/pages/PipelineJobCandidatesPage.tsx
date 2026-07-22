@@ -12,7 +12,7 @@ import { CandidateColumnFilter } from '../CandidateColumnFilter';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate,
   fetchCandidate, bulkEnrichJobCandidates, runJobMatch, fetchCandidateFacets,
-  fetchJobRequirements, discoverJobCandidates, deleteJobCandidates,
+  fetchJobRequirements, discoverJobCandidates, deleteJobCandidates, pipelineDisplayName,
   type Candidate, type Pipeline, type PipelineJob, type CandidateFilters, type CandidateFacets,
   type DiscoverFilters, type EnrichMode,
 } from '@/lib/api';
@@ -689,7 +689,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
             style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 15, fontWeight: 600, color: 'var(--fg-primary)', textDecoration: 'none' }}
           >
             <Icon name="arrow-left" size={16} />
-            Back to {pipeline?.companyName || 'pipeline'}
+            Back to {pipeline ? pipelineDisplayName(pipeline) : 'pipeline'}
           </Link>
         }
         showSearch={false}

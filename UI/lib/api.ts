@@ -515,6 +515,14 @@ export interface PipelineListResponse {
   pipelines: Pipeline[];
 }
 
+/** Display name for a pipeline: the company when it has one, else the first
+ *  role's title. A pipeline started directly from a role (CreatePipelineModal)
+ *  has no company yet — it's filled in automatically if the role is later
+ *  mapped from a lead/campaign, and the display name follows once it is. */
+export function pipelineDisplayName(p: Pick<Pipeline, 'companyName' | 'jobs'>): string {
+  return p.companyName || p.jobs?.[0]?.jobTitle || 'Untitled pipeline';
+}
+
 export interface CandidateEmploymentEntry {
   title?: string | null;
   organizationName?: string | null;

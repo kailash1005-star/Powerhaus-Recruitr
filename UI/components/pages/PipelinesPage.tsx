@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import { CreatePipelineModal } from '../CreatePipelineModal';
-import { fetchPipelines, deletePipeline, type Pipeline } from '@/lib/api';
+import { fetchPipelines, deletePipeline, pipelineDisplayName, type Pipeline } from '@/lib/api';
 
 function fmtDate(d: string | null | undefined) {
   if (!d) return '—';
@@ -152,7 +152,7 @@ export function PipelinesPage() {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
                           <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {p.companyName}
+                            {pipelineDisplayName(p)}
                           </span>
                           {running && (
                             <span style={{
@@ -170,9 +170,11 @@ export function PipelinesPage() {
                           )}
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12, color: 'var(--fg-muted)' }}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            <Icon name="globe" size={12} /> {p.companyDomain}
-                          </span>
+                          {p.companyDomain && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <Icon name="globe" size={12} /> {p.companyDomain}
+                            </span>
+                          )}
                           {p.companyIndustry && (
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <Icon name="briefcase" size={12} /> {p.companyIndustry}
@@ -280,7 +282,7 @@ export function PipelinesPage() {
               <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--fg-primary)' }}>Delete this pipeline?</div>
             </div>
             <div style={{ fontSize: 13, color: 'var(--fg-secondary)', lineHeight: 1.5, marginBottom: 20 }}>
-              <strong>{confirmDelete.companyName}</strong>, all jobs in this pipeline, and every
+              <strong>{pipelineDisplayName(confirmDelete)}</strong>, all jobs in this pipeline, and every
               candidate sourced for them will be permanently deleted. This cannot be undone.
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>

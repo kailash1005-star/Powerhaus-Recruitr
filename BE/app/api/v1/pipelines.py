@@ -53,9 +53,11 @@ async def get_db():
 
 
 class PipelineCreateSchema(BaseModel):
-    """Create a pipeline either by linking an existing company (companyId) or
-    by supplying the company details manually (companyName + companyDomain
-    are required in that case)."""
+    """Create a pipeline either by linking an existing company (companyId), by
+    supplying company details manually (companyName + companyDomain together),
+    or with NO company at all — a role-only pipeline. The company is optional:
+    a pipeline created directly for a role doesn't need one, and gets one later
+    automatically when a lead/campaign maps into it (see candidate_pipeline)."""
     companyId: Optional[str] = None
     companyName: Optional[str] = None
     companyDomain: Optional[str] = None
@@ -290,12 +292,14 @@ async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
                 raise HTTPException(404, "Company not found")
             source = "run"
 
-        # Mode 2: manual — need name + domain
-        if company is None:
+        # Mode 2: manual with company details — name + domain together, or
+        # neither. A lone field is almost certainly a typo'd submission rather
+        # than a deliberate choice, so that combination is rejected; blank/blank
+        # falls through to mode 3.
+        if company is None and (body.companyName or body.companyDomain):
             if not body.companyName or not body.companyDomain:
                 raise HTTPException(
-                    400,
-                    "Either companyId, or companyName + companyDomain are required",
+                    400, "Provide both company name and domain, or leave both blank",
                 )
             # Reuse a company by domain if it happens to exist already
             company = await companies.find_one({"companyDomain": body.companyDomain})
@@ -319,34 +323,42 @@ async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
                 res = await companies.insert_one({k: v for k, v in synth.items() if v is not None})
                 company = await companies.find_one({"_id": res.inserted_id})
 
-        # Reject if a pipeline already exists for this company
-        existing = await pipelines.find_one({
-            "$or": [
-                {"companyId": str(company["_id"])},
-                {"companyDomain": company.get("companyDomain")},
-            ]
-        })
-        if existing:
-            raise HTTPException(
-                409,
-                {"error": "pipeline_already_exists", "pipelineId": str(existing["_id"])},
-            )
+        # Mode 3: no company at all — a role-only pipeline. `company` stays None;
+        # the doc below stores blank company fields. Auto-mapping from a lead/
+        # campaign fills these in later (candidate_pipeline), same as any other
+        # pipeline field — nothing here needs to anticipate that path.
+
+        # Reject if a pipeline already exists for this company. Only meaningful
+        # when there IS a company — a role-only pipeline has no company identity
+        # to collide on, so several of them coexisting is correct, not a duplicate.
+        if company is not None:
+            existing = await pipelines.find_one({
+                "$or": [
+                    {"companyId": str(company["_id"])},
+                    {"companyDomain": company.get("companyDomain")},
+                ]
+            })
+            if existing:
+                raise HTTPException(
+                    409,
+                    {"error": "pipeline_already_exists", "pipelineId": str(existing["_id"])},
+                )
 
         # Resolve matchedIndustry: prefer the one passed in, else from the company
-        matched_industry = body.matchedIndustry or company.get("matchedIndustry")
+        matched_industry = body.matchedIndustry or (company.get("matchedIndustry") if company else None)
 
         # Use the company HQ location we extract; allow body override
-        company_location = body.companyLocation or company.get("location") or ""
+        company_location = body.companyLocation or (company.get("location") if company else "") or ""
 
         doc = {
-            "companyId": str(company["_id"]),
-            "companyName": company.get("companyName") or body.companyName or "",
-            "companyDomain": company.get("companyDomain") or body.companyDomain or "",
-            "companyIndustry": company.get("industry") or body.companyIndustry or "",
+            "companyId": str(company["_id"]) if company else None,
+            "companyName": (company.get("companyName") if company else None) or body.companyName or "",
+            "companyDomain": (company.get("companyDomain") if company else None) or body.companyDomain or "",
+            "companyIndustry": (company.get("industry") if company else None) or body.companyIndustry or "",
             "matchedIndustry": matched_industry,
             "companyLocation": company_location,
-            "linkedinSlug": company.get("linkedinSlug") or body.linkedinSlug,
-            "website": company.get("website") or body.website or "",
+            "linkedinSlug": (company.get("linkedinSlug") if company else None) or body.linkedinSlug,
+            "website": (company.get("website") if company else None) or body.website or "",
             "source": source,
             "jobs": [],
             "totalCandidates": 0,
@@ -357,7 +369,9 @@ async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
         try:
             res = await pipelines.insert_one(doc)
         except DuplicateKeyError:
-            # Another caller raced us
+            # Another caller raced us — only possible when companyDomain is a
+            # real (non-empty) value, since that's the only case the partial
+            # unique index actually enforces.
             again = await pipelines.find_one({"companyDomain": doc["companyDomain"]})
             raise HTTPException(
                 409, {"error": "pipeline_already_exists", "pipelineId": str(again["_id"])},

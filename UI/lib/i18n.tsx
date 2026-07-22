@@ -23,8 +23,8 @@ const en = {
   'group.system': 'System',
 
   'nav.agent': 'AI Engineer',
-  'nav.runs': 'Email Campaigns',
-  'nav.candidates': 'Candidates',
+  'nav.runs': 'Campaigns',
+  'nav.candidates': 'Candidate Sourcing',
   'nav.matching': 'Candidate Matching',
   'nav.outreach': 'Outreach',
   'nav.dashboards': 'Dashboards',
@@ -50,8 +50,8 @@ const de: Dict = {
   'group.system': 'System',
 
   'nav.agent': 'KI-Ingenieur',
-  'nav.runs': 'E-Mail-Kampagnen',
-  'nav.candidates': 'Kandidaten',
+  'nav.runs': 'Kampagnen',
+  'nav.candidates': 'Kandidaten-Sourcing',
   'nav.matching': 'Kandidaten-Matching',
   'nav.outreach': 'Ansprache',
   'nav.dashboards': 'Dashboards',

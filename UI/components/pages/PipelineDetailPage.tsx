@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
 import {
-  fetchPipeline, removeJobFromPipeline,
+  fetchPipeline, removeJobFromPipeline, pipelineDisplayName,
   type Pipeline, type PipelineJob, type PipelineJobSearchStatus,
 } from '@/lib/api';
 
@@ -103,7 +103,7 @@ export function PipelineDetailPage({ pipelineId }: Props) {
 
   return (
     <>
-      <TopBar title={pipeline ? pipeline.companyName : 'Pipeline'} />
+      <TopBar title={pipeline ? pipelineDisplayName(pipeline) : 'Pipeline'} />
 
       <div style={{
         display: 'flex', alignItems: 'center', gap: 12, padding: '12px 24px',
@@ -140,11 +140,11 @@ export function PipelineDetailPage({ pipelineId }: Props) {
               padding: '16px 20px', marginBottom: 20, background: '#FFFFFF',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                <Icon name="building-2" size={18} style={{ color: 'var(--fg-muted)' }} />
-                <span style={{ fontSize: 15, fontWeight: 600 }}>{pipeline.companyName}</span>
+                <Icon name={pipeline.companyName ? 'building-2' : 'briefcase'} size={18} style={{ color: 'var(--fg-muted)' }} />
+                <span style={{ fontSize: 15, fontWeight: 600 }}>{pipelineDisplayName(pipeline)}</span>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 12, color: 'var(--fg-muted)' }}>
-                <span><Icon name="globe" size={11} /> {pipeline.companyDomain}</span>
+                {pipeline.companyDomain && <span><Icon name="globe" size={11} /> {pipeline.companyDomain}</span>}
                 {pipeline.companyIndustry && <span><Icon name="briefcase" size={11} /> {pipeline.companyIndustry}</span>}
                 {pipeline.companyLocation && <span><Icon name="map-pin" size={11} /> {pipeline.companyLocation}</span>}
               </div>

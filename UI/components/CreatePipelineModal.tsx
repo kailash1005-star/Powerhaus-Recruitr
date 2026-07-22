@@ -54,12 +54,15 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
   }, [isOpen]);
 
   const handleCreate = async () => {
-    if (!createdPipeline && (!companyName.trim() || !companyDomain.trim())) {
-      setError('Company name and domain are required.');
-      return;
-    }
     if (!jobTitle.trim()) {
       setError('Role title is required — it drives the candidate search.');
+      return;
+    }
+    // Company is optional, but a lone name or domain is almost certainly a
+    // typo'd submission rather than a deliberate "I only know one of these" —
+    // ask for both or neither, same rule the backend enforces.
+    if (!createdPipeline && Boolean(companyName.trim()) !== Boolean(companyDomain.trim())) {
+      setError('Provide both company name and domain, or leave both blank.');
       return;
     }
     setBusy(true);
@@ -70,8 +73,8 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
       if (!pipeline) {
         try {
           pipeline = await createPipeline({
-            companyName: companyName.trim(),
-            companyDomain: companyDomain.trim(),
+            companyName: companyName.trim() || undefined,
+            companyDomain: companyDomain.trim() || undefined,
             companyIndustry: companyIndustry.trim() || undefined,
             companyLocation: companyLocation.trim() || undefined,
           });
@@ -154,7 +157,8 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
                 New candidate pipeline
               </div>
               <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-                Company + role in one go — the AI prefills the search from what you enter here.
+                Start from the role — the AI prefills the search from what you enter here.
+                Company details are optional and can be added later.
               </div>
             </div>
           </div>
@@ -182,20 +186,54 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
             </div>
           )}
 
-          {/* Company */}
+          {/* Role */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <span style={sectionTitle}>The role you&apos;re hiring for</span>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1.4 }}>
+                <label style={labelStyle}>Job Title *</label>
+                <input
+                  style={inputStyle} placeholder="e.g. Senior SAP FI Consultant" autoFocus
+                  value={jobTitle} disabled={busy}
+                  onChange={(e) => setJobTitle(e.target.value)}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Job Location</label>
+                <input
+                  style={inputStyle} placeholder="e.g. Berlin, Germany"
+                  value={jobLocation} disabled={busy}
+                  onChange={(e) => setJobLocation(e.target.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Job description</label>
+              <textarea
+                style={{ ...inputStyle, height: 96, padding: '8px 12px', resize: 'vertical' }}
+                placeholder="Paste the JD or the key requirements — the AI reads this to propose the search filters and the must-have skills. More detail here = sharper candidates."
+                value={jobDescription} disabled={busy}
+                onChange={(e) => setJobDescription(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Company — optional. A pipeline started directly from a role doesn't
+             need one yet; it fills in automatically if this role is later mapped
+             from a lead/campaign. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: createdPipeline ? 0.55 : 1 }}>
-            <span style={sectionTitle}>The company</span>
+            <span style={sectionTitle}>The company <span style={{ textTransform: 'none', fontWeight: 500, letterSpacing: 0 }}>(optional)</span></span>
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Company Name *</label>
+                <label style={labelStyle}>Company Name</label>
                 <input
-                  style={inputStyle} placeholder="e.g. Acme Corp" autoFocus
+                  style={inputStyle} placeholder="e.g. Acme Corp"
                   value={companyName} disabled={!!createdPipeline || busy}
                   onChange={(e) => setCompanyName(e.target.value)}
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Company Domain *</label>
+                <label style={labelStyle}>Company Domain</label>
                 <input
                   style={inputStyle} placeholder="e.g. acme.com"
                   value={companyDomain} disabled={!!createdPipeline || busy}
@@ -222,38 +260,6 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
               </div>
             </div>
           </div>
-
-          {/* Role */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <span style={sectionTitle}>The role you&apos;re hiring for</span>
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={{ flex: 1.4 }}>
-                <label style={labelStyle}>Job Title *</label>
-                <input
-                  style={inputStyle} placeholder="e.g. Senior SAP FI Consultant"
-                  value={jobTitle} disabled={busy}
-                  onChange={(e) => setJobTitle(e.target.value)}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Job Location</label>
-                <input
-                  style={inputStyle} placeholder="e.g. Berlin, Germany"
-                  value={jobLocation} disabled={busy}
-                  onChange={(e) => setJobLocation(e.target.value)}
-                />
-              </div>
-            </div>
-            <div>
-              <label style={labelStyle}>Job description</label>
-              <textarea
-                style={{ ...inputStyle, height: 96, padding: '8px 12px', resize: 'vertical' }}
-                placeholder="Paste the JD or the key requirements — the AI reads this to propose the search filters and the must-have skills. More detail here = sharper candidates."
-                value={jobDescription} disabled={busy}
-                onChange={(e) => setJobDescription(e.target.value)}
-              />
-            </div>
-          </div>
         </div>
 
         {/* Footer */}
@@ -278,7 +284,7 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
             </button>
             <button
               onClick={handleCreate}
-              disabled={busy || (!createdPipeline && (!companyName.trim() || !companyDomain.trim())) || !jobTitle.trim()}
+              disabled={busy || !jobTitle.trim()}
               style={{
                 height: 36, padding: '0 16px', borderRadius: 6, fontSize: 13, fontWeight: 600,
                 cursor: busy ? 'not-allowed' : 'pointer', border: 'none',

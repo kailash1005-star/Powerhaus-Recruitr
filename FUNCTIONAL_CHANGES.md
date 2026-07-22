@@ -365,6 +365,19 @@ Every change below is independent and individually revertible. Nothing was commi
 **Revert:** restore `BASE_WEIGHTS` 0.50/0.30/0.12/0.08, ceilings 40/25, and the version string.
 **Verification:** 285/285 offline tests pass (weight-renormalisation, Marina score band, and QA within-band no-op fixtures updated to the new rubric). **Validated on live production data** (run "Senior Payroll & SAP HCM Spezialist", 34 CV candidates): the 91%-coverage genuine specialist is **unchanged at 85**; the wrong-domain data-engineer CVs drop **40 → 22**; the 0-coverage CVs drop **25 → 8**.
 
+## FC-43 — Role-first pipeline creation; company now optional; nav relabel
+
+**Was:** "New candidate pipeline" showed Company above Role and required Company Name + Domain before a pipeline could be created at all — even when the recruiter only had a role to work from (the common case for a pipeline started directly, not from a mapped lead).
+
+**Now:**
+- **UI** ([CreatePipelineModal.tsx](UI/components/CreatePipelineModal.tsx)): "The role you're hiring for" is now the first section, "The company *(optional)*" the second. Company Name/Domain lost their required markers; the create button is gated on Job Title alone. A lone name-or-domain (no matching pair) is still rejected client-side as a likely typo, mirroring the backend rule below.
+- **Backend** ([pipelines.py](BE/app/api/v1/pipelines.py) `create_pipeline`): a third creation mode — no `companyId` and no company name/domain — now succeeds with a genuinely company-less pipeline (`companyId: null`, blank name/domain), instead of the previous hard 400. The company-collision duplicate check only runs when a company actually exists, so multiple role-only pipelines coexist correctly rather than false-colliding on a shared blank domain. The existing "companyId, or name+domain together" contract is unchanged for callers that do supply a company (e.g. the lead/campaign-mapped flow, which still auto-fills company details as before — nothing in that path changed).
+- **Display fallback** — everywhere a pipeline's company name was the primary label (pipelines list, delete-confirmation, pipeline detail header, the job-candidates page's "Back to …" breadcrumb), it now falls back to the pipeline's first role title via a new shared `pipelineDisplayName()` helper ([api.ts](UI/lib/api.ts)) when there's no company yet. Company-specific rows (domain/industry/location chips) are hidden rather than shown blank.
+- **Nav relabel** ([i18n.tsx](UI/lib/i18n.tsx)): "Email Campaigns" → **Campaigns** (`E-Mail-Kampagnen` → `Kampagnen`), "Candidates" → **Candidate Sourcing** (`Kandidaten` → `Kandidaten-Sourcing`, matching the existing `Kandidaten-Matching` hyphenation). "Candidate Matching" is unchanged. Labels are the only change — routes and components are untouched.
+
+**Revert:** restore the required markers + button gate in the modal, restore the hard-400 branch and unconditional duplicate check in `create_pipeline`, revert the three nav strings.
+**Verification:** 312/312 backend tests pass (7 new in `BE/tests/test_pipeline_creation.py`: role-only creation, two role-only pipelines coexisting without a false 409, lone-field rejection, and the existing full-company dedupe path re-verified unchanged). UI `tsc --noEmit` clean.
+
 ## FC-15 — Test infrastructure (support change, no runtime effect)
 
 - `BE/pytest.ini` — registers `tests/`, `asyncio_mode = auto` (fixes 2 previously-failing async tests), and keeps the live-DB diagnostic scripts in `tests/` from being collected as tests.
