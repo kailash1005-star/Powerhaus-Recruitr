@@ -16,12 +16,41 @@
 
 const API_BASE = '/api/proxy';
 
+// ── Session handling ─────────────────────────────────────────────────────────
+// A 401 from the proxy means the session is dead (expired, silent refresh
+// failed, or revoked) — not a transient API error. Left as a thrown Error, this
+// surfaced as a raw "GET /api/v1/... → 401" message on an otherwise-normal-
+// looking page, which reads as the product being broken rather than a session
+// that needs renewing. Route it through the same login flow the page-level
+// middleware already uses for an unauthenticated page load, `returnTo` and all,
+// so the user lands back where they were once they sign in again.
+function redirectToLogin(): void {
+  if (typeof window === 'undefined') return;
+  const { pathname, search } = window.location;
+  if (pathname.startsWith('/auth/') || pathname === '/login') return; // no loop
+  window.location.href = `/auth/login?returnTo=${encodeURIComponent(pathname + search)}`;
+}
+
+/** Shared response handling for every helper below. On 401 this redirects and
+ *  never resolves — the browser is already navigating away, so nothing should
+ *  render an error for the instant before that completes. */
+async function handleResponse<T>(res: Response, fallback: string): Promise<T> {
+  if (res.status === 401) {
+    redirectToLogin();
+    return new Promise<T>(() => {});
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || fallback);
+  }
+  return res.json();
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
-  return res.json();
+  return handleResponse<T>(res, `GET ${path} → ${res.status}`);
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -30,17 +59,12 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `POST ${path} → ${res.status}`);
-  }
-  return res.json();
+  return handleResponse<T>(res, `POST ${path} → ${res.status}`);
 }
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`DELETE ${path} → ${res.status}`);
-  return res.json();
+  return handleResponse<T>(res, `DELETE ${path} → ${res.status}`);
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
@@ -49,11 +73,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `PATCH ${path} → ${res.status}`);
-  }
-  return res.json();
+  return handleResponse<T>(res, `PATCH ${path} → ${res.status}`);
 }
 
 // ── ICP Config ────────────────────────────────────────────────────────────────
@@ -1126,8 +1146,7 @@ export async function uploadCvs(files: File[]): Promise<{ batchId: string; recei
   const fd = new FormData();
   files.forEach((f) => fd.append('files', f));
   const res = await fetch(`${API_BASE}/api/v1/matching/cv/upload`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error((await res.text()) || `upload → ${res.status}`);
-  return res.json();
+  return handleResponse(res, `upload → ${res.status}`);
 }
 
 export function fetchCvBatchStatus(batchId: string): Promise<CvBatchStatus> {
@@ -1159,8 +1178,7 @@ export async function runMatchingFile(file: File, returnTop?: number): Promise<M
   fd.append('file', file);
   if (returnTop != null) fd.append('returnTop', String(returnTop));
   const res = await fetch(`${API_BASE}/api/v1/matching/run`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error((await res.text()) || `match → ${res.status}`);
-  return res.json();
+  return handleResponse(res, `match → ${res.status}`);
 }
 
 // ── Saved match runs (history) ──────────────────────────────────────────────
