@@ -12,9 +12,9 @@ import { CandidateColumnFilter } from '../CandidateColumnFilter';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate,
   fetchCandidate, bulkEnrichJobCandidates, runJobMatch, fetchCandidateFacets,
-  fetchJobRequirements, discoverJobCandidates,
-  type Candidate, type Pipeline, type CandidateFilters, type CandidateFacets,
-  type DiscoverFilters,
+  fetchJobRequirements, discoverJobCandidates, deleteJobCandidates,
+  type Candidate, type Pipeline, type PipelineJob, type CandidateFilters, type CandidateFacets,
+  type DiscoverFilters, type EnrichMode,
 } from '@/lib/api';
 
 interface Props { pipelineId: string; jobId: string }
@@ -181,8 +181,10 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const [loading, setLoading] = useState(true);
 
   // Bulk actions (enrich / run match) on the selected candidates.
-  const [bulkBusy, setBulkBusy] = useState<null | 'enrich' | 'match'>(null);
+  const [bulkBusy, setBulkBusy] = useState<null | 'enrich' | 'match' | 'delete'>(null);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
+  // The Enrich split-button menu (Apollo / Apify / Both).
+  const [enrichMenuOpen, setEnrichMenuOpen] = useState(false);
 
   // Per-column filters (AND across columns). Server-side: the table is paginated,
   // so filtering only the fetched page would report wrong totals and miss rows.
@@ -206,8 +208,8 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const [slideOpen, setSlideOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Discovery questionnaire (Apify LinkedIn search)
-  const [discoverOpen, setDiscoverOpen] = useState(false);
+  // Discovery: a source picker (Apify vs Apollo) → the matching questionnaire.
+  const [discoverOpen, setDiscoverOpen] = useState(false);       // unified discovery form
   const [discoverMsg, setDiscoverMsg] = useState<string | null>(null);
   const autoOpenedRef = useRef(false);
 
@@ -311,6 +313,20 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
 
   // Poll the job through search → auto-enrich after the questionnaire is run.
   const pollDiscover = useCallback(async () => {
+    // A per-engine progress line for the combined run ("LinkedIn: 12 · Apollo: searching…").
+    const engineLine = (je?: PipelineJob | null): string => {
+      const part = (label: string, st?: string | null, kept?: number | null) => {
+        if (!st || st === 'skipped') return null;
+        if (st === 'running') return `${label}: searching…`;
+        if (st === 'failed') return `${label}: failed`;
+        return `${label}: ${kept ?? 0}`;
+      };
+      const bits = [
+        part('LinkedIn', je?.apifySearchStatus, je?.apifyKept),
+        part('Apollo', je?.apolloSearchStatus, je?.apolloKept),
+      ].filter(Boolean);
+      return bits.length ? bits.join(' · ') : 'Searching for candidates…';
+    };
     let sawRunning = false;
     for (let i = 0; i < 200; i++) {
       await new Promise((r) => setTimeout(r, 2000));
@@ -321,7 +337,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       const ss = je?.searchStatus;
       const es = je?.enrichStatus;
       const found = je?.candidateCount ?? 0;
-      if (ss === 'running') { sawRunning = true; setDiscoverMsg('Searching LinkedIn for candidates…'); continue; }
+      if (ss === 'running') { sawRunning = true; setDiscoverMsg(engineLine(je)); continue; }
       if (ss === 'failed') { setDiscoverMsg(`Search failed: ${je?.searchError || 'unknown error'}`); return; }
       // Zero strong candidates ends as awaiting_input (the recruiter decides
       // the next move) — terminal once we know THIS search ran, not the state
@@ -355,7 +371,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const onDiscoverSubmitted = () => {
     setDiscoverOpen(false);
     setDismissedShortfall(false);
-    setDiscoverMsg('Starting LinkedIn search…');
+    setDiscoverMsg('Starting search…');
     pollDiscover();
   };
 
@@ -497,10 +513,12 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       if (st === 'completed') {
         const apify = c.apify_enriched ?? 0;
         const apollo = c.apollo_enriched ?? 0;
+        const apolloFailed = c.apollo_failed ?? 0;
         const nf = c.not_found ?? 0;
         const parts: string[] = [];
+        if (apollo) parts.push(`${apollo} contact(s) revealed`);
         if (apify) parts.push(`${apify} profile(s) enriched`);
-        if (apollo) parts.push(`${apollo} via Apollo`);
+        if (apolloFailed) parts.push(`${apolloFailed} Apollo lookup(s) failed`);
         if (nf) parts.push(`${nf} no profile found`);
         setBulkMsg(`Enriched ✓ — ${parts.join(' · ') || 'nothing left to enrich'}`);
         await loadCandidates();
@@ -511,16 +529,38 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     setBulkMsg('Enrichment is taking longer than expected — refresh to check.');
   }, [pipelineId, jobId, loadCandidates]);
 
-  const onBulkEnrich = async () => {
+  const onBulkEnrich = async (mode: EnrichMode = 'both') => {
     if (selected.size === 0 || selected.size > ENRICH_MAX) return;
+    setEnrichMenuOpen(false);
     setBulkBusy('enrich');
     setActionError(null);
-    setBulkMsg(`Queuing enrichment for ${selected.size} candidate(s)…`);
+    const engine = mode === 'apollo' ? 'Apollo' : mode === 'apify' ? 'Apify' : 'Apollo + Apify';
+    setBulkMsg(`Queuing ${engine} enrichment for ${selected.size} candidate(s)…`);
     try {
-      await bulkEnrichJobCandidates(pipelineId, jobId, Array.from(selected));
+      await bulkEnrichJobCandidates(pipelineId, jobId, Array.from(selected), mode);
       await pollEnrich();
     } catch (e: any) {
       setActionError(e.message || 'Bulk enrichment failed');
+      setBulkMsg(null);
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+
+  const onBulkDelete = async () => {
+    const n = selected.size;
+    if (n === 0) return;
+    if (!window.confirm(`Delete ${n} selected candidate(s) from this job? This can't be undone.`)) return;
+    setBulkBusy('delete');
+    setActionError(null);
+    setBulkMsg(`Deleting ${n} candidate(s)…`);
+    try {
+      const { deleted } = await deleteJobCandidates(pipelineId, jobId, Array.from(selected));
+      setSelected(new Set());
+      await loadCandidates();
+      setBulkMsg(`Deleted ${deleted} candidate(s).`);
+    } catch (e: any) {
+      setActionError(e.message || 'Delete failed');
       setBulkMsg(null);
     } finally {
       setBulkBusy(null);
@@ -679,7 +719,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         <div style={{ flex: 1 }} />
         <button
           onClick={() => setDiscoverOpen(true)}
-          title="Search LinkedIn for candidates with custom filters, then auto-enrich"
+          title="Search LinkedIn + Apollo for candidates"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 7, height: 34, padding: '0 14px',
             borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
@@ -899,26 +939,68 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
             <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 600 }}>
               {selected.size > 0 ? `${selected.size} selected` : 'Select candidates to act'}
             </span>
-            <button
-              onClick={onBulkEnrich}
-              disabled={bulkBusy !== null || selected.size === 0 || selected.size > ENRICH_MAX}
-              title={selected.size === 0
-                ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
-                : selected.size > ENRICH_MAX
-                ? `Enrichment is capped at ${ENRICH_MAX} per batch — pick your ${ENRICH_MAX} strongest candidates. You can enrich more in a second batch.`
-                : 'Pull full LinkedIn work history/skills for the selected candidates (background). Skips already-enriched. This is the paid step.'}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
-                borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
-                cursor: bulkBusy || selected.size === 0 || selected.size > ENRICH_MAX ? 'not-allowed' : 'pointer',
-                border: `1px solid ${selected.size > ENRICH_MAX ? '#DC2626' : 'var(--primary)'}`,
-                background: '#FFF', color: selected.size > ENRICH_MAX ? '#DC2626' : 'var(--primary)',
-                opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
-              }}
-            >
-              <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
-              Enrich{selected.size > 0 ? ` (${selected.size}/${ENRICH_MAX})` : ''}
-            </button>
+            {(() => {
+              const enrichDisabled = bulkBusy !== null || selected.size === 0 || selected.size > ENRICH_MAX;
+              const overCap = selected.size > ENRICH_MAX;
+              const opts: { mode: EnrichMode; label: string; desc: string }[] = [
+                { mode: 'apollo', label: 'Apollo enrich', desc: 'Verified email + contact. No profile scrape, no Apify.' },
+                { mode: 'apify', label: 'Apify enrich', desc: 'Full LinkedIn work history & skills. No Apollo credit.' },
+                { mode: 'both', label: 'Both', desc: 'Apollo contact, then Apify deep profile.' },
+              ];
+              return (
+                <div style={{ position: 'relative', display: 'inline-flex' }}>
+                  <button
+                    onClick={() => { if (!enrichDisabled) setEnrichMenuOpen((o) => !o); }}
+                    disabled={enrichDisabled}
+                    title={selected.size === 0
+                      ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
+                      : overCap
+                      ? `Enrichment is capped at ${ENRICH_MAX} per batch — pick your ${ENRICH_MAX} strongest candidates. You can enrich more in a second batch.`
+                      : 'Choose an engine: Apollo (contact), Apify (deep profile), or both. Background, skips already-enriched. This is the paid step.'}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
+                      borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                      cursor: enrichDisabled ? 'not-allowed' : 'pointer',
+                      border: `1px solid ${overCap ? '#DC2626' : 'var(--primary)'}`,
+                      background: '#FFF', color: overCap ? '#DC2626' : 'var(--primary)',
+                      opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
+                    }}
+                  >
+                    <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
+                    Enrich{selected.size > 0 ? ` (${selected.size}/${ENRICH_MAX})` : ''}
+                    <Icon name="chevron-down" size={13} />
+                  </button>
+                  {enrichMenuOpen && !enrichDisabled && (
+                    <>
+                      {/* click-catcher to close on outside click */}
+                      <div onClick={() => setEnrichMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+                      <div style={{
+                        position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 41,
+                        width: 268, background: '#FFF', border: '1px solid var(--border-card)',
+                        borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.16)', overflow: 'hidden',
+                      }}>
+                        {opts.map((o, i) => (
+                          <button
+                            key={o.mode}
+                            onClick={() => onBulkEnrich(o.mode)}
+                            style={{
+                              display: 'block', width: '100%', textAlign: 'left', padding: '10px 13px',
+                              border: 'none', borderTop: i === 0 ? 'none' : '1px solid var(--border-default)',
+                              background: '#FFF', cursor: 'pointer', fontFamily: 'inherit',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = '#F5F3FF'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = '#FFF'; }}
+                          >
+                            <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg-primary)' }}>{o.label}</div>
+                            <div style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--fg-muted)', marginTop: 2 }}>{o.desc}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
             <button
               onClick={onRunMatch}
               disabled={bulkBusy !== null || selected.size === 0}
@@ -935,6 +1017,23 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
             >
               <Icon name={bulkBusy === 'match' ? 'loader' : 'target'} size={13} />
               Run Match{selected.size > 0 ? ` (${selected.size})` : ''}
+            </button>
+            <button
+              onClick={onBulkDelete}
+              disabled={bulkBusy !== null || selected.size === 0}
+              title={selected.size === 0
+                ? 'Tick candidates first, then delete them from this job.'
+                : 'Remove the selected candidates from this job. This cannot be undone.'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
+                borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                cursor: bulkBusy || selected.size === 0 ? 'not-allowed' : 'pointer',
+                border: '1px solid #DC2626', background: '#FFF', color: '#DC2626',
+                opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
+              }}
+            >
+              <Icon name={bulkBusy === 'delete' ? 'loader' : 'trash-2'} size={13} />
+              Delete{selected.size > 0 ? ` (${selected.size})` : ''}
             </button>
           </div>
         )}

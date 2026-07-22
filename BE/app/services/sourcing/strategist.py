@@ -28,11 +28,14 @@ from app.services.sourcing.common import (
     title_in_domain,
 )
 from app.services.sourcing.models import (
-    BroadeningStep, DomainAnchor, FilterRationale, SearchBrief, SearchFilters,
-    SearchStrategy, enum_vocabulary_prompt,
+    APOLLO_SENIORITIES, ApolloPlan, BroadeningStep, DomainAnchor,
+    FilterRationale, SearchBrief, SearchFilters, SearchStrategy,
+    enum_vocabulary_prompt,
 )
 
 logger = logging.getLogger(__name__)
+
+_apollo_codes = APOLLO_SENIORITIES
 
 INSTRUCTIONS = f"""You are a technical sourcing strategist. You turn a job opening
 into a LinkedIn people-search that returns REAL candidates.
@@ -71,11 +74,17 @@ Rules for the filters you produce:
 3. `locations` — a LinkedIn-recognisable place. Prefer the metro/city the job is
    in; use the country when the role is remote or the city is tiny. Never emit a
    full street address, a postcode, or an office name.
-4. `seniorityLevel` / `function` / `yearsOfExperience` — infer from the JD, not
-   the title alone. A JD asking for 8+ years and "lead the workstream" is Senior
-   or Experienced Manager, whatever the title says. LEAVE A FILTER NULL when the
-   JD doesn't support it — every filter you add shrinks the result set, and a
-   wrong filter is far worse than a missing one.
+4. `seniorityLevel` / `function` / `yearsOfExperience` / `companyHeadcount` —
+   these four are LinkedIn's OWN INFERRED fields, and they are missing or wrong
+   on a large share of real profiles (a "Senior SAP EWM Consultant" with 8 years
+   is routinely tagged Entry or left blank). Each one you set is AND-ed and
+   silently DROPS good candidates whose inferred value doesn't match. So your
+   DEFAULT for all four is NULL (Any). Only set one when the JD gives
+   UNAMBIGUOUS support for it AND you are highly confident — and even then prefer
+   to encode seniority in the TITLE WORDS ("Senior SAP EWM Consultant") rather
+   than in `seniorityLevel`. A wrong filter here is far worse than a missing one;
+   when in doubt, leave it null and add a `rationale` note saying you kept it Any
+   to protect recall.
 5. Skills are NOT a filter on this actor, but `mustHaveSkills` in the brief is
    the EXACT list the candidate will later be scored against — a candidate who
    carries none of them cannot pass, however good the title looks. So the
@@ -101,6 +110,24 @@ Enum filters MUST use one of these codes (emit the CODE, not the label):
 {enum_vocabulary_prompt()}
 
 Also produce:
+  • `focusTitle` — the SINGLE best LinkedIn-real title for this role, the one you
+    would type first ("Senior SAP EWM/LES Consultant" → "SAP EWM Consultant").
+    It anchors both search engines and headlines the review screen. Keep the
+    seniority word IN it when the role is senior. It should be the strongest entry
+    of `currentJobTitles`.
+  • `apolloPlan` — the SAME role expressed for Apollo, which matches differently
+    from LinkedIn and needs its own input (do NOT just copy the Apify filters):
+      - `titles`: the title family PLUS word-order variants Apollo indexes
+        ("SAP EWM Consultant", "Consultant SAP EWM", "EWM Consultant"). Apollo
+        OR-matches and expands with similar titles, so more titles = more reach.
+      - `qKeywords`: the 1–3 DEFINING skills only (e.g. "SAP EWM", "SAP LES").
+        Apollo matches these as free text and ANDs them, so more than three
+        collapses the result set. Pick the terms no true candidate would lack.
+      - `locations`: where the candidate LIVES ("Koblenz, Germany"), not the
+        employer HQ. Use the country when the role is remote.
+      - `seniorities`: Apollo codes ({", ".join(_apollo_codes)}) — set at most one
+        or two, and ONLY when the role is clearly at that level; a title family
+        already carries most seniority signal, so leave it empty when unsure.
   • `interpretedRole` — one line naming what this job really is, in plain terms.
   • `titleReasoning` — one or two sentences on why the posting title does or
     doesn't work as a search term. This is shown to the recruiter, so be concrete
@@ -159,10 +186,16 @@ def _fallback(brief: SearchBrief) -> SearchStrategy:
     core, eco = derive_anchor_terms([brief.jobTitle])
     return SearchStrategy(
         interpretedRole=brief.jobTitle,
+        focusTitle=brief.jobTitle,
         titleReasoning="AI suggestions unavailable — prefilled from the job title as-is.",
         filters=SearchFilters(
             searchQuery=brief.jobTitle,
             currentJobTitles=[brief.jobTitle] if brief.jobTitle else [],
+            locations=[brief.jobLocation] if brief.jobLocation else [],
+        ),
+        apolloPlan=ApolloPlan(
+            titles=[brief.jobTitle] if brief.jobTitle else [],
+            qKeywords=list(brief.mustHaveSkills[:3]),
             locations=[brief.jobLocation] if brief.jobLocation else [],
         ),
         domainAnchor=DomainAnchor(coreTerms=core, ecosystemTerms=eco),
@@ -285,4 +318,40 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     # Rationale must reference real fields, or the UI renders orphan tooltips.
     valid = set(SearchFilters.model_fields)
     strategy.rationale = [r for r in strategy.rationale if r.field in valid]
+
+    # ── focusTitle: always present; fall back to the strongest title / role ──
+    if not (strategy.focusTitle or "").strip():
+        strategy.focusTitle = (
+            (f.currentJobTitles[0] if f.currentJobTitles else "")
+            or strategy.interpretedRole
+            or brief.jobTitle
+        )
+
+    # ── Apollo plan: clamp, and derive from the Apify filters when omitted ──
+    ap = strategy.apolloPlan
+
+    def _dedupe(xs: list[str], cap: int) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for x in xs:
+            t = (x or "").strip()
+            k = t.lower()
+            if t and k not in seen:
+                out.append(t)
+                seen.add(k)
+        return out[:cap]
+
+    ap.titles = _dedupe(ap.titles or [], 12)
+    if not ap.titles:
+        # No Apollo titles proposed — reuse the LinkedIn title family + focus.
+        ap.titles = _dedupe([strategy.focusTitle, *f.currentJobTitles], 12)
+    # q_keywords AND-narrow on Apollo — keep the 3 defining terms at most.
+    ap.qKeywords = _dedupe(ap.qKeywords or [], 3)
+    if not ap.qKeywords and brief.mustHaveSkills:
+        ap.qKeywords = _dedupe(list(brief.mustHaveSkills), 3)
+    ap.locations = _dedupe(ap.locations or f.locations or [], 5)
+    # Coerce seniorities to the Apollo vocabulary; drop anything unrecognised.
+    valid_sen = set(APOLLO_SENIORITIES)
+    ap.seniorities = [s for s in _dedupe(ap.seniorities or [], 3)
+                      if s.lower() in valid_sen][:2]
     return strategy

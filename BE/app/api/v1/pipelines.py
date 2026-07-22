@@ -22,7 +22,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -32,6 +32,8 @@ from pymongo.errors import DuplicateKeyError
 from app.database import get_database
 from app.services.candidate_pipeline import (
     add_job_to_pipeline,
+    enqueue_apollo_discover,
+    enqueue_combined_discover,
     enqueue_job_discover,
     enqueue_job_enrich,
     recount_pipeline,
@@ -74,8 +76,19 @@ class CandidatePatchSchema(BaseModel):
 
 
 class BulkEnrichSchema(BaseModel):
-    """Selected candidate ids to enrich (None/empty → all candidates in the job)."""
+    """Selected candidate ids to enrich (None/empty → all candidates in the job).
+
+    ``mode`` picks the enrichment engine(s): ``"apollo"`` (verified email +
+    contact, no scrape), ``"apify"`` (deep profile scrape only), or ``"both"``
+    (Apollo then Apify — the default).
+    """
     candidateIds: Optional[List[str]] = None
+    mode: Literal["apollo", "apify", "both"] = "both"
+
+
+class DeleteCandidatesSchema(BaseModel):
+    """Selected candidate ids to remove from a job."""
+    candidateIds: List[str]
 
 
 class JobMatchSchema(BaseModel):
@@ -161,6 +174,45 @@ class DiscoverSchema(BaseModel):
     profileLanguages: Optional[List[str]] = None
     recentlyChangedJobs: Optional[bool] = None
     recentlyPostedOnLinkedin: Optional[bool] = None
+
+
+class ApolloDiscoverSchema(BaseModel):
+    """Apollo people-search filters from the Apollo discovery questionnaire.
+
+    A separate, simpler engine from the Apify LinkedIn scrape: all fields ANDed
+    into one Apollo people-search. ``skills`` has no structured Apollo filter, so
+    it is matched as free-text ``q_keywords`` (a soft match). Results are
+    search-only — no auto-enrichment, no Apify — so contact info stays masked
+    until the recruiter reveals it on demand.
+    """
+    titles: Optional[List[str]] = None
+    locations: Optional[List[str]] = None
+    # Key skills → Apollo q_keywords (free-text, soft match across the profile).
+    skills: Optional[List[str]] = None
+    # Apollo person_seniorities enum codes (owner, c_suite, vp, head, director,
+    # manager, senior, entry, intern, partner, founder).
+    seniorities: Optional[List[str]] = None
+    industries: Optional[List[str]] = None
+    maxItems: Optional[int] = 25
+
+
+class EngineToggles(BaseModel):
+    """Which engines the unified 'Run search' fires. Both default on."""
+    apify: bool = True
+    apollo: bool = True
+
+
+class CombinedDiscoverSchema(BaseModel):
+    """The unified discovery payload — one screen, both engines.
+
+    ``apify`` carries the LinkedIn actor filters (same shape as ``DiscoverSchema``,
+    including the agentic controls the loop strips) and ``apollo`` the Apollo
+    people-search filters. ``engines`` toggles either off before running. The
+    shared ``maxItems`` comes from the Apify block.
+    """
+    apify: DiscoverSchema = Field(default_factory=DiscoverSchema)
+    apollo: ApolloDiscoverSchema = Field(default_factory=ApolloDiscoverSchema)
+    engines: EngineToggles = Field(default_factory=EngineToggles)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -503,6 +555,67 @@ async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverS
         raise HTTPException(500, f"Error starting discovery: {e}")
 
 
+@router.post("/{pipeline_id}/jobs/{job_id}/discover-apollo")
+async def discover_job_candidates_apollo(
+    pipeline_id: str, job_id: str, body: ApolloDiscoverSchema,
+):
+    """Run an Apollo people-search from the Apollo questionnaire filters, store
+    the results as candidates (search-only), all in the background. Poll the
+    job's ``searchStatus``.
+
+    This is the Apollo alternative to ``/discover``: no LinkedIn scrape and no
+    auto-enrichment. Key skills are matched via Apollo ``q_keywords`` (soft
+    match). Contact info stays masked until revealed on demand.
+    """
+    try:
+        payload = body.model_dump(exclude_none=True)
+        max_items = int(payload.pop("maxItems", 25) or 25)
+        result = await enqueue_apollo_discover(pipeline_id, job_id, payload, max_items)
+        return {"success": True, **result}
+    except ValueError as ve:
+        raise HTTPException(404, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Error starting Apollo discovery: {e}")
+
+
+@router.post("/{pipeline_id}/jobs/{job_id}/discover-combined")
+async def discover_job_candidates_combined(
+    pipeline_id: str, job_id: str, body: CombinedDiscoverSchema,
+):
+    """Run the Apify LinkedIn search AND the Apollo people-search CONCURRENTLY
+    from one payload, store both engines' results as candidates (deduped by
+    LinkedIn URL), all in the background. Poll the job's rollup ``searchStatus``,
+    plus ``apifySearchStatus`` / ``apolloSearchStatus`` (+ ``apifyKept`` /
+    ``apolloKept``) for the per-engine breakdown, then ``enrichStatus``.
+
+    Either engine can be switched off via ``engines`` (e.g. Apollo-only spends no
+    Apify credit). The Apify block is stripped of its agentic controls exactly as
+    ``/discover`` does; everything left is an actor filter.
+    """
+    try:
+        apify_payload = body.apify.model_dump(exclude_none=True)
+        max_items = int(apify_payload.pop("maxItems", 25) or 25)
+        apify_payload.pop("autoBroaden", None)
+        hints = apify_payload.pop("brief", None)
+        ladder = apify_payload.pop("broadeningLadder", None)
+        anchor = apify_payload.pop("domainAnchor", None)
+        adjacent = apify_payload.pop("adjacentTitles", None)
+
+        apollo_payload = body.apollo.model_dump(exclude_none=True)
+        apollo_payload.pop("maxItems", None)  # shared budget from the Apify block
+
+        engines = {"apify": body.engines.apify, "apollo": body.engines.apollo}
+        result = await enqueue_combined_discover(
+            pipeline_id, job_id, apify_payload, apollo_payload, engines, max_items,
+            hints=hints, ladder=ladder, anchor=anchor, adjacent_titles=adjacent,
+        )
+        return {"success": True, **result}
+    except ValueError as ve:
+        raise HTTPException(404, str(ve))
+    except Exception as e:
+        raise HTTPException(500, f"Error starting combined discovery: {e}")
+
+
 # ── POST /{id}/jobs/{jobId}/enrich (background Apollo→Apify bulk enrich) ──────
 
 
@@ -529,12 +642,51 @@ async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichS
             f"you can always enrich more in a second batch.",
         )
     try:
-        result = await enqueue_job_enrich(pipeline_id, job_id, body.candidateIds)
+        result = await enqueue_job_enrich(
+            pipeline_id, job_id, body.candidateIds, body.mode)
         return {"success": True, **result}
     except ValueError as ve:
         raise HTTPException(404, str(ve))
     except Exception as e:
         raise HTTPException(500, f"Error queuing enrichment: {e}")
+
+
+# ── POST /{id}/jobs/{jobId}/candidates/delete (remove selected candidates) ────
+
+
+@router.post("/{pipeline_id}/jobs/{job_id}/candidates/delete")
+async def delete_job_candidates(
+    pipeline_id: str, job_id: str, body: DeleteCandidatesSchema, db=Depends(get_db),
+):
+    """Delete the selected candidates from a job.
+
+    Mirrors the job-removal cascade: a candidate surfaced ONLY by this job is
+    deleted outright; one also surfaced by other jobs is kept, just detached from
+    this job (its ``sourceJobIds`` is trimmed). Pipeline/job counts are then
+    recomputed. Scoped to ``pipelineId`` so a stray id can't touch another
+    pipeline's candidates.
+    """
+    if not body.candidateIds:
+        raise HTTPException(400, "no candidate ids provided")
+    try:
+        oids = [ObjectId(c) for c in body.candidateIds]
+    except Exception:
+        raise HTTPException(400, "invalid candidate id")
+    try:
+        candidates = db["candidates"]
+        now = datetime.utcnow()
+        scope = {"pipelineId": pipeline_id, "_id": {"$in": oids}}
+        # 1. Candidates uniquely tied to this job → delete outright.
+        deleted = await candidates.delete_many({**scope, "sourceJobIds": [job_id]})
+        # 2. Shared with other jobs → detach this job only (keep the doc).
+        await candidates.update_many(
+            {**scope, "sourceJobIds": job_id},
+            {"$pull": {"sourceJobIds": job_id}, "$set": {"updatedAt": now}},
+        )
+        await recount_pipeline(pipeline_id)
+        return {"success": True, "deleted": deleted.deleted_count}
+    except Exception as e:
+        raise HTTPException(500, f"Error deleting candidates: {e}")
 
 
 # ── POST /{id}/jobs/{jobId}/match (background JD ↔ enriched-candidate match) ──

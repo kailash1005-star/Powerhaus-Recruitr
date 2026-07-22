@@ -300,6 +300,18 @@ async def rerun_job_search(pipeline_id: str, job_id: str) -> Dict[str, Any]:
         ladder = entry.get("lastDiscoverLadder")
         anchor = entry.get("lastDiscoverAnchor")
         adjacent = entry.get("adjacentTitles")
+        apollo_filters = entry.get("lastApolloFilters")
+        engines = entry.get("lastEngines")
+
+        # Job sourced through the unified flow → replay the SAME combined search.
+        if engines or apollo_filters:
+            asyncio.create_task(_combined_discover_for_job(
+                pipeline_id, job_id, filters or {}, apollo_filters or {},
+                engines or {"apify": bool(filters), "apollo": bool(apollo_filters)},
+                max_items, hints=hints, ladder=ladder, anchor=anchor,
+                adjacent_titles=adjacent,
+            ))
+            return {"queued": True, "engine": "combined"}
 
         if not filters:
             # Legacy job that never went through discovery — let the Strategist
@@ -410,10 +422,14 @@ async def recount_pipeline(pipeline_id: str) -> Dict[str, int]:
     return totals
 
 
-async def _finish(pipeline_id: str, job_id: str, *, status: str, **extras):
+async def _finish(pipeline_id: str, job_id: str, *, status: str,
+                  status_field: str = "searchStatus", **extras):
+    """Write a job's terminal search status. ``status_field`` lets the combined
+    runner target a per-engine status (``apifySearchStatus`` /
+    ``apolloSearchStatus``) instead of the shared rollup ``searchStatus``."""
     pipelines_col = await get_collection("candidatePipelines")
     fields = {
-        "jobs.$.searchStatus": status,
+        f"jobs.$.{status_field}": status,
         "updatedAt": datetime.utcnow(),
     }
     for k, v in extras.items():
@@ -580,6 +596,188 @@ async def _search_candidates_for_job(
             pass
 
 
+# ── Apollo questionnaire discovery (search-only, no auto-enrich) ─────────────
+#
+# The second sourcing engine, chosen from the "Discover candidates" source
+# picker. Where Apify runs a LinkedIn scrape and auto-enriches deep profiles,
+# this runs Apollo's FREE people-search from the recruiter's structured filters
+# (titles / locations / seniorities / industries / key-skills-as-q_keywords) and
+# stores the results directly — contact info stays masked until the recruiter
+# reveals it on demand (the existing per-candidate / bulk enrich). Candidates are
+# stamped ``source="apollo_search"`` so they land in the same list as Apify ones
+# but are distinguishable, and so on-demand enrich routes them through Apollo
+# /people/match (never the Apify scrape).
+
+
+async def _claim_discover_apollo(pipeline_id: str, job_id: str) -> bool:
+    """Atomic → searchStatus 'running' from any non-running state, stamped with
+    the Apollo engine. False if a search is already in flight for this job."""
+    pipelines_col = await get_collection("candidatePipelines")
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id),
+         "jobs": {"$elemMatch": {"jobId": job_id, "searchStatus": {"$ne": "running"}}}},
+        {"$set": {"jobs.$.searchStatus": "running", "jobs.$.searchError": None,
+                  "jobs.$.searchEngine": "apollo",
+                  "jobs.$.lastSearchedAt": datetime.utcnow(), "updatedAt": datetime.utcnow()}},
+    )
+    return res.modified_count > 0
+
+
+async def enqueue_apollo_discover(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int = 25,
+) -> Dict[str, Any]:
+    """Kick off Apollo questionnaire discovery for a job (background).
+
+    ``filters`` is the questionnaire payload (titles / locations / skills /
+    seniorities / industries). Poll the job's ``searchStatus``; results are
+    search-only, so there is no ``enrichStatus`` phase to wait on. Raises
+    ``ValueError("job_not_found")`` if the job isn't in the pipeline.
+    """
+    pipelines_col = await get_collection("candidatePipelines")
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+        {"$set": {
+            # Persist what this search ran with, mirroring the Apify path, so a
+            # rerun could replay the SAME Apollo search.
+            "jobs.$.lastApolloFilters": filters,
+            "jobs.$.lastApolloMaxItems": max_items,
+            "updatedAt": datetime.utcnow(),
+        }},
+    )
+    if res.matched_count == 0:
+        raise ValueError("job_not_found")
+    asyncio.create_task(_apollo_discover_for_job(
+        pipeline_id, job_id, filters, max_items,
+    ))
+    return {"queued": True}
+
+
+async def _apollo_discover_for_job(
+    pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+    *, managed: bool = False,
+) -> Optional[int]:
+    """Background worker: one Apollo people-search from the questionnaire filters,
+    stored as candidates. Metered under the candidate-sourcing stage.
+
+    Errors are converted to ``searchStatus = failed`` so a crash never breaks the
+    event loop or other pipelines.
+
+    ``managed`` = driven by the combined runner: write the per-engine
+    ``apolloSearchStatus`` (not the shared rollup), skip the shared claim and the
+    final ``recount_pipeline`` (the runner owns both), and RETURN the kept count
+    (None on failure) so the runner can compute the rollup.
+    """
+    from app.services import cost_service
+
+    sfield = "apolloSearchStatus" if managed else "searchStatus"
+    efield = "apolloSearchError" if managed else "searchError"
+
+    try:
+        if not managed and not await _claim_discover_apollo(pipeline_id, job_id):
+            logger.info("[Apollo] %s/%s already running — skip", pipeline_id, job_id)
+            return None
+
+        pipelines_col = await get_collection("candidatePipelines")
+        pipeline = await pipelines_col.find_one({"_id": ObjectId(pipeline_id)})
+        if not pipeline:
+            return
+        company_name = pipeline.get("companyName") or ""
+        company_domain = pipeline.get("companyDomain") or ""
+
+        titles = filters.get("titles") or []
+        target_title = titles[0] if titles else ""
+
+        apollo = ApolloService()
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+        ):
+            result = await asyncio.to_thread(
+                apollo.search_people,
+                titles=titles,
+                locations=filters.get("locations"),
+                skills=filters.get("skills"),
+                seniorities=filters.get("seniorities"),
+                industries=filters.get("industries"),
+                max_results=max_items,
+            )
+        people = result.get("people", [])
+
+        # ── post-filters: same-company drop + skip previously rejected ────────
+        candidates_col = await get_collection("candidates")
+        rejected_set = set(await candidates_col.distinct(
+            "apolloId", {"pipelineId": pipeline_id, "isAccepted": False}))
+
+        kept_people: List[dict] = []
+        for p in people:
+            if not p.get("id"):
+                continue
+            if _is_same_company(p, company_name, company_domain):
+                continue
+            if p["id"] in rejected_set:
+                continue
+            kept_people.append(p)
+
+        # ── insert / append ───────────────────────────────────────────────────
+        now = datetime.utcnow()
+        inserted = 0
+        re_surfaced = 0
+        for p in kept_people:
+            score, reasons = _score_match(p, target_title, None)
+            doc = _build_candidate_doc(
+                p,
+                pipeline_id=pipeline_id,
+                job_id=job_id,
+                applied_industry_fallback=False,
+                match_score=score,
+                match_reasons=reasons,
+                now=now,
+            )
+            # Source tag: keeps Apollo results in the same list but distinguishable
+            # from Apify ones, and routes on-demand enrich through Apollo (not Apify).
+            doc["source"] = "apollo_search"
+            try:
+                await candidates_col.insert_one(doc)
+                inserted += 1
+            except DuplicateKeyError:
+                await candidates_col.update_one(
+                    {"pipelineId": pipeline_id, "apolloId": p["id"]},
+                    {
+                        "$addToSet": {"sourceJobIds": job_id},
+                        "$push": {"runHistory": {
+                            "runAt": now, "jobId": job_id, "isRerun": False,
+                            "appliedIndustryFallback": False,
+                        }},
+                        "$set": {"updatedAt": now},
+                    },
+                )
+                re_surfaced += 1
+
+        kept = inserted + re_surfaced
+        finish_extras = {efield: None, "apolloKept": kept} if managed \
+            else {"searchError": None}
+        await _finish(pipeline_id, job_id, status="completed",
+                      status_field=sfield, **finish_extras)
+        if not managed:
+            counts = await recount_pipeline(pipeline_id)
+            total = counts.get("totalCandidates", 0)
+        else:
+            total = kept
+        logger.info(
+            "[Apollo] %s/%s done — found=%d inserted=%d re_surfaced=%d total=%d%s",
+            pipeline_id, job_id, len(people), inserted, re_surfaced, total,
+            " (managed)" if managed else "",
+        )
+        return kept if managed else None
+    except Exception as exc:
+        logger.error("[Apollo] %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)
+        try:
+            await _finish(pipeline_id, job_id, status="failed",
+                          status_field=sfield, **{efield: str(exc)[:300]})
+        except Exception:
+            pass
+        return None
+
+
 # ── Background bulk enrichment (Apollo → Apify) ──────────────────────────────
 #
 # Reuses the same per-(pipeline, job) background pattern as the candidate search,
@@ -603,12 +801,18 @@ async def _set_enrich(pipeline_id: str, job_id: str, status: str, **extras) -> N
 
 async def enqueue_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]] = None,
+    mode: str = "both",
 ) -> Dict[str, Any]:
     """Queue a background bulk-enrich for a job's (selected) candidates.
 
     ``candidate_ids`` narrows to specific candidates; None enriches every
-    candidate in the job. Returns ``{"queued": True}``; raises ``ValueError``
-    ("job_not_found") if the job isn't in the pipeline.
+    candidate in the job. ``mode`` selects which stage(s) run:
+      * ``"apollo"`` — Apollo /people/match only (verified email + contact).
+      * ``"apify"``  — Apify deep-profile scrape only (work history + skills).
+      * ``"both"``   — Apollo then Apify (source-aware; the default).
+
+    Returns ``{"queued": True}``; raises ``ValueError("job_not_found")`` if the
+    job isn't in the pipeline.
     """
     pipelines_col = await get_collection("candidatePipelines")
     now = datetime.utcnow()
@@ -618,26 +822,60 @@ async def enqueue_job_enrich(
     )
     if res.matched_count == 0:
         raise ValueError("job_not_found")
-    asyncio.create_task(_run_job_enrich(pipeline_id, job_id, candidate_ids))
+    asyncio.create_task(_run_job_enrich(pipeline_id, job_id, candidate_ids, mode))
     return {"queued": True}
 
 
 async def _enrich_for_job(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
+    mode: str = "both",
 ) -> Dict[str, Any]:
-    """Enrich a job's candidates, routing by SOURCE.
+    """Enrich a job's candidates for the chosen ``mode``.
 
-    Apify-discovered candidates carry a LinkedIn URN in ``apolloId`` (not an
-    Apollo person id), so the Apollo /people/match stage in ``bulk_enrich`` can
-    only ever fail for them — one wasted, paid Apollo call each — before falling
-    through to the Apify scrape that actually works. When every target is
-    Apify-sourced we skip straight to the Apify-only path (exactly what the old
-    auto-enrich did). Candidates that came from Apollo still get both stages
-    (verified email + deep profile). The returned summary always carries the
-    ``apollo_enriched``/``apify_enriched``/``not_found`` keys the UI reads.
+    ``mode`` is the recruiter's explicit pick from the Enrich dropdown:
+
+      * ``"apollo"`` — Apollo /people/match only. Reveals verified email + real
+        name/location; no Apify scrape. Needs a real Apollo id, so this is the
+        contact-reveal step for Apollo-sourced candidates.
+      * ``"apify"``  — Apify deep-profile scrape only (work history / skills),
+        keyed off the candidate's LinkedIn URL. No Apollo credit spent.
+      * ``"both"``   — Apollo then Apify, routed by SOURCE: Apify-discovered
+        candidates carry a LinkedIn URN in ``apolloId`` (not an Apollo person
+        id), so the Apollo stage can only fail for them — one wasted call each.
+        When every target is Apify-sourced we skip straight to the Apify-only
+        path; a set containing Apollo-sourced candidates runs both stages.
+
+    The returned summary always carries the ``apollo_enriched`` /
+    ``apify_enriched`` / ``not_found`` keys the UI reads.
     """
-    from app.services.candidate_enrichment import bulk_enrich, enrich_candidates
+    from app.services.candidate_enrichment import (
+        apollo_enrich_only, bulk_enrich, enrich_candidates,
+    )
 
+    def _normalize_apify(s: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "selected": s.get("selected", 0),
+            "apollo_enriched": 0, "apollo_failed": 0,
+            "apify_enriched": s.get("enriched", 0),
+            "cached": s.get("cached", 0),
+            "not_found": s.get("not_found", 0),
+            "skipped": s.get("skipped", 0),
+        }
+
+    # ── Apollo-only: reveal contact info, no scrape ─────────────────────────
+    if mode == "apollo":
+        if candidate_ids:
+            return await apollo_enrich_only(candidate_ids=candidate_ids)
+        return await apollo_enrich_only(pipeline_id=pipeline_id, job_id=job_id)
+
+    # ── Apify-only: deep profile scrape, no Apollo credit ───────────────────
+    if mode == "apify":
+        if candidate_ids:
+            return _normalize_apify(await enrich_candidates(candidate_ids=candidate_ids))
+        return _normalize_apify(
+            await enrich_candidates(pipeline_id=pipeline_id, job_id=job_id))
+
+    # ── Both (default): source-aware — skip Apollo on a pure-Apify set ──────
     candidates_col = await get_collection("candidates")
     scope: Dict[str, Any] = {"pipelineId": pipeline_id}
     if candidate_ids:
@@ -655,21 +893,14 @@ async def _enrich_for_job(
 
     # Pure Apify discovery set → Apify-only, normalized to the UI's key shape.
     if candidate_ids:
-        s = await enrich_candidates(candidate_ids=candidate_ids)
-    else:
-        s = await enrich_candidates(pipeline_id=pipeline_id, job_id=job_id)
-    return {
-        "selected": s.get("selected", 0),
-        "apollo_enriched": 0, "apollo_failed": 0,
-        "apify_enriched": s.get("enriched", 0),
-        "cached": s.get("cached", 0),
-        "not_found": s.get("not_found", 0),
-        "skipped": s.get("skipped", 0),
-    }
+        return _normalize_apify(await enrich_candidates(candidate_ids=candidate_ids))
+    return _normalize_apify(
+        await enrich_candidates(pipeline_id=pipeline_id, job_id=job_id))
 
 
 async def _run_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
+    mode: str = "both",
 ) -> None:
     """Background worker: enrich the selected candidates (or all in the job)."""
     from app.services import cost_service
@@ -678,7 +909,7 @@ async def _run_job_enrich(
         async with cost_service.cost_context(
             cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
         ):
-            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids)
+            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids, mode)
         await _set_enrich(
             pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
         )
@@ -1246,7 +1477,8 @@ async def _discover_candidates_for_job(
     ladder: Optional[List[Dict[str, Any]]] = None,
     anchor: Optional[Dict[str, Any]] = None,
     adjacent_titles: Optional[List[str]] = None,
-) -> None:
+    managed: bool = False,
+) -> Optional[int]:
     """Background: search LinkedIn via Apify (title + keyword channels), store
     the results as candidates ranked by role relevance, and stop for the
     recruiter's enrichment decision.
@@ -1257,10 +1489,18 @@ async def _discover_candidates_for_job(
     ``SOURCING_TARGET_CANDIDATES``, the job carries a ``searchShortfall`` payload
     offering the Strategist's adjacent-specialty titles as recruiter-opt-in
     chips — the tool never widens the specialty on its own.
+
+    ``managed`` = driven by the combined runner: write the per-engine
+    ``apifySearchStatus`` (not the shared rollup), skip the shared claim, the
+    final ``recount_pipeline`` and the enrich-status write (the runner owns them),
+    and RETURN the kept count (None on failure) so the runner can roll up.
     """
-    if not await _claim_discover(pipeline_id, job_id):
+    sfield = "apifySearchStatus" if managed else "searchStatus"
+    efield = "apifySearchError" if managed else "searchError"
+
+    if not managed and not await _claim_discover(pipeline_id, job_id):
         logger.info("[Discover] %s/%s already running — skip", pipeline_id, job_id)
-        return
+        return None
 
     try:
         profiles, attempts, used_filters = await _search_with_broadening(
@@ -1353,37 +1593,318 @@ async def _discover_candidates_for_job(
                 "at": now,
             }
 
+        finish_extras: Dict[str, Any] = {
+            "lastSearchedAt": now, "searchShortfall": shortfall,
+        }
+        finish_extras[efield] = None
+        if managed:
+            finish_extras["apifyKept"] = kept
         await _finish(
             pipeline_id, job_id,
             # Zero kept = the recruiter must decide the next move (widen, edit,
             # rerun) — that is awaiting_input, not a bare "completed" that the
-            # UI would render as a dead empty table.
-            status="completed" if kept else "awaiting_input",
-            lastSearchedAt=now, searchError=None, searchShortfall=shortfall,
+            # UI would render as a dead empty table. In managed mode the combined
+            # runner owns that rollup, so the engine status is just found/none.
+            status=("completed" if kept else ("no_results" if managed else "awaiting_input")),
+            status_field=sfield, **finish_extras,
         )
-        # Counts (per-job AND the pipeline rollup the list UI reads) come from
-        # the shared recount — this path used to set candidateCount only, which
-        # left every Apify-sourced pipeline showing "0 candidates".
-        await recount_pipeline(pipeline_id)
-        logger.info("[Discover] %s/%s stored %d candidate(s) after %d attempt(s)%s",
+        if not managed:
+            # Counts (per-job AND the pipeline rollup the list UI reads) come from
+            # the shared recount — this path used to set candidateCount only, which
+            # left every Apify-sourced pipeline showing "0 candidates".
+            await recount_pipeline(pipeline_id)
+        logger.info("[Discover] %s/%s stored %d candidate(s) after %d attempt(s)%s%s",
                     pipeline_id, job_id, kept, len(attempts),
-                    f" · shortfall (target {target})" if shortfall else "")
+                    f" · shortfall (target {target})" if shortfall else "",
+                    " (managed)" if managed else "")
 
         # Deep enrichment is HUMAN-CONTROLLED, not automatic. Discovery shows
         # the recruiter the short profiles (name, current title, company,
         # location, photo) it found and STOPS — the paid Apify profile scrape
         # that pulls full work history/skills/education runs only when the
         # recruiter reviews the list and presses Enrich (→ enqueue_job_enrich).
-        # `ready` = candidates are in and awaiting that decision.
-        await _set_enrich(
-            pipeline_id, job_id,
-            "ready" if cand_ids else "none",
-            enrichError=None,
-            enrichReady=len(cand_ids),
-        )
+        # `ready` = candidates are in and awaiting that decision. In managed mode
+        # the combined runner sets enrich status once both engines have settled.
+        if not managed:
+            await _set_enrich(
+                pipeline_id, job_id,
+                "ready" if cand_ids else "none",
+                enrichError=None,
+                enrichReady=len(cand_ids),
+            )
+        return kept if managed else None
     except Exception as exc:  # noqa: BLE001
         logger.error("[Discover] %s/%s failed: %s", pipeline_id, job_id, exc, exc_info=True)
         try:
-            await _finish(pipeline_id, job_id, status="failed", searchError=str(exc)[:300])
+            await _finish(pipeline_id, job_id, status="failed",
+                          status_field=sfield, **{efield: str(exc)[:300]})
+        except Exception:
+            pass
+        return None
+
+
+# ── Combined discovery: Apify + Apollo concurrently, merged (Phase 5) ────────
+#
+# The unified "Run search" fires BOTH engines at once from one screen. Each
+# engine runs its own managed worker (writing its per-engine sub-status), then
+# this runner dedups the overlap by LinkedIn URL and rolls the two sub-statuses
+# up into the shared ``searchStatus`` the candidate list already polls.
+
+
+# Regional LinkedIn hosts (de.linkedin.com, www.linkedin.com…) all point at the
+# same profile — normalise them away so a both-engines hit collapses to one row.
+_LINKEDIN_HOST = re.compile(r"^https?://([a-z0-9-]+\.)?linkedin\.com", re.I)
+
+
+def _norm_linkedin_url(url: Optional[str]) -> str:
+    """Comparable key for a LinkedIn profile URL (host/scheme/query stripped)."""
+    if not url:
+        return ""
+    u = url.strip().lower()
+    u = _LINKEDIN_HOST.sub("linkedin.com", u)
+    u = u.split("?")[0].split("#")[0].rstrip("/")
+    return u
+
+
+async def _dedupe_cross_engine(pipeline_id: str, job_id: str) -> int:
+    """Collapse candidates that BOTH engines surfaced into one row.
+
+    Apify keys a candidate by LinkedIn profile id, Apollo by Apollo person id, so
+    the same person found by both is two rows with the same
+    ``externalLinkedinUrl``. Keep the Apify row (LinkedIn-native — photo, better
+    title parse), union ``sourceChannels``, record the other engine in
+    ``alsoFoundVia`` and carry the Apollo id in ``apolloPersonId`` so a later
+    contact reveal can still use it, then delete the duplicate. Only ever
+    deletes, never rewrites ``apolloId`` — the (pipelineId, apolloId) unique
+    index stays intact. Returns the number of rows merged away.
+    """
+    candidates_col = await get_collection("candidates")
+    cur = candidates_col.find(
+        {"pipelineId": pipeline_id, "sourceJobIds": job_id,
+         "externalLinkedinUrl": {"$nin": [None, ""]}},
+        {"externalLinkedinUrl": 1, "source": 1, "apolloId": 1,
+         "sourceChannels": 1},
+    )
+    groups: Dict[str, List[dict]] = {}
+    async for d in cur:
+        key = _norm_linkedin_url(d.get("externalLinkedinUrl"))
+        if key:
+            groups.setdefault(key, []).append(d)
+
+    now = datetime.utcnow()
+    merged = 0
+    for docs in groups.values():
+        if len(docs) < 2:
+            continue
+        # Apify row first (source == apify_search), else keep the first seen.
+        docs.sort(key=lambda d: 0 if d.get("source") == "apify_search" else 1)
+        keeper, dups = docs[0], docs[1:]
+        channels = set(keeper.get("sourceChannels") or [])
+        also: set[str] = set()
+        apollo_pid: Optional[str] = None
+        for d in dups:
+            channels.update(d.get("sourceChannels") or [])
+            if d.get("source"):
+                also.add(d["source"])
+            if d.get("source") == "apollo_search" and d.get("apolloId"):
+                apollo_pid = d["apolloId"]
+        set_fields: Dict[str, Any] = {"updatedAt": now}
+        if channels:
+            set_fields["sourceChannels"] = sorted(c for c in channels if c)
+        also.discard(keeper.get("source") or "")
+        if also:
+            set_fields["alsoFoundVia"] = sorted(also)
+        if apollo_pid and keeper.get("source") == "apify_search":
+            set_fields["apolloPersonId"] = apollo_pid
+        await candidates_col.update_one({"_id": keeper["_id"]}, {"$set": set_fields})
+        await candidates_col.delete_many({"_id": {"$in": [d["_id"] for d in dups]}})
+        merged += len(dups)
+    if merged:
+        logger.info("[Combined] %s/%s deduped %d cross-engine duplicate(s)",
+                    pipeline_id, job_id, merged)
+    return merged
+
+
+async def _claim_combined(
+    pipeline_id: str, job_id: str, run_apify: bool, run_apollo: bool,
+) -> bool:
+    """Atomic → rollup ``searchStatus`` running, with per-engine sub-statuses.
+    False if a search is already running for this job."""
+    pipelines_col = await get_collection("candidatePipelines")
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id),
+         "jobs": {"$elemMatch": {"jobId": job_id, "searchStatus": {"$ne": "running"}}}},
+        {"$set": {
+            "jobs.$.searchStatus": "running",
+            "jobs.$.searchEngine": "combined",
+            "jobs.$.searchError": None,
+            "jobs.$.apifySearchStatus": "running" if run_apify else "skipped",
+            "jobs.$.apolloSearchStatus": "running" if run_apollo else "skipped",
+            "jobs.$.apifySearchError": None,
+            "jobs.$.apolloSearchError": None,
+            "jobs.$.apifyKept": None,
+            "jobs.$.apolloKept": None,
+            "jobs.$.lastSearchedAt": datetime.utcnow(),
+            "updatedAt": datetime.utcnow(),
+        }},
+    )
+    return res.modified_count > 0
+
+
+async def _job_candidate_count(pipeline_id: str, job_id: str) -> int:
+    pipelines_col = await get_collection("candidatePipelines")
+    doc = await pipelines_col.find_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id}, {"jobs.$": 1})
+    return ((doc or {}).get("jobs") or [{}])[0].get("candidateCount", 0)
+
+
+async def enqueue_combined_discover(
+    pipeline_id: str, job_id: str,
+    apify_filters: Dict[str, Any], apollo_filters: Dict[str, Any],
+    engines: Dict[str, bool], max_items: int = 25,
+    *,
+    hints: Optional[Dict[str, Any]] = None,
+    ladder: Optional[List[Dict[str, Any]]] = None,
+    anchor: Optional[Dict[str, Any]] = None,
+    adjacent_titles: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Kick off the unified Apify+Apollo discovery for a job (background).
+
+    Persists BOTH filter sets and the engine toggles (so a rerun replays the same
+    combined search), then runs the enabled engines concurrently. Poll the job's
+    ``searchStatus`` (rollup) and, for the per-engine breakdown, ``apifySearchStatus``
+    / ``apolloSearchStatus`` + ``apifyKept`` / ``apolloKept``.
+    """
+    pipelines_col = await get_collection("candidatePipelines")
+    res = await pipelines_col.update_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id},
+        {"$set": {
+            "jobs.$.lastDiscoverFilters": apify_filters,
+            "jobs.$.lastDiscoverMaxItems": max_items,
+            "jobs.$.lastDiscoverHints": hints,
+            "jobs.$.lastDiscoverLadder": ladder,
+            "jobs.$.lastDiscoverAnchor": anchor,
+            "jobs.$.adjacentTitles": adjacent_titles or [],
+            "jobs.$.lastApolloFilters": apollo_filters,
+            "jobs.$.lastApolloMaxItems": max_items,
+            "jobs.$.lastEngines": engines,
+            "updatedAt": datetime.utcnow(),
+        }},
+    )
+    if res.matched_count == 0:
+        raise ValueError("job_not_found")
+    asyncio.create_task(_combined_discover_for_job(
+        pipeline_id, job_id, apify_filters, apollo_filters, engines, max_items,
+        hints=hints, ladder=ladder, anchor=anchor, adjacent_titles=adjacent_titles,
+    ))
+    return {"queued": True}
+
+
+async def _combined_discover_for_job(
+    pipeline_id: str, job_id: str,
+    apify_filters: Dict[str, Any], apollo_filters: Dict[str, Any],
+    engines: Dict[str, bool], max_items: int,
+    *,
+    hints: Optional[Dict[str, Any]] = None,
+    ladder: Optional[List[Dict[str, Any]]] = None,
+    anchor: Optional[Dict[str, Any]] = None,
+    adjacent_titles: Optional[List[str]] = None,
+) -> None:
+    """Run the enabled engines concurrently, dedup, and roll their sub-statuses
+    up into the shared ``searchStatus``. Owns the single claim/recount/enrich so
+    the two managed workers never race on the rollup."""
+    from app.services import cost_service
+
+    run_apify = bool(engines.get("apify", True)) and bool(apify_filters)
+    run_apollo = bool(engines.get("apollo", True)) and bool(apollo_filters)
+    if not run_apify and not run_apollo:
+        logger.info("[Combined] %s/%s no engine enabled — nothing to do",
+                    pipeline_id, job_id)
+        await _finish(pipeline_id, job_id, status="awaiting_input")
+        return
+
+    if not await _claim_combined(pipeline_id, job_id, run_apify, run_apollo):
+        logger.info("[Combined] %s/%s already running — skip", pipeline_id, job_id)
+        return
+
+    try:
+        names: List[str] = []
+        coros = []
+        if run_apify:
+            names.append("apify")
+            coros.append(_discover_candidates_for_job(
+                pipeline_id, job_id, apify_filters, max_items,
+                auto_broaden=True, hints=hints, ladder=ladder, anchor=anchor,
+                adjacent_titles=adjacent_titles, managed=True,
+            ))
+        if run_apollo:
+            names.append("apollo")
+            coros.append(_apollo_discover_for_job(
+                pipeline_id, job_id, apollo_filters, max_items, managed=True,
+            ))
+
+        # Metered as one candidate-sourcing unit spanning both engines' spend.
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+        ):
+            results = await asyncio.gather(*coros, return_exceptions=True)
+
+        kept: Dict[str, Optional[int]] = {}
+        for name, r in zip(names, results):
+            if isinstance(r, Exception):
+                logger.error("[Combined] %s/%s %s engine raised: %s",
+                             pipeline_id, job_id, name, r)
+                kept[name] = None
+            else:
+                kept[name] = r
+
+        if run_apify and run_apollo:
+            try:
+                await _dedupe_cross_engine(pipeline_id, job_id)
+            except Exception as exc:  # noqa: BLE001 — dedup must never fail the run
+                logger.warning("[Combined] %s/%s dedup failed: %s",
+                               pipeline_id, job_id, exc)
+
+        # Single authoritative recount, then roll the sub-statuses up.
+        await recount_pipeline(pipeline_id)
+        total = await _job_candidate_count(pipeline_id, job_id)
+
+        apify_ok = (not run_apify) or (kept.get("apify") is not None)
+        apollo_ok = (not run_apollo) or (kept.get("apollo") is not None)
+        if not apify_ok and not apollo_ok:
+            rollup = "failed"
+        elif total > 0:
+            rollup = "completed"
+        else:
+            rollup = "awaiting_input"
+
+        err = None
+        if rollup == "failed":
+            bits = []
+            if run_apify and kept.get("apify") is None:
+                bits.append("LinkedIn search failed")
+            if run_apollo and kept.get("apollo") is None:
+                bits.append("Apollo search failed")
+            err = "; ".join(bits) or "search failed"
+        await _finish(pipeline_id, job_id, status=rollup,
+                      lastSearchedAt=datetime.utcnow(), searchError=err)
+
+        # Enrich readiness follows the Apify (deep-scrape) side; Apollo is
+        # search-only (contact revealed on demand).
+        apify_kept = kept.get("apify") or 0
+        await _set_enrich(
+            pipeline_id, job_id,
+            "ready" if apify_kept > 0 else "none",
+            enrichError=None, enrichReady=apify_kept,
+        )
+        logger.info(
+            "[Combined] %s/%s done — apify=%s apollo=%s total=%d rollup=%s",
+            pipeline_id, job_id, kept.get("apify"), kept.get("apollo"), total, rollup,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[Combined] %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)
+        try:
+            await _finish(pipeline_id, job_id, status="failed",
+                          searchError=str(exc)[:300])
         except Exception:
             pass

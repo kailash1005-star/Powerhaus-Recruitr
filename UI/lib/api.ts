@@ -469,6 +469,12 @@ export interface PipelineJob {
   rejectedCount: number;
   appliedIndustryFallback?: boolean;
   searchError?: string | null;
+  /** Per-engine sub-status when the unified (combined) search ran. `searchStatus`
+   *  above is the rollup. 'skipped' = that engine was toggled off. */
+  apifySearchStatus?: 'running' | 'completed' | 'no_results' | 'failed' | 'skipped' | null;
+  apolloSearchStatus?: 'running' | 'completed' | 'no_results' | 'failed' | 'skipped' | null;
+  apifyKept?: number | null;
+  apolloKept?: number | null;
   /** Bulk-enrichment (Apollo→Apify) background status + counts. */
   enrichStatus?: PipelineJobEnrichStatus | null;
   enrichError?: string | null;
@@ -825,16 +831,33 @@ export function enrichCandidate(candidateId: string): Promise<Candidate> {
   return post(`/api/v1/pipelines/candidates/${candidateId}/enrich`, {});
 }
 
+/** Which enrichment engine(s) the Enrich action runs. */
+export type EnrichMode = 'apollo' | 'apify' | 'both';
+
 /**
- * Queue a background bulk enrichment (Apollo /people/match → Apify deep profile)
- * for the selected candidates in a job. Poll the pipeline's job.enrichStatus.
+ * Queue a background bulk enrichment for the selected candidates in a job.
+ * `mode` picks the engine: `'apollo'` (verified email + contact, no scrape),
+ * `'apify'` (deep profile scrape only), or `'both'` (Apollo → Apify, default).
+ * Poll the pipeline's job.enrichStatus.
  */
 export function bulkEnrichJobCandidates(
   pipelineId: string, jobId: string, candidateIds: string[] | null,
+  mode: EnrichMode = 'both',
 ): Promise<{ success: boolean; queued: boolean }> {
   // null → enrich every candidate in the job (the "Enrich all" button); an
   // array → only those selected. The backend treats null/empty the same way.
-  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds });
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds, mode });
+}
+
+/**
+ * Delete the selected candidates from a job. A candidate surfaced only by this
+ * job is removed outright; one shared with other jobs is just detached from
+ * this job. Returns the count actually deleted.
+ */
+export function deleteJobCandidates(
+  pipelineId: string, jobId: string, candidateIds: string[],
+): Promise<{ success: boolean; deleted: number }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/candidates/delete`, { candidateIds });
 }
 
 /** Filters for the Apify LinkedIn-search discovery questionnaire. */
@@ -915,11 +938,28 @@ export interface BroadeningStep {
   filters: DiscoverFilters;
 }
 
+/** Apollo-specific inputs proposed alongside the Apify filters (engine matches
+ *  differently, so it gets its own plan — not the Apify filter set reused). */
+export interface ApolloPlan {
+  titles: string[];
+  /** 1–3 defining skills, matched as free-text q_keywords (more AND-narrows). */
+  qKeywords: string[];
+  /** Where the candidate lives, not the employer HQ. */
+  locations: string[];
+  /** Apollo seniority codes: owner, founder, c_suite, partner, vp, head,
+   *  director, manager, senior, entry, intern. */
+  seniorities: string[];
+}
+
 /** The Strategist's proposal for one job. */
 export interface SearchStrategy {
   interpretedRole: string;
+  /** The single interpreted, LinkedIn-real title anchoring both engines. */
+  focusTitle: string;
   titleReasoning: string;
   filters: DiscoverFilters;
+  /** Engine-appropriate Apollo inputs proposed from the same brief. */
+  apolloPlan: ApolloPlan;
   rationale: { field: string; why: string }[];
   /** What may never be relaxed away — enforced in code by the discovery loop. */
   domainAnchor: DomainAnchor;
@@ -957,6 +997,56 @@ export function discoverJobCandidates(
   pipelineId: string, jobId: string, filters: DiscoverFilters,
 ): Promise<{ success: boolean; queued: boolean }> {
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/discover`, filters);
+}
+
+/**
+ * Apollo people-search filters (the alternative sourcing engine). Everything is
+ * ANDed into one Apollo search. `skills` has no structured Apollo filter, so it
+ * is matched as free-text keywords (a soft match across the profile).
+ */
+export interface ApolloDiscoverFilters {
+  titles?: string[];
+  locations?: string[];
+  /** Key skills → Apollo q_keywords (soft, free-text match). */
+  skills?: string[];
+  /** Apollo seniority codes: owner, c_suite, partner, vp, head, director, manager, senior, entry. */
+  seniorities?: string[];
+  industries?: string[];
+  maxItems?: number;
+}
+
+/**
+ * Run an Apollo people-search for a job with the questionnaire filters and store
+ * the results as candidates (search-only — no LinkedIn scrape, no auto-enrich).
+ * Contact info stays masked until revealed on demand. Poll the pipeline's
+ * job.searchStatus (there is no enrich phase to wait on).
+ */
+export function discoverApolloCandidates(
+  pipelineId: string, jobId: string, filters: ApolloDiscoverFilters,
+): Promise<{ success: boolean; queued: boolean }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/discover-apollo`, filters);
+}
+
+/** The unified discovery payload — one screen, both engines run concurrently. */
+export interface CombinedDiscoverPayload {
+  /** LinkedIn (Apify) filters, incl. the agentic controls the backend strips. */
+  apify: DiscoverFilters;
+  /** Apollo people-search filters. */
+  apollo: ApolloDiscoverFilters;
+  /** Which engines to fire. Both default on; toggle either off to skip it. */
+  engines: { apify: boolean; apollo: boolean };
+}
+
+/**
+ * Run Apify (LinkedIn) and Apollo people-search CONCURRENTLY from one payload and
+ * merge the results into the one candidate list (deduped by LinkedIn URL). Poll
+ * the job's rollup `searchStatus`, plus `apifySearchStatus` / `apolloSearchStatus`
+ * (+ `apifyKept` / `apolloKept`) for the per-engine breakdown.
+ */
+export function discoverCombined(
+  pipelineId: string, jobId: string, payload: CombinedDiscoverPayload,
+): Promise<{ success: boolean; queued: boolean }> {
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/discover-combined`, payload);
 }
 
 /**

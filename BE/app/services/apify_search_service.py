@@ -211,6 +211,14 @@ def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
         run_input["recentlyChangedJobs"] = True
     if filters.get("recentlyPostedOnLinkedin"):
         run_input["recentlyPostedOnLinkedIn"] = True
+
+    # Recall lever (case study §A3): LinkedIn caps a single query at 2500 results.
+    # Automatic Query Segmentation splits a broad title/keyword query into
+    # sub-queries to surface a larger number of UNIQUE profiles for the same
+    # maxItems budget. Only worth it past one search page (25 profiles) — a tiny
+    # search already fits in one query, so leave it off to avoid extra sub-runs.
+    if max_items > 25 and (run_input.get("searchQuery") or run_input.get("currentJobTitles")):
+        run_input["autoQuerySegmentation"] = True
     return run_input
 
 

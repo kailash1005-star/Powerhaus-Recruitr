@@ -167,13 +167,51 @@ class DomainAnchor(BaseModel):
         return not self.coreTerms
 
 
+class ApolloPlan(BaseModel):
+    """Apollo-specific people-search inputs, proposed alongside the Apify filters.
+
+    Apollo matches differently from the LinkedIn actor, so it gets its OWN input
+    rather than the Apify filter set reused. See the case study (§B): titles
+    OR-expand (`include_similar_titles` stays on), skills go through free-text
+    `q_keywords` (1–3 defining terms only — more AND-narrows), `locations` is the
+    person's residence, and `seniorities` uses Apollo's own enum. There is no
+    industries field — `person_industries[]` is not a real Apollo param.
+    """
+    # Title family + word-order variants ("SAP EWM Consultant", "Consultant SAP EWM").
+    titles: List[str] = Field(default_factory=list)
+    # The 1–3 defining skills, matched as free text across the profile.
+    qKeywords: List[str] = Field(default_factory=list)
+    # Where the candidate lives ("Koblenz, Germany"). NOT employer HQ.
+    locations: List[str] = Field(default_factory=list)
+    # Apollo person_seniorities codes: owner, founder, c_suite, partner, vp, head,
+    # director, manager, senior, entry, intern. Kept sparse — a title family
+    # already captures most of the seniority signal.
+    seniorities: List[str] = Field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (self.titles or self.qKeywords)
+
+
+# Apollo's person_seniorities vocabulary (see the People Search API reference).
+APOLLO_SENIORITIES: tuple[str, ...] = (
+    "owner", "founder", "c_suite", "partner", "vp", "head",
+    "director", "manager", "senior", "entry", "intern",
+)
+
+
 class SearchStrategy(BaseModel):
     """The Strategist's full proposal for one job — the prefill payload."""
     # The interpreted role, in words a LinkedIn member would recognise.
     interpretedRole: str = ""
+    # The single interpreted, LinkedIn-real title that anchors BOTH engines and
+    # headlines the review screen (e.g. "Senior SAP EWM/LES Consultant" →
+    # "SAP EWM Consultant"). Falls back to interpretedRole/jobTitle when unset.
+    focusTitle: str = ""
     # Why the recruiter's literal title would/wouldn't work as a search term.
     titleReasoning: str = ""
     filters: SearchFilters
+    # Engine-appropriate Apollo inputs proposed from the same brief.
+    apolloPlan: ApolloPlan = Field(default_factory=ApolloPlan)
     rationale: List[FilterRationale] = Field(default_factory=list)
     # What may never be relaxed away — see DomainAnchor. Enforced in code by the
     # discovery loop, not just prompted.
