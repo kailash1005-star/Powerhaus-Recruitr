@@ -246,9 +246,27 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
+  // Hydrate a number that was already revealed (possibly in an earlier session, or
+  // delivered by Apollo's webhook after the poll window closed). The persisted match
+  // run doesn't carry it, so without this a revealed phone would vanish on reload.
+  useEffect(() => {
+    if (phone || c.source !== 'pipeline') return;
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetchCandidateMobile(c.candidateId);
+        if (alive && r.phone) setPhone(r.phone);
+        else if (alive && r.status === 'pending') { setPhoneState('pending'); pollForPhone(); }
+      } catch { /* first-load hydrate is best-effort */ }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c.candidateId]);
+
   const pollForPhone = () => {
     if (pollRef.current) return;
     let polls = 0;
+    // Apollo's async delivery can take a couple of minutes — poll for ~2.5 min.
     pollRef.current = setInterval(async () => {
       polls += 1;
       try {
@@ -260,9 +278,9 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
           return;
         }
       } catch { /* transient — keep polling to the cap */ }
-      if (polls >= 6) {
+      if (polls >= 30) {
         setPhoneState('idle');
-        setPhoneErr('Apollo hasn’t delivered a number yet — try again shortly.');
+        setPhoneErr('No number delivered yet. Apollo may have none on file for this person.');
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       }
     }, 5000);

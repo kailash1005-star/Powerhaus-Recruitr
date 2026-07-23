@@ -6,6 +6,7 @@ GET  /api/v1/jobs/{job_id}/prospects           - Prospects for a job's company
 POST /api/v1/jobs/prospects/{id}/enrich        - On-demand Apollo email enrichment
 """
 import asyncio
+import logging
 from datetime import datetime
 from typing import Optional, List
 
@@ -16,6 +17,8 @@ from app.security.tenant import TenantContext, tenant_scope
 from app.services.apollo_service import ApolloService
 from app.config import settings
 from bson import ObjectId
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -376,6 +379,12 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
     prospects we already marked `pending`, which bounds what a forged call can
     do to "fill in a phone number we already asked for".
     """
+    people = payload.get("people", []) or []
+    logger.info(
+        "[ApolloMobileWebhook] received: status=%s people=%d ids=%s",
+        payload.get("status"), len(people),
+        [p.get("id") for p in people if isinstance(p, dict)][:10],
+    )
     if payload.get("status") and payload.get("status") != "success":
         return {"status": "ignored", "reason": f"status is {payload.get('status')}"}
 
@@ -383,10 +392,11 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
     cands_col = db["candidates"]
     now = datetime.utcnow()
     updated = 0
-    for person in payload.get("people", []) or []:
+    for person in people:
         apollo_id = person.get("id")
         phone = ApolloService.extract_mobile(person)
         if not apollo_id or not phone:
+            logger.info("[ApolloMobileWebhook] no usable phone for id=%s (skipped)", apollo_id)
             continue
         # Update the prospect copies that triggered this reveal (pending), across runs.
         cursor = col.find({"apolloId": apollo_id, "mobileEnrichmentStatus": "pending"})
@@ -405,6 +415,7 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
             "mobileEnrichmentStatus": "pending",
             "$or": [{"apolloPersonId": apollo_id}, {"apolloId": apollo_id}],
         })
+        cand_matches = 0
         async for c in cand_cursor:
             await cands_col.update_one(
                 {"_id": c["_id"]},
@@ -412,4 +423,9 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
                           "mobileEnrichmentStatus": "enriched", "updatedAt": now}},
             )
             updated += 1
+            cand_matches += 1
+        logger.info(
+            "[ApolloMobileWebhook] id=%s phone=%s → %d candidate(s) updated",
+            apollo_id, phone, cand_matches,
+        )
     return {"status": "ok", "updated": updated}
