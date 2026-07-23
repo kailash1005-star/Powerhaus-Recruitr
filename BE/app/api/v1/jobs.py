@@ -380,6 +380,7 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
         return {"status": "ignored", "reason": f"status is {payload.get('status')}"}
 
     col = db["prospects"]
+    cands_col = db["candidates"]
     now = datetime.utcnow()
     updated = 0
     for person in payload.get("people", []) or []:
@@ -387,7 +388,7 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
         phone = ApolloService.extract_mobile(person)
         if not apollo_id or not phone:
             continue
-        # Update the copies that triggered this reveal (pending), across runs.
+        # Update the prospect copies that triggered this reveal (pending), across runs.
         cursor = col.find({"apolloId": apollo_id, "mobileEnrichmentStatus": "pending"})
         async for p in cursor:
             details = dict(p.get("prospectDetails") or {})
@@ -395,6 +396,20 @@ async def apollo_mobile_webhook(payload: dict, db=Depends(get_db)):
             await col.update_one(
                 {"_id": p["_id"]},
                 {"$set": {"prospectDetails": details, "mobileEnrichmentStatus": "enriched", "updatedAt": now}},
+            )
+            updated += 1
+        # Candidate reveals target the REAL Apollo id, which lives in `apolloPersonId`
+        # (Apify-sourced) or `apolloId` (Apollo-sourced). Fill in whichever pending
+        # candidates match, at the same path pipeline matching reads for the phone.
+        cand_cursor = cands_col.find({
+            "mobileEnrichmentStatus": "pending",
+            "$or": [{"apolloPersonId": apollo_id}, {"apolloId": apollo_id}],
+        })
+        async for c in cand_cursor:
+            await cands_col.update_one(
+                {"_id": c["_id"]},
+                {"$set": {"apifyEnrichment.contact.phone": phone,
+                          "mobileEnrichmentStatus": "enriched", "updatedAt": now}},
             )
             updated += 1
     return {"status": "ok", "updated": updated}

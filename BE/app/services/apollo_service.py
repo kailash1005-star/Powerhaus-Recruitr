@@ -471,6 +471,48 @@ class ApolloService:
             logger.error("Apollo phone match error: %s", e)
             return None
 
+    def match_person(
+        self,
+        *,
+        linkedin_url: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        organization_name: str | None = None,
+        email: str | None = None,
+    ) -> dict | None:
+        """Resolve a person to their Apollo person id via /people/match (no reveal).
+
+        This is the "people search" step for phone enrichment. Candidates sourced
+        from LinkedIn/Apify carry a LinkedIn URN in ``apolloId`` — NOT a real Apollo
+        person id — so we must resolve the real id (from the LinkedIn URL, or
+        name + company) before a phone reveal can target them. No ``reveal_*`` flags
+        are set, so this does not unlock email/phone; it only returns the match
+        (whose ``id`` is the Apollo person id). Returns the person dict or None.
+        """
+        body: dict = {"reveal_personal_emails": False, "reveal_phone_number": False}
+        if linkedin_url:
+            body["linkedin_url"] = linkedin_url
+        if email:
+            body["email"] = email
+        if first_name:
+            body["first_name"] = first_name
+        if last_name:
+            body["last_name"] = last_name
+        if organization_name:
+            body["organization_name"] = organization_name
+        try:
+            resp = requests.post(
+                f"{APOLLO_BASE_URL}/people/match",
+                headers=self._headers(),
+                json=body,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            return resp.json().get("person", {})
+        except Exception as e:
+            logger.error("Apollo person match error: %s", e)
+            return None
+
     @staticmethod
     def extract_mobile(person: dict) -> str | None:
         """Pull the best mobile/phone number from an Apollo person payload."""

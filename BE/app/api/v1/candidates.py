@@ -6,16 +6,20 @@ This is Step 1 of the candidate sourcing feature: given a LinkedIn profile URL,
 download the complete profile and return structured data.
 """
 
+import asyncio
 import logging
+from datetime import datetime
 from typing import List, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.database import get_database
 from app.security.tenant import TenantContext, tenant_scope
 from app.services.apify_profile_service import ApifyCostGuard, ApifyNotConfigured
+from app.services.apollo_service import ApolloService
 from app.services.candidate_enrichment import enrich_candidates
 from app.services.linkedin_profile_service import (
     extract_profile_slug,
@@ -245,3 +249,161 @@ async def enrich_candidates_endpoint(
         ),
         summary=summary,
     )
+
+
+# ── Mobile-number reveal (Apollo phone enrichment) ───────────────────────────
+
+def _candidate_phone(doc: dict) -> Optional[str]:
+    """The revealed phone, wherever it lives on a candidate doc."""
+    return (((doc.get("apifyEnrichment") or {}).get("contact") or {}).get("phone")
+            or (doc.get("enrichedData") or {}).get("phone"))
+
+
+def _resolve_apollo_id(doc: dict) -> Optional[str]:
+    """A REAL Apollo person id already on the candidate, or None to resolve.
+
+    Apollo-sourced candidates keep a real id in ``apolloId``; candidates found via
+    Apify/LinkedIn keep a LinkedIn URN there instead, but may carry a real id in
+    ``apolloPersonId`` (set when both engines found the same person — see
+    candidate_pipeline._dedupe_cross_engine).
+    """
+    if doc.get("source") == "apollo_search" and doc.get("apolloId"):
+        return doc["apolloId"]
+    return doc.get("apolloPersonId") or None
+
+
+@router.post(
+    "/{candidate_id}/enrich-mobile",
+    summary="Reveal a candidate's mobile number via Apollo",
+    description=(
+        "Two-stage phone reveal. Candidates sourced from LinkedIn/Apify carry a "
+        "LinkedIn URN in `apolloId`, not a real Apollo person id, so we (1) resolve "
+        "the real Apollo id via a people-match on the LinkedIn URL / name + company "
+        "(cached on `apolloPersonId`), then (2) reveal the phone by that id. Apollo "
+        "may return the number immediately or deliver it asynchronously to "
+        "APOLLO_WEBHOOK_URL, in which case the candidate is marked `pending` and "
+        "filled in by the shared /jobs/prospects/mobile-webhook receiver."
+    ),
+)
+async def enrich_candidate_mobile(
+    candidate_id: str,
+    ctx: TenantContext = Depends(tenant_scope),
+    db=Depends(get_database),
+):
+    try:
+        oid = ObjectId(candidate_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid candidate id")
+
+    col = db["candidates"]
+    doc = await col.find_one({"_id": oid})
+    if not doc or not ctx.owns(doc):
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # Already revealed — idempotent, spends no credit.
+    existing = _candidate_phone(doc)
+    if existing:
+        return {"candidate_id": candidate_id, "status": "enriched", "phone": existing}
+
+    webhook_url = settings.APOLLO_WEBHOOK_URL or ""
+    if not webhook_url:
+        raise HTTPException(
+            status_code=503,
+            detail=("APOLLO_WEBHOOK_URL is not configured. Set it in .env to a publicly "
+                    "reachable URL (e.g. an ngrok tunnel for local dev) ending in "
+                    "/api/v1/jobs/prospects/mobile-webhook so Apollo can deliver phone numbers."),
+        )
+
+    svc = ApolloService()
+
+    # ── Stage 1: resolve the REAL Apollo person id ──────────────────────────
+    apollo_id = _resolve_apollo_id(doc)
+    if not apollo_id:
+        enr = doc.get("apifyEnrichment") or {}
+        prof = enr.get("profile") or {}
+        contact = enr.get("contact") or {}
+        linkedin_url = (doc.get("externalLinkedinUrl") or contact.get("linkedin")
+                        or prof.get("linkedinUrl") or "")
+        company = doc.get("currentCompany") or prof.get("currentCompany") or None
+        dom = doc.get("currentCompanyDomain") or ""
+        org = dom if (dom and not dom.endswith(".linkedin.local")) else company
+        person = await asyncio.to_thread(
+            lambda: svc.match_person(
+                linkedin_url=linkedin_url or None,
+                first_name=doc.get("firstName") or None,
+                last_name=doc.get("lastName") or None,
+                organization_name=org,
+            )
+        )
+        apollo_id = (person or {}).get("id")
+        if apollo_id:
+            # Cache the resolved id so a retry skips the people-match step.
+            await col.update_one(
+                {"_id": oid},
+                {"$set": {"apolloPersonId": apollo_id, "updatedAt": datetime.utcnow()}},
+            )
+
+    if not apollo_id:
+        raise HTTPException(
+            status_code=422,
+            detail=("Could not resolve this candidate on Apollo (no LinkedIn URL or "
+                    "name/company match), so no phone lookup is possible."),
+        )
+
+    # ── Stage 2: reveal the phone by the resolved id ────────────────────────
+    person = await asyncio.to_thread(
+        lambda: svc.match_phone(apollo_id=apollo_id, webhook_url=webhook_url)
+    )
+    if person is None:
+        raise HTTPException(status_code=502, detail="Apollo phone match request failed")
+
+    now = datetime.utcnow()
+    found_phone = ApolloService.extract_mobile(person)
+    if found_phone:
+        await col.update_one(
+            {"_id": oid},
+            {"$set": {
+                "apifyEnrichment.contact.phone": found_phone,
+                "mobileEnrichmentStatus": "enriched",
+                "updatedAt": now,
+            }},
+        )
+        return {"candidate_id": candidate_id, "status": "enriched", "phone": found_phone}
+
+    # No number yet → Apollo will POST it to the shared mobile webhook.
+    await col.update_one(
+        {"_id": oid},
+        {"$set": {"mobileEnrichmentStatus": "pending", "updatedAt": now}},
+    )
+    return {"candidate_id": candidate_id, "status": "pending", "phone": None}
+
+
+@router.get(
+    "/{candidate_id}/mobile",
+    summary="Current mobile-reveal status for a candidate",
+    description="Poll target for the async (webhook-delivered) phone number.",
+)
+async def candidate_mobile_status(
+    candidate_id: str,
+    ctx: TenantContext = Depends(tenant_scope),
+    db=Depends(get_database),
+):
+    try:
+        oid = ObjectId(candidate_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid candidate id")
+
+    doc = await db["candidates"].find_one(
+        {"_id": oid},
+        {"tenantId": 1, "apifyEnrichment.contact.phone": 1,
+         "enrichedData.phone": 1, "mobileEnrichmentStatus": 1},
+    )
+    if not doc or not ctx.owns(doc):
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    phone = _candidate_phone(doc)
+    return {
+        "candidate_id": candidate_id,
+        "phone": phone,
+        "status": "enriched" if phone else (doc.get("mobileEnrichmentStatus") or None),
+    }

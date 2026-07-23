@@ -341,6 +341,25 @@ export function enrichProspectPhone(
   return post(`/api/v1/jobs/prospects/${prospectId}/enrich-mobile`, {});
 }
 
+/**
+ * Reveal a matched candidate's mobile number via Apollo. Resolves the candidate's
+ * real Apollo id first (LinkedIn/Apify candidates carry a URN, not an Apollo id),
+ * then reveals the phone. Returns it immediately when cached, or status "pending"
+ * when Apollo will deliver it asynchronously via the shared webhook.
+ */
+export function enrichCandidateMobile(
+  candidateId: string,
+): Promise<{ candidate_id: string; status: 'enriched' | 'pending'; phone: string | null }> {
+  return post(`/api/v1/candidates/${candidateId}/enrich-mobile`, {});
+}
+
+/** Poll target for the async candidate phone reveal. */
+export function fetchCandidateMobile(
+  candidateId: string,
+): Promise<{ candidate_id: string; phone: string | null; status: 'enriched' | 'pending' | null }> {
+  return get(`/api/v1/candidates/${candidateId}/mobile`);
+}
+
 // ── Credits & Outreach ────────────────────────────────────────────────────────
 
 export interface EnrichmentCreditStatus {

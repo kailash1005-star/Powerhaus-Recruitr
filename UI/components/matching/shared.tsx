@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Icon } from '../Icon';
 import { Avatar } from '../Avatar';
 import {
   draftOutreach, enrollOutreach, cvDownloadUrl,
+  enrichCandidateMobile, fetchCandidateMobile,
   type MatchedCandidate, type ScoreBreakdown as ScoreBreakdownData, type SkillEvidence,
 } from '@/lib/api';
 
@@ -233,6 +234,67 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
   const [showWhy, setShowWhy] = useState(false);
   const contact = c.contact || {};
   const clickable = !!onOpen;
+
+  // ── Phone reveal (Apollo) ──────────────────────────────────────────────────
+  // Pipeline candidates carry no phone until revealed on demand. Apollo may return
+  // it at once or deliver it via webhook, so a "pending" reveal auto-polls rather
+  // than making the user click again (each click re-bills a credit).
+  const [phone, setPhone] = useState<string | null>(contact.phone || null);
+  const [phoneState, setPhoneState] = useState<'idle' | 'revealing' | 'pending'>('idle');
+  const [phoneErr, setPhoneErr] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const pollForPhone = () => {
+    if (pollRef.current) return;
+    let polls = 0;
+    pollRef.current = setInterval(async () => {
+      polls += 1;
+      try {
+        const r = await fetchCandidateMobile(c.candidateId);
+        if (r.phone) {
+          setPhone(r.phone);
+          setPhoneState('idle');
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+          return;
+        }
+      } catch { /* transient — keep polling to the cap */ }
+      if (polls >= 6) {
+        setPhoneState('idle');
+        setPhoneErr('Apollo hasn’t delivered a number yet — try again shortly.');
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      }
+    }, 5000);
+  };
+
+  const revealPhone = async () => {
+    setPhoneState('revealing');
+    setPhoneErr(null);
+    try {
+      const r = await enrichCandidateMobile(c.candidateId);
+      if (r.status === 'enriched' && r.phone) {
+        setPhone(r.phone);
+        setPhoneState('idle');
+      } else if (r.status === 'pending') {
+        setPhoneState('pending');
+        pollForPhone();
+      } else {
+        setPhoneState('idle');
+        setPhoneErr('Apollo had no phone number on file for this candidate.');
+      }
+    } catch (e: any) {
+      setPhoneState('idle');
+      const msg = e?.message || '';
+      if (msg.includes('503') || msg.includes('APOLLO_WEBHOOK_URL')) {
+        setPhoneErr('Phone reveal needs APOLLO_WEBHOOK_URL set in the backend .env.');
+      } else if (msg.includes('422')) {
+        setPhoneErr('Couldn’t resolve this candidate on Apollo — no phone available.');
+      } else {
+        setPhoneErr('Phone reveal failed. Check the Apollo API key / credits.');
+      }
+    }
+  };
   const band = bandFor(c.score);
   const missing = c.gaps || [];
   const partial = c.partial || [];
@@ -372,6 +434,39 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
             {contact.email && (
               <span style={{ fontSize: 12, color: 'var(--fg-muted)', marginRight: 4 }}>{contact.email}</span>
             )}
+            {/* Phone — a tel link once revealed, else an on-demand Apollo reveal.
+                Sits before LinkedIn so contact actions read email → phone → profile. */}
+            {phone ? (
+              <a
+                href={`tel:${phone}`} title={`Call ${phone}`}
+                style={{
+                  height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                  border: '1px solid var(--border-card)', textDecoration: 'none', background: '#FFF',
+                  color: 'var(--fg-secondary)', display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <Icon name="phone" size={13} />{phone}
+              </a>
+            ) : c.source === 'pipeline' ? (
+              <button
+                onClick={revealPhone}
+                disabled={phoneState !== 'idle'}
+                title={phoneErr || 'Reveal this candidate’s mobile number via Apollo'}
+                style={{
+                  height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                  cursor: phoneState === 'idle' ? 'pointer' : 'wait',
+                  border: `1px solid ${phoneErr ? 'var(--status-danger)' : 'var(--border-card)'}`,
+                  background: '#FFF', fontFamily: 'inherit',
+                  color: phoneErr ? 'var(--status-danger)' : 'var(--fg-secondary)',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <Icon name={phoneState === 'idle' ? 'phone' : 'loader'} size={13} />
+                {phoneState === 'revealing' ? 'Revealing…'
+                  : phoneState === 'pending' ? 'Waiting for Apollo…'
+                  : phoneErr ? 'Retry phone' : 'Reveal phone'}
+              </button>
+            ) : null}
             {c.source !== 'pipeline' ? (
               <a
                 href={cvDownloadUrl(c.candidateId)} download title="Download this candidate's CV"
@@ -395,18 +490,6 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
                 <Icon name="linkedin" size={13} />LinkedIn
               </a>
             ) : null}
-            {contact.phone && (
-              <a
-                href={`tel:${contact.phone}`} title={`Call ${contact.phone}`}
-                style={{
-                  height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
-                  border: '1px solid var(--border-card)', textDecoration: 'none', background: '#FFF',
-                  color: 'var(--fg-secondary)', display: 'inline-flex', alignItems: 'center', gap: 6,
-                }}
-              >
-                <Icon name="phone" size={13} />{contact.phone}
-              </a>
-            )}
             <button
               onClick={() => onReachOut(c)}
               disabled={!contact.email}
