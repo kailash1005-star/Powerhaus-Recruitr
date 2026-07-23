@@ -829,61 +829,10 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         </div>
       )}
 
-      {/* Search transparency — every attempt the discovery ran, and what the
-          pre-screen gate kept/dropped. A thin list should be explainable, not
-          mysterious: this is the proof the tool searched correctly. */}
-      {(jobEntry?.searchAttempts?.length ?? 0) > 0 && (
-        <details style={{
-          padding: '8px 24px', borderBottom: '1px solid var(--border-default)',
-          background: 'var(--bg-app)', fontSize: 12.5,
-        }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--fg-secondary)' }}>
-            How this search ran — {jobEntry!.searchAttempts!.length} attempt(s)
-            {jobEntry?.prescreen
-              ? ` · ${jobEntry.prescreen.total} raw hit(s), ${jobEntry.prescreen.kept} kept, ${jobEntry.prescreen.dropped} screened out`
-              : ''}
-          </summary>
-          <div style={{ padding: '10px 0 6px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {jobEntry!.searchAttempts!.map((a) => (
-              <div key={a.attempt} style={{ display: 'flex', gap: 8, lineHeight: 1.5 }}>
-                <span style={{
-                  flexShrink: 0, width: 20, height: 20, borderRadius: 999, fontSize: 11, fontWeight: 700,
-                  background: a.resultCount > 0 ? '#DCFCE7' : a.error ? '#FEE2E2' : '#F3F4F6',
-                  color: a.resultCount > 0 ? '#166534' : a.error ? '#991B1B' : 'var(--fg-muted)',
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  {a.attempt}
-                </span>
-                <div style={{ color: 'var(--fg-secondary)' }}>
-                  <b>{a.action === 'initial' ? 'Your search' : a.action.replace(/_/g, ' ')}</b>
-                  {' — '}
-                  {a.resultCount} result(s)
-                  {a.channelCounts && Object.keys(a.channelCounts).length > 1 && (
-                    <span style={{ color: 'var(--fg-muted)' }}>
-                      {' '}({Object.entries(a.channelCounts).map(([k, v]) => `${v} via ${k}`).join(', ')})
-                    </span>
-                  )}
-                  {a.error && <span style={{ color: '#B91C1C' }}> · {a.error}</span>}
-                  {a.reasoning && <div style={{ color: 'var(--fg-muted)' }}>{a.reasoning}</div>}
-                  {(a.filters as any)?.currentJobTitles?.length > 0 && (
-                    <div style={{ color: 'var(--fg-muted)' }}>
-                      Titles: {((a.filters as any).currentJobTitles as string[]).join(' · ')}
-                      {(a.filters as any)?.locations?.length > 0 && <> · in {((a.filters as any).locations as string[]).join(', ')}</>}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-            {(jobEntry?.prescreen?.droppedSamples?.length ?? 0) > 0 && (
-              <div style={{ color: 'var(--fg-muted)', lineHeight: 1.5 }}>
-                <b>Screened out (title unrelated to the role):</b>{' '}
-                {jobEntry!.prescreen!.droppedSamples!.slice(0, 6).map((d) => `${d.name || '—'} (“${d.title || '—'}”)`).join(', ')}
-                {jobEntry!.prescreen!.dropped > 6 ? ` +${jobEntry!.prescreen!.dropped - 6} more` : ''}
-              </div>
-            )}
-          </div>
-        </details>
-      )}
+      {/* The per-attempt "how this search ran" engine log (broadener actions,
+          channel counts, filter dumps) was removed — it's engineering internals
+          with no recruiter value. A thin result set is explained by the
+          shortfall note above; the list itself is what the recruiter acts on. */}
 
       {/* Filter strip */}
       <div style={{

@@ -197,6 +197,14 @@ def _resolve_country(location: Optional[str]) -> Optional[str]:
     for key_words, country in _GAZETTEER:
         if _contains_sequence(words, key_words):
             return country
+    # Stage 3: the shared offline catalogue (diacritic-folded, whole-word — but
+    # NOT fuzzy, so it can never manufacture a wrong-country reject). Recognises
+    # the long tail of DACH cities (Koblenz, Trier, Kaiserslautern…) the inline
+    # gazetteer above omits, so a bare-city requested location still gates.
+    from app.services import location_catalog
+    cat = location_catalog.country_of(location, fuzzy=False)
+    if cat and cat.lower() in _KNOWN_COUNTRIES:
+        return cat.lower()
     return None
 
 

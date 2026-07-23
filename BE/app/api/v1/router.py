@@ -4,7 +4,7 @@ API Router - Aggregates all v1 routers
 import logging
 
 from fastapi import APIRouter, Depends
-from app.api.v1 import icp, runs, analytics, jobs, pipelines, companies, matching, outreach, candidates, cost, qa, gdpr
+from app.api.v1 import icp, runs, analytics, jobs, pipelines, companies, matching, outreach, candidates, cost, qa, locations, gdpr
 from app.security.deps import require_auth
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,8 @@ api_router.include_router(companies.router, prefix="/companies", tags=["Companie
 api_router.include_router(matching.router, prefix="/matching", tags=["Matching"])
 api_router.include_router(outreach.router, prefix="/outreach", tags=["Outreach"])
 api_router.include_router(candidates.router, prefix="/candidates", tags=["Candidates"])
+# Offline location typeahead (place-name autocomplete on the discovery form).
+api_router.include_router(locations.router, prefix="/locations", tags=["Locations"])
 api_router.include_router(cost.router, prefix="/cost", tags=["Cost"])
 # GDPR data-subject rights (erasure / DSAR export) + processing audit trail.
 api_router.include_router(gdpr.router, prefix="/gdpr", tags=["GDPR"])

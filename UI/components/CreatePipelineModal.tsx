@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Icon } from './Icon';
+import { LocationInput } from './LocationAutocomplete';
 import { createPipeline, addJobToPipeline, createManualJob, type Pipeline } from '@/lib/api';
 
 interface Props {
@@ -200,10 +201,11 @@ export function CreatePipelineModal({ isOpen, onClose, onCreated }: Props) {
               </div>
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>Job Location</label>
-                <input
-                  style={inputStyle} placeholder="e.g. Berlin, Germany"
+                <LocationInput
                   value={jobLocation} disabled={busy}
-                  onChange={(e) => setJobLocation(e.target.value)}
+                  placeholder="e.g. Berlin, Germany"
+                  onChange={setJobLocation}
+                  style={inputStyle}
                 />
               </div>
             </div>

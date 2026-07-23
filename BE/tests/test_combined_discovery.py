@@ -114,7 +114,7 @@ async def _async(v):
 def _patch_combined(monkeypatch, *, apify_ret, apollo_ret, job_total):
     """Patch the combined runner's collaborators; return a dict recording the
     rollup ``_finish`` and ``_set_enrich`` calls plus which engines ran."""
-    rec: Dict[str, Any] = {"finish": None, "enrich": None, "ran": []}
+    rec: Dict[str, Any] = {"finish": None, "enrich": None, "ran": [], "qa": None}
 
     async def fake_claim(pipeline_id, job_id, run_apify, run_apollo):
         return True
@@ -140,6 +140,12 @@ def _patch_combined(monkeypatch, *, apify_ret, apollo_ret, job_total):
     async def fake_count(pipeline_id, job_id):
         return job_total
 
+    async def fake_engine_errors(pipeline_id, job_id):
+        return {"apify": None, "apollo": None}
+
+    async def fake_qa(pipeline_id, job_id, apify_filters, apollo_filters):
+        rec["qa"] = {"apify": apify_filters, "apollo": apollo_filters}
+
     async def fake_finish(pipeline_id, job_id, *, status, status_field="searchStatus", **extras):
         if status_field == "searchStatus":
             rec["finish"] = {"status": status, **extras}
@@ -152,12 +158,18 @@ def _patch_combined(monkeypatch, *, apify_ret, apollo_ret, job_total):
         yield
 
     from app.services import cost_service
+    # These tests exercise the dual-engine rollup; Apollo search is disabled by
+    # default in prod, so enable it here to drive both engines.
+    from app.config import settings as _cfg
+    monkeypatch.setattr(_cfg, "SOURCING_APOLLO_SEARCH_ENABLED", True, raising=False)
     monkeypatch.setattr(cp, "_claim_combined", fake_claim)
     monkeypatch.setattr(cp, "_discover_candidates_for_job", fake_apify)
     monkeypatch.setattr(cp, "_apollo_discover_for_job", fake_apollo)
     monkeypatch.setattr(cp, "_dedupe_cross_engine", fake_dedupe)
     monkeypatch.setattr(cp, "recount_pipeline", fake_recount)
     monkeypatch.setattr(cp, "_job_candidate_count", fake_count)
+    monkeypatch.setattr(cp, "_engine_errors", fake_engine_errors)
+    monkeypatch.setattr(cp, "_audit_combined_results", fake_qa)
     monkeypatch.setattr(cp, "_finish", fake_finish)
     monkeypatch.setattr(cp, "_set_enrich", fake_set_enrich)
     monkeypatch.setattr(cost_service, "cost_context", fake_ctx)
@@ -198,6 +210,19 @@ class TestCombinedRollup:
         assert rec["ran"] == ["apify"]  # Apollo never ran → no Apollo cost
         assert rec["finish"]["status"] == "completed"
 
+    async def test_apollo_search_disabled_by_default(self, monkeypatch):
+        # Product default: Apollo is NOT a search engine even when the caller
+        # asks for it — LinkedIn (Apify) is the sole source. (This test does not
+        # enable the flag, unlike the others.)
+        rec = _patch_combined(monkeypatch, apify_ret=4, apollo_ret=9, job_total=4)
+        from app.config import settings as _cfg
+        monkeypatch.setattr(_cfg, "SOURCING_APOLLO_SEARCH_ENABLED", False, raising=False)
+        await cp._combined_discover_for_job(
+            "p", "j", {"currentJobTitles": ["X"]}, {"titles": ["X"]},
+            {"apify": True, "apollo": True}, 25)
+        assert rec["ran"] == ["apify"]  # Apollo refused despite engines.apollo=True
+        assert rec["finish"]["status"] == "completed"
+
     async def test_one_engine_survives_other_crash(self, monkeypatch):
         rec = _patch_combined(
             monkeypatch, apify_ret=RuntimeError("boom"), apollo_ret=6, job_total=6)
@@ -206,6 +231,86 @@ class TestCombinedRollup:
             {"apify": True, "apollo": True}, 25)
         # Apify raised, Apollo found people → overall still completes.
         assert rec["finish"]["status"] == "completed"
+
+    async def test_qa_audits_the_merged_set_on_success(self, monkeypatch):
+        # The trust fix: a completed combined run QA-audits BOTH engines' output
+        # in one pass — Apollo results are no longer published unverified.
+        rec = _patch_combined(monkeypatch, apify_ret=5, apollo_ret=7, job_total=11)
+        await cp._combined_discover_for_job(
+            "p", "j", {"currentJobTitles": ["X"]}, {"titles": ["Y"]},
+            {"apify": True, "apollo": True}, 25)
+        assert rec["finish"]["status"] == "completed"
+        assert rec["qa"] is not None, "combined QA never ran"
+        # Both engines' filters reach the auditor.
+        assert rec["qa"]["apify"] == {"currentJobTitles": ["X"]}
+        assert rec["qa"]["apollo"] == {"titles": ["Y"]}
+
+    async def test_qa_skipped_when_run_did_not_complete(self, monkeypatch):
+        # Nothing to trust-check on a failed run — don't spend the QA LLM call.
+        rec = _patch_combined(monkeypatch, apify_ret=None, apollo_ret=None, job_total=0)
+        await cp._combined_discover_for_job(
+            "p", "j", {"currentJobTitles": ["X"]}, {"titles": ["Y"]},
+            {"apify": True, "apollo": True}, 25)
+        assert rec["finish"]["status"] == "failed"
+        assert rec["qa"] is None
+
+    async def test_stale_total_does_not_mask_a_failed_run(self, monkeypatch):
+        # The exact reported bug: Apollo off, Apify FAILED, but a leftover
+        # candidate from an earlier run makes job_total > 0. Success is judged by
+        # what THIS run added (0), not the cumulative total → the run is failed.
+        rec = _patch_combined(monkeypatch, apify_ret=None, apollo_ret=0, job_total=1)
+        await cp._combined_discover_for_job(
+            "p", "j", {"currentJobTitles": ["X"]}, {"titles": ["X"]},
+            {"apify": True, "apollo": False}, 25)
+        assert rec["ran"] == ["apify"]
+        assert rec["finish"]["status"] == "failed"
+
+    async def test_quota_error_is_surfaced_distinctly(self, monkeypatch):
+        rec = _patch_combined(monkeypatch, apify_ret=None, apollo_ret=None, job_total=0)
+
+        async def quota_errors(pipeline_id, job_id):
+            return {"apify": "Apify refused: 'free user run limit reached'.",
+                    "apollo": None}
+        monkeypatch.setattr(cp, "_engine_errors", quota_errors)
+
+        await cp._combined_discover_for_job(
+            "p", "j", {"currentJobTitles": ["X"]}, {"titles": ["X"]},
+            {"apify": True, "apollo": True}, 25)
+        assert rec["finish"]["status"] == "failed"
+        assert rec["finish"]["searchQuotaHit"] is True
+        assert "plan/credit limit" in rec["finish"]["searchError"]
+
+
+# ── Keyword-channel policy: the executive/cofounder refusal ──────────────────
+
+class TestChannelScreenPolicy:
+    def _drop_verdict(self):
+        return {"decision": "drop", "score": 0.0, "roleFit": 0.0,
+                "reasons": ["Title shares no vocabulary with this role."]}
+
+    def test_executive_keyword_hit_is_refused(self):
+        # An "Owner" found only by the fuzzy keyword channel must NOT be rescued
+        # — this is the "cofounder shows up as an SAP consultant" leak.
+        keep, v = cp._channel_screen_policy(
+            False, self._drop_verdict(), ["keyword"], title="Owner")
+        assert keep is False
+        assert v["decision"] == "drop"
+        assert "executive" in v["reasons"][0].lower()
+
+    def test_non_executive_keyword_hit_is_still_rescued(self):
+        # The legit case: an IC title the title-gate couldn't score, whose
+        # profile text matched — kept for enrichment.
+        keep, v = cp._channel_screen_policy(
+            False, self._drop_verdict(), ["keyword"], title="IT-Consultant bei X")
+        assert keep is True
+        assert v["decision"] == "keep"
+        assert v["score"] >= 30.0
+
+    def test_title_channel_drop_is_not_rescued(self):
+        # No keyword channel → a drop stays a drop regardless of title.
+        keep, v = cp._channel_screen_policy(
+            False, self._drop_verdict(), ["title"], title="Owner")
+        assert keep is False
 
 
 # ── Apollo people-search: no person_industries[] + fallback cascade ──────────

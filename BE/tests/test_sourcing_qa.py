@@ -189,19 +189,36 @@ async def _run(monkeypatch, resp):
 
 
 class TestSourcingAuditor:
-    async def test_flags_off_specialty_above_confidence_floor(self, monkeypatch):
+    async def test_mid_confidence_is_flagged_not_hidden(self, monkeypatch):
+        # Between the flag floor (0.6) and the reject threshold (0.8): annotate,
+        # but keep the candidate visible.
+        resp = {"mismatches": [
+            {"id": CID_B, "reason": "possibly SAP FICO, not HR.",
+             "likelyActualSpecialty": "SAP FICO", "confidence": 0.7},
+        ]}
+        summary, db = await _run(monkeypatch, resp)
+        assert summary["mismatchesFlagged"] == 1
+        assert summary["rejected"] == 0
+        assert summary["locationRejected"] == 2  # carried from the deterministic gate
+        flt, update = db.candidates.updates[0]
+        assert "sourcingQaFlag" in update["$set"]
+        assert "isAccepted" not in update["$set"]  # visible, just annotated
+        assert db.qa.reports[0]["kind"] == "sourcing"
+
+    async def test_high_confidence_off_specialty_is_hidden(self, monkeypatch):
+        # At/above the reject threshold (0.8) the recruiter must never see it:
+        # the candidate is hidden (isAccepted=False) AND annotated.
         resp = {"mismatches": [
             {"id": CID_B, "reason": "SAP FICO is finance, not HR.",
              "likelyActualSpecialty": "SAP FICO", "confidence": 0.92},
         ]}
         summary, db = await _run(monkeypatch, resp)
         assert summary["mismatchesFlagged"] == 1
-        assert summary["locationRejected"] == 2  # carried from the deterministic gate
-        # Candidate row annotated, NEVER rejected.
+        assert summary["rejected"] == 1
         flt, update = db.candidates.updates[0]
-        assert "$set" in update and "sourcingQaFlag" in update["$set"]
-        assert "isAccepted" not in update["$set"]
-        assert db.qa.reports[0]["kind"] == "sourcing"
+        assert update["$set"]["isAccepted"] is False
+        assert "sourcingQaFlag" in update["$set"]
+        assert "QA" in update["$set"]["rejectionReason"]
 
     async def test_low_confidence_is_noted_not_flagged(self, monkeypatch):
         resp = {"mismatches": [

@@ -20,10 +20,13 @@ that sentence, and they need two different tools:
 
 Discipline (shared with match_qa_service, same reasons):
   * The auditor sees the recruiter's query and each KEPT candidate's short
-    profile, and flags off-specialty results. It reports; it does not silently
-    delete. A false-positive flag (calling a valid candidate off-target) would
-    re-create the false negative we spent FC-29/30 killing, so the recruiter and
-    the admin report get the flag — the candidate is annotated, not purged.
+    profile, and judges off-specialty results on a confidence scale. The
+    founder's standing instruction is zero wrong-specialty results in front of
+    the recruiter, so this is authoritative: at/above SOURCING_QA_REJECT_CONFIDENCE
+    the candidate is HIDDEN (isAccepted=False); between the flag floor and that
+    it is annotated but shown; below the floor it is only recorded. Removal is
+    deliberately gated on HIGH confidence so a hedged guess can't purge a real
+    hire — "unsure → don't flag" is baked into the prompt and the floor.
   * Runs ONCE per search over the whole kept set → the bigger model is bounded.
   * Writes a ``qa_reports`` doc (kind="sourcing") for the admin QA page.
   * Fail-open: an auditor outage leaves the results untouched, status="skipped".
@@ -60,20 +63,22 @@ _SOURCING_QA_SYSTEM = (
     "a fuzzy keyword search matched some text on their profile. Confirming good "
     "matches earns you nothing; missing a bad one is your failure, but so is "
     "wrongly flagging a valid candidate (that discards a real hire).\n\n"
+    "Judge SPECIALTY ONLY. Seniority/level (junior vs senior) and location are "
+    "handled by separate deterministic systems — do NOT flag on either; a junior "
+    "in the RIGHT specialty is not a mismatch here.\n\n"
     "What a MISMATCH is:\n"
     "* Different specialty within the same platform — e.g. target 'SAP HCM' "
-    "(HR/payroll) but the candidate is 'SAP FICO'/'SAP FI-CA' (finance) or "
-    "'SAP Basis' (infra). Sharing the platform brand ('SAP') is NOT enough.\n"
-    "* A different profession entirely that merely name-drops a tool.\n"
-    "* Clearly wrong seniority when the role names one (e.g. a working student "
-    "for a lead role).\n\n"
+    "(HR/payroll) but the candidate is 'SAP FICO'/'SAP FI-CA' (finance), "
+    "'SAP IS-U' (utilities) or 'SAP Basis' (infra). Sharing the platform brand "
+    "('SAP') is NOT enough.\n"
+    "* A different profession entirely that merely name-drops a tool.\n\n"
     "What is NOT a mismatch (do not flag):\n"
     "* The right specialty phrased differently, in another language, or by a "
     "product name (SAP HCM ≡ SAP HR ≡ SAP SuccessFactors ≡ 'Personalabrechnung "
     "SAP'; PA/PY/OM are HCM sub-modules).\n"
     "* A generalist title whose specialization can't be told from the short "
     "profile — when unsure, do NOT flag (mark confidence low).\n"
-    "* Location — a separate system already handles it; ignore location here.\n\n"
+    "* Junior/senior level, or location — other systems own these; ignore them.\n\n"
     "Judge only from the title/headline/company text given. Never infer from a "
     "name, gender or photo. For each flagged candidate give the exact id, a "
     "one-line reason naming the specialty you think they actually are, and a "
@@ -105,6 +110,12 @@ _SOURCING_QA_SCHEMA: Dict[str, Any] = {
 # Below this confidence a mismatch is recorded but NOT surfaced as an active
 # flag — the auditor's own hedge ("unsure → don't flag") made mechanical.
 _FLAG_MIN_CONFIDENCE = 0.6
+
+
+def _reject_confidence() -> float:
+    # At/above this the auditor is confident enough to HIDE the candidate, not
+    # just annotate — the recruiter's list stays free of wrong-specialty people.
+    return float(getattr(settings, "SOURCING_QA_REJECT_CONFIDENCE", 0.8) or 0.8)
 
 
 def _audit_sync(query: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -150,6 +161,7 @@ async def audit_results(
         "locationRejected": int(location_rejected),
         "mismatchesRaised": 0,
         "mismatchesFlagged": 0,     # above the confidence floor
+        "rejected": 0,              # high-confidence → hidden from the recruiter
         "lowConfidenceNoted": 0,
     }
     flags: List[Dict[str, Any]] = []
@@ -180,24 +192,36 @@ async def audit_results(
                     metrics["lowConfidenceNoted"] += 1
                     continue
                 metrics["mismatchesFlagged"] += 1
+                reject = conf >= _reject_confidence()
                 flag = {
                     "candidateId": cid,
                     "reason": m.get("reason"),
                     "likelyActualSpecialty": m.get("likelyActualSpecialty"),
                     "confidence": conf,
+                    "action": "rejected" if reject else "flagged",
                 }
                 flags.append(flag)
-                # Annotate the row — visible to the recruiter, never auto-rejected.
+                qa_note = {
+                    "reason": m.get("reason"),
+                    "likelyActualSpecialty": m.get("likelyActualSpecialty"),
+                    "confidence": conf, "at": _now(),
+                    "action": "rejected" if reject else "flagged",
+                }
+                # High confidence → HIDE the candidate (isAccepted=False) so the
+                # recruiter never sees a wrong-specialty result. Lower confidence
+                # → annotate only. Both keep the QA evidence on the row.
+                update: Dict[str, Any] = {"sourcingQaFlag": qa_note, "updatedAt": _now()}
+                if reject:
+                    metrics["rejected"] += 1
+                    update.update({
+                        "isAccepted": False,
+                        "rejectionReason": (
+                            f"QA: wrong specialty — {m.get('reason') or 'off-target'}"),
+                        "decidedAt": _now(),
+                    })
                 try:
-                    await cands_col.update_one(
-                        {"_id": ObjectId(cid)},
-                        {"$set": {"sourcingQaFlag": {
-                            "reason": m.get("reason"),
-                            "likelyActualSpecialty": m.get("likelyActualSpecialty"),
-                            "confidence": conf, "at": _now(),
-                        }, "updatedAt": _now()}},
-                    )
-                except Exception as exc:  # noqa: BLE001 — annotation is best-effort
+                    await cands_col.update_one({"_id": ObjectId(cid)}, {"$set": update})
+                except Exception as exc:  # noqa: BLE001 — writeback is best-effort
                     logger.warning("[SourcingQA] flag writeback failed for %s: %s", cid, exc)
     except llm.ExtractionError as e:
         status = "skipped"
@@ -231,5 +255,6 @@ async def audit_results(
         "status": status, "reportId": report_id, "model": qa_model(),
         "kept": metrics["kept"], "locationRejected": metrics["locationRejected"],
         "mismatchesFlagged": metrics["mismatchesFlagged"],
+        "rejected": metrics["rejected"],
         "at": _now(),
     }
