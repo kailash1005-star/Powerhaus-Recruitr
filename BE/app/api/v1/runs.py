@@ -11,6 +11,7 @@ import json
 import asyncio
 from pydantic import BaseModel
 from app.database import get_database
+from app.security.tenant import TenantContext, tenant_scope
 from app.schemas.runs import RunCreateSchema, RunResponseSchema
 from app.services.orchestrator import process_run_background
 from datetime import datetime, timedelta, timezone
@@ -27,12 +28,31 @@ async def get_db():
     return await get_database()
 
 
+async def owned_run(
+    run_id: str,
+    ctx: TenantContext = Depends(tenant_scope),
+    db=Depends(get_db),
+) -> dict:
+    """Guard for every ``/{run_id}/...`` route: load the run and refuse it unless
+    the caller's tenant owns it (admins bypass). 404 for both 'missing' and 'not
+    yours' so ids can't be probed across tenants."""
+    try:
+        oid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Run not found")
+    doc = await db["runs"].find_one({"_id": oid})
+    if not ctx.owns(doc):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return doc
+
+
 # ── POST /start ─────────────────────────────────────────────────────────
 
 @router.post("/start", response_model=RunResponseSchema)
 async def start_run(
     request: RunCreateSchema,
     background_tasks: BackgroundTasks,
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     try:
@@ -45,6 +65,9 @@ async def start_run(
             "runStartedAt": datetime.utcnow(),
             "status": "active",
             "currentPhase": "pending",
+            "tenantId": ctx.tenant_id,
+            "createdBy": ctx.sub,
+            "createdByEmail": ctx.email,
             "stats": {
                 "totalJobsScraped": 0,
                 "uniqueCompanies": 0,
@@ -63,6 +86,7 @@ async def start_run(
             process_run_background,
             run_id=run_id,
             run_config=request.runConfig.model_dump(),
+            tenant_id=ctx.tenant_id,
         )
 
         run_doc["_id"] = run_id
@@ -80,12 +104,13 @@ async def start_run(
 async def list_runs(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     try:
         runs_col = db["runs"]
         skip = (page - 1) * limit
-        cursor = runs_col.find().sort("createdAt", -1).skip(skip).limit(limit)
+        cursor = runs_col.find(ctx.read_filter()).sort("createdAt", -1).skip(skip).limit(limit)
         runs = []
         async for doc in cursor:
             doc["_id"] = str(doc["_id"])
@@ -98,18 +123,9 @@ async def list_runs(
 # ── GET /{run_id} ────────────────────────────────────────────────────────
 
 @router.get("/{run_id}", response_model=RunResponseSchema)
-async def get_run(run_id: str, db=Depends(get_db)):
-    try:
-        runs_col = db["runs"]
-        doc = await runs_col.find_one({"_id": ObjectId(run_id)})
-        if not doc:
-            raise HTTPException(status_code=404, detail="Run not found")
-        doc["_id"] = str(doc["_id"])
-        return RunResponseSchema(**doc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching run: {str(e)}")
+async def get_run(run_id: str, run: dict = Depends(owned_run)):
+    run["_id"] = str(run["_id"])
+    return RunResponseSchema(**run)
 
 
 # ── GET /{run_id}/jobs ───────────────────────────────────────────────────
@@ -121,6 +137,7 @@ async def get_run_jobs(
     limit: int = Query(20, ge=1, le=100),
     sort_by: str = Query("createdAt", description="Sort field: title|company|location|boardName|qualityStatus|createdAt"),
     sort_order: str = Query("desc", description="Sort order: asc|desc"),
+    _run: dict = Depends(owned_run),
     db=Depends(get_db),
 ):
     """Return paginated jobs for a run with summary counts.
@@ -192,7 +209,7 @@ async def get_run_jobs(
 # ── PATCH /{run_id} (rename) ──────────────────────────────────────────────
 
 @router.patch("/{run_id}", response_model=RunResponseSchema)
-async def rename_run(run_id: str, body: RunRenameSchema, db=Depends(get_db)):
+async def rename_run(run_id: str, body: RunRenameSchema, _run: dict = Depends(owned_run), db=Depends(get_db)):
     """Rename a run (update its title)."""
     try:
         title = (body.title or "").strip()
@@ -220,7 +237,7 @@ async def rename_run(run_id: str, body: RunRenameSchema, db=Depends(get_db)):
 # ── DELETE /{run_id} ─────────────────────────────────────────────────────
 
 @router.delete("/{run_id}")
-async def delete_run(run_id: str, db=Depends(get_db)):
+async def delete_run(run_id: str, _run: dict = Depends(owned_run), db=Depends(get_db)):
     """Delete a run and ALL data associated with it: jobs, prospects, outreach,
     and any companies that become orphaned (no other run references them).
 
@@ -276,7 +293,7 @@ async def delete_run(run_id: str, db=Depends(get_db)):
 # ── Stub endpoints used by the new run-results UI ───────────────────────
 
 @router.get("/{run_id}/enrichment-credits")
-async def get_enrichment_credits(run_id: str):
+async def get_enrichment_credits(run_id: str, _run: dict = Depends(owned_run)):
     """Stub credit status — enrichment is out of scope this iteration."""
     period_end = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -292,19 +309,19 @@ async def get_enrichment_credits(run_id: str):
 
 
 @router.get("/{run_id}/outreach-status")
-async def get_outreach_status(run_id: str):
+async def get_outreach_status(run_id: str, _run: dict = Depends(owned_run)):
     return {"records": []}
 
 
 @router.post("/{run_id}/trigger-email-flow")
-async def trigger_email_flow(run_id: str):
+async def trigger_email_flow(run_id: str, _run: dict = Depends(owned_run)):
     return {"message": "Email outreach is not enabled in this iteration"}
 
 
 # ── SSE stream for real-time pipeline progress ──────────────────────────
 
 @router.get("/{run_id}/stream")
-async def stream_run_progress(run_id: str, db=Depends(get_db)):
+async def stream_run_progress(run_id: str, _run: dict = Depends(owned_run), db=Depends(get_db)):
     """SSE endpoint that streams pipeline phase transitions in real time.
     
     The frontend connects after POST /start returns, and receives events

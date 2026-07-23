@@ -26,7 +26,22 @@ from app.services.apify_company_service import ApifyCompanyService, get_apify_co
 logger = logging.getLogger(__name__)
 
 
-async def process_run_background(run_id: str, run_config: Dict[str, Any]):
+async def _stamp_children(tenant_id: str | None, run_oid: ObjectId, jobs_col, prospects_col) -> None:
+    """Denormalize the run's tenantId onto its jobs/prospects so tenant-scoped
+    list queries stay a single indexed filter (no per-doc parent join). Child docs
+    are created deep in the scraper/Apollo services which don't know the tenant, so
+    we stamp by runId here — the run is the tenant-owned root. No-op for admins /
+    unmapped runs without a tenant."""
+    if not tenant_id:
+        return
+    try:
+        await jobs_col.update_many({"runId": run_oid}, {"$set": {"tenantId": tenant_id}})
+        await prospects_col.update_many({"runId": run_oid}, {"$set": {"tenantId": tenant_id}})
+    except Exception as e:  # noqa: BLE001 — stamping is best-effort; reads still fall back to run ownership
+        logger.warning("[Orchestrator] child tenant-stamp failed for run %s: %s", run_oid, e)
+
+
+async def process_run_background(run_id: str, run_config: Dict[str, Any], tenant_id: str | None = None):
     """Background task called by POST /runs/start."""
     print(f"[Orchestrator] Starting run {run_id}")
 
@@ -38,6 +53,10 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
     try:
         run_oid = ObjectId(run_id)
         now = datetime.utcnow()
+        # Fall back to the run doc's own stamp if the caller didn't pass one.
+        if tenant_id is None:
+            _rd = await runs_col.find_one({"_id": run_oid}, {"tenantId": 1})
+            tenant_id = (_rd or {}).get("tenantId")
 
         await runs_col.update_one(
             {"_id": run_oid},
@@ -99,6 +118,8 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
             },
         )
         print(f"[Orchestrator] Phase 1 done — scraped={total_scraped} accepted={total_accepted}")
+        # Stamp jobs now so a run that fails later still yields tenant-scoped jobs.
+        await _stamp_children(tenant_id, run_oid, jobs_col, prospects_col)
 
         # ──────────────────────────────────────────────────────────────
         # Phase 2 — OpenAI company industry resolution
@@ -131,6 +152,8 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any]):
                 runs_col=runs_col,
             )
         print(f"[Orchestrator] Phase 3 done — {phase3_stats}")
+        # Final stamp — catches prospects (Phase 3) and any jobs relinked in Phase 2.
+        await _stamp_children(tenant_id, run_oid, jobs_col, prospects_col)
 
         await runs_col.update_one(
             {"_id": run_oid},

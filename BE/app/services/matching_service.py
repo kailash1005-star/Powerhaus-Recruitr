@@ -75,12 +75,26 @@ def _embed_text_from_profile(profile: Dict[str, Any], markdown: str) -> str:
 
 
 # ── CV ingestion ─────────────────────────────────────────────────────────────
-async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional[str]) -> Dict[str, Any]:
-    """Ingest a single CV. Returns a status dict; does not raise."""
+async def ingest_cv(
+    db, data: bytes, filename: Optional[str], batch_id: Optional[str],
+    tenant_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ingest a single CV. Returns a status dict; does not raise.
+
+    `tenant_id` stamps the CV so the matching corpus stays tenant-isolated — a JD
+    is only ever scored against its own tenant's uploaded CVs. None on
+    single-tenant/admin ingests."""
     col = db["cv_candidates"]
     content_hash = hashlib.sha256(data).hexdigest()
 
-    existing = await col.find_one({"contentHash": content_hash}, {"_id": 1, "status": 1})
+    # Dedup is per-tenant: the same CV bytes uploaded by two different clients are
+    # two distinct candidate records, each visible only to its owner. Without the
+    # tenant in the key, tenant B re-uploading a CV tenant A already has would be
+    # told "duplicate" and silently denied their own copy.
+    dedup: Dict[str, Any] = {"contentHash": content_hash}
+    if tenant_id:
+        dedup["tenantId"] = tenant_id
+    existing = await col.find_one(dedup, {"_id": 1, "status": 1})
     if existing:
         # A previously-embedded CV is a true duplicate — skip. But a FAILED one
         # (e.g. parsed before Docling was available) should be retried, not
@@ -90,7 +104,8 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
         cid = existing["_id"]
         await col.update_one(
             {"_id": cid},
-            {"$set": {"status": "pending", "error": None, "batchId": batch_id, "updatedAt": _now()}},
+            {"$set": {"status": "pending", "error": None, "batchId": batch_id,
+                      "tenantId": tenant_id, "updatedAt": _now()}},
         )
     else:
         doc = {
@@ -98,6 +113,7 @@ async def ingest_cv(db, data: bytes, filename: Optional[str], batch_id: Optional
             "sourceFileName": filename,
             "batchId": batch_id,
             "status": "pending",
+            "tenantId": tenant_id,
             "createdAt": _now(),
             "updatedAt": _now(),
         }
@@ -823,11 +839,16 @@ async def run_match(
     jd_filename: Optional[str] = None,
     return_top: Optional[int] = None,
     job_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parse a JD, match against the ingested CV corpus, return top-N with reasons.
 
     `job_id` links the JD's role spec to a pipeline job, so a JD matched here also
     becomes the requirement that drives that job's sourcing.
+
+    `tenant_id` restricts the corpus to one tenant's CVs — a JD from tenant A must
+    never be matched against tenant B's uploaded candidates. None = all tenants
+    (admin / single-tenant deployments).
 
     The whole run is metered under the "matching" cost stage — this engine's
     embedding/extraction/judge spend used to land as orphan events with no
@@ -840,7 +861,7 @@ async def run_match(
     ):
         return await _run_match_impl(
             db, jd_text=jd_text, jd_bytes=jd_bytes, jd_filename=jd_filename,
-            return_top=return_top, job_id=job_id,
+            return_top=return_top, job_id=job_id, tenant_id=tenant_id,
         )
 
 
@@ -852,8 +873,12 @@ async def _run_match_impl(
     jd_filename: Optional[str] = None,
     return_top: Optional[int] = None,
     job_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     return_top = return_top or settings.MATCH_RETURN_TOP
+    # Tenant scoping: restrict every retrieval channel and the final fetch to this
+    # tenant's CVs. Empty for admins / single-tenant → matches the whole corpus.
+    tenant_filter: Optional[Dict[str, Any]] = {"tenantId": tenant_id} if tenant_id else None
 
     # 1. JD → markdown
     if jd_bytes:
@@ -900,7 +925,7 @@ async def _run_match_impl(
     # scored; fusion means neither channel needs the other's score scale.
     store = get_vector_store(db)
     k = settings.MATCH_RETRIEVE_K
-    sem_hits = await store.query(jd_vector, top_k=k)
+    sem_hits = await store.query(jd_vector, top_k=k, _filters=tenant_filter)
     sim_by_id = {cid: score for cid, score in sem_hits}
 
     cv_col = db["cv_candidates"]
@@ -912,13 +937,16 @@ async def _run_match_impl(
             # server-side, so we query it instead of rebuilding a BM25 index from
             # every doc's text on this request. Joining the terms preserves the
             # must-have doubling (a repeated term raises its query frequency).
-            lex_hits = await store.lexical_query(" ".join(terms), top_k=k)
+            lex_hits = await store.lexical_query(" ".join(terms), top_k=k, _filters=tenant_filter)
         else:
             # In-process BM25 — exact and fine for the demo/test corpus, but
             # O(corpus) per query: it re-reads and re-tokenises every doc.
             corpus: List[Tuple[str, str]] = []
+            bm25_scope = {"status": "embedded"}
+            if tenant_filter:
+                bm25_scope.update(tenant_filter)
             async for d in cv_col.find(
-                {"status": "embedded"}, {"markdown": 1, "profile.skills": 1, "profile.currentTitle": 1}
+                bm25_scope, {"markdown": 1, "profile.skills": 1, "profile.currentTitle": 1}
             ):
                 p = d.get("profile") or {}
                 text = " ".join(filter(None, [
@@ -945,7 +973,13 @@ async def _run_match_impl(
     candidates: List[Dict[str, Any]] = []
     if retrieval_by_id:
         obj_ids = [ObjectId(cid) for cid in retrieval_by_id.keys()]
-        async for doc in cv_col.find({"_id": {"$in": obj_ids}}):
+        fetch_scope: Dict[str, Any] = {"_id": {"$in": obj_ids}}
+        if tenant_filter:
+            # Defense in depth: even if a retrieval channel leaked a cross-tenant id
+            # (e.g. an Atlas index still building without the tenant filter field),
+            # it is dropped here before scoring.
+            fetch_scope.update(tenant_filter)
+        async for doc in cv_col.find(fetch_scope):
             # Raw-document sections become the scorer's last evidence tier (and
             # thereby the QA auditor's, which shares the corpus by design).
             # Legacy docs ingested before chunking get them derived on the fly —
@@ -1109,6 +1143,7 @@ async def _run_match_impl(
             "seed": settings.OPENAI_SEED,
         },
         "vectorBackend": settings.VECTOR_BACKEND,
+        "tenantId": tenant_id,
         "createdAt": _now(),
     }
     match_run_id = str((await runs_col.insert_one(run_doc)).inserted_id)

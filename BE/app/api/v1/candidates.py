@@ -9,9 +9,12 @@ download the complete profile and return structured data.
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from bson import ObjectId
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.database import get_database
+from app.security.tenant import TenantContext, tenant_scope
 from app.services.apify_profile_service import ApifyCostGuard, ApifyNotConfigured
 from app.services.candidate_enrichment import enrich_candidates
 from app.services.linkedin_profile_service import (
@@ -186,10 +189,36 @@ class EnrichResponse(BaseModel):
         "(no re-charge)."
     ),
 )
-async def enrich_candidates_endpoint(body: EnrichRequest):
+async def enrich_candidates_endpoint(
+    body: EnrichRequest,
+    ctx: TenantContext = Depends(tenant_scope),
+    db=Depends(get_database),
+):
     """Enrich a selected set of candidates (by id list or pipeline/job)."""
     if not body.candidateIds and not body.pipelineId:
         raise HTTPException(status_code=400, detail="provide candidateIds or pipelineId")
+
+    # Tenant guard: enrichment triggers a PAID scrape of a candidate's LinkedIn
+    # profile, so a caller must only ever enrich their own tenant's candidates.
+    if not ctx.is_admin:
+        if body.pipelineId:
+            try:
+                pipe = await db["candidatePipelines"].find_one(
+                    {"_id": ObjectId(body.pipelineId)}, {"tenantId": 1})
+            except Exception:
+                pipe = None
+            if not ctx.owns(pipe):
+                raise HTTPException(status_code=404, detail="pipeline not found")
+        if body.candidateIds:
+            try:
+                oids = [ObjectId(cid) for cid in body.candidateIds]
+            except Exception:
+                raise HTTPException(status_code=400, detail="invalid candidate id")
+            owned = await db["candidates"].count_documents(
+                {"_id": {"$in": oids}, "tenantId": ctx.tenant_id})
+            if owned != len(set(oids)):
+                # Some requested candidates aren't this tenant's (or are unstamped).
+                raise HTTPException(status_code=404, detail="candidate not found")
     try:
         summary = await enrich_candidates(
             candidate_ids=body.candidateIds,

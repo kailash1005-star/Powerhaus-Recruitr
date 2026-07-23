@@ -73,6 +73,17 @@ async def startup_db_client():
     # otherwise the UI polls a "running" status no worker is executing, forever.
     from app.services.run_reaper import reap_stale_runs
     await reap_stale_runs()
+    # GDPR: ensure the processing-audit indexes exist, then run the retention
+    # sweep (no-op unless PII_RETENTION_DAYS > 0). Both are best-effort.
+    try:
+        from app.database import get_database
+        from app.services import gdpr_service
+        _db = await get_database()
+        await gdpr_service.ensure_indexes(_db)
+        await gdpr_service.apply_retention(_db, settings.PII_RETENTION_DAYS)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("[GDPR] startup step skipped: %s", e)
  
  
 @app.on_event("shutdown")

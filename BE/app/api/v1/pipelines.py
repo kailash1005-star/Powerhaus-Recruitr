@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from app.database import get_database
+from app.security.tenant import TenantContext, tenant_scope
 from app.services.candidate_pipeline import (
     add_job_to_pipeline,
     enqueue_apollo_discover,
@@ -47,6 +48,56 @@ router = APIRouter()
 
 async def get_db():
     return await get_database()
+
+
+async def owned_pipeline(
+    pipeline_id: str,
+    ctx: TenantContext = Depends(tenant_scope),
+    db=Depends(get_db),
+) -> dict:
+    """Dependency for every ``/{pipeline_id}/...`` route: load the pipeline and
+    refuse it unless the caller's tenant owns it (admins bypass).
+
+    Returns 404 for both 'missing' and 'not yours' — a client must not be able to
+    tell another tenant's pipeline exists by probing ids."""
+    try:
+        oid = ObjectId(pipeline_id)
+    except Exception:
+        raise HTTPException(404, "pipeline not found")
+    pipe = await db["candidatePipelines"].find_one({"_id": oid})
+    if not ctx.owns(pipe):
+        raise HTTPException(404, "pipeline not found")
+    return pipe
+
+
+async def owned_candidate(
+    candidate_id: str,
+    ctx: TenantContext = Depends(tenant_scope),
+    db=Depends(get_db),
+) -> dict:
+    """Same guard for the candidate-by-id routes, enforced via the candidate's
+    OWN tenant stamp first, then its parent pipeline as a fallback for rows that
+    predate stamping."""
+    try:
+        oid = ObjectId(candidate_id)
+    except Exception:
+        raise HTTPException(404, "candidate not found")
+    cand = await db["candidates"].find_one({"_id": oid})
+    if cand is None:
+        raise HTTPException(404, "candidate not found")
+    if ctx.is_admin or ctx.owns(cand):
+        return cand
+    # Fallback: unstamped legacy row → check the parent pipeline's tenant.
+    pid = cand.get("pipelineId")
+    if pid is not None:
+        try:
+            pipe = await db["candidatePipelines"].find_one(
+                {"_id": pid if isinstance(pid, ObjectId) else ObjectId(str(pid))})
+        except Exception:
+            pipe = None
+        if ctx.owns(pipe):
+            return cand
+    raise HTTPException(404, "candidate not found")
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────
@@ -246,10 +297,12 @@ async def list_pipelines(
     limit: int = Query(20, ge=1, le=100),
     q: Optional[str] = Query(None, description="Typeahead: matches companyName/companyDomain"),
     db=Depends(get_db),
+    ctx: TenantContext = Depends(tenant_scope),
 ):
     try:
         col = db["candidatePipelines"]
-        query: Dict[str, Any] = {}
+        # Only this tenant's pipelines (admins see all).
+        query: Dict[str, Any] = ctx.read_filter()
         if q:
             # Case-insensitive prefix match on companyName / companyDomain
             regex = {"$regex": q.strip(), "$options": "i"}
@@ -273,7 +326,10 @@ async def list_pipelines(
 
 
 @router.post("")
-async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
+async def create_pipeline(
+    body: PipelineCreateSchema, db=Depends(get_db),
+    ctx: TenantContext = Depends(tenant_scope),
+):
     try:
         pipelines = db["candidatePipelines"]
         companies = db["companies"]
@@ -332,12 +388,14 @@ async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
         # when there IS a company — a role-only pipeline has no company identity
         # to collide on, so several of them coexisting is correct, not a duplicate.
         if company is not None:
-            existing = await pipelines.find_one({
+            # Scoped to THIS tenant — two client firms may each run a pipeline
+            # for the same end-company without colliding.
+            existing = await pipelines.find_one(ctx.read_filter({
                 "$or": [
                     {"companyId": str(company["_id"])},
                     {"companyDomain": company.get("companyDomain")},
                 ]
-            })
+            }))
             if existing:
                 raise HTTPException(
                     409,
@@ -365,6 +423,10 @@ async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
             "acceptedCount": 0,
             "rejectedCount": 0,
             "createdAt": now, "updatedAt": now,
+            # Ownership: which company-tenant this belongs to, and who created it.
+            "tenantId": ctx.tenant_id,
+            "createdBy": ctx.sub,
+            "createdByEmail": ctx.email,
         }
         try:
             res = await pipelines.insert_one(doc)
@@ -388,32 +450,24 @@ async def create_pipeline(body: PipelineCreateSchema, db=Depends(get_db)):
 
 
 @router.get("/{pipeline_id}")
-async def get_pipeline(pipeline_id: str, db=Depends(get_db)):
-    try:
-        col = db["candidatePipelines"]
-        doc = await col.find_one({"_id": ObjectId(pipeline_id)})
-        if not doc:
-            raise HTTPException(404, "Pipeline not found")
-        return _serialize_pipeline(doc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error fetching pipeline: {e}")
+async def get_pipeline(pipeline_id: str, pipe: dict = Depends(owned_pipeline)):
+    # owned_pipeline already loaded + authorised the doc (404 if not this tenant).
+    return _serialize_pipeline(pipe)
 
 
 # ── DELETE /{id} (cascade) ───────────────────────────────────────────────
 
 
 @router.delete("/{pipeline_id}")
-async def delete_pipeline(pipeline_id: str, db=Depends(get_db)):
+async def delete_pipeline(
+    pipeline_id: str, db=Depends(get_db), pipe: dict = Depends(owned_pipeline),
+):
     try:
         pipelines = db["candidatePipelines"]
         candidates = db["candidates"]
-        oid = ObjectId(pipeline_id)
+        # owned_pipeline already 404'd if the caller doesn't own it.
         cand_res = await candidates.delete_many({"pipelineId": pipeline_id})
-        pipe_res = await pipelines.delete_one({"_id": oid})
-        if pipe_res.deleted_count == 0:
-            raise HTTPException(404, "Pipeline not found")
+        pipe_res = await pipelines.delete_one({"_id": pipe["_id"]})
         return {
             "success": True,
             "deleted": {"candidates": cand_res.deleted_count},
@@ -428,7 +482,8 @@ async def delete_pipeline(pipeline_id: str, db=Depends(get_db)):
 
 
 @router.post("/{pipeline_id}/jobs")
-async def add_job(pipeline_id: str, body: PipelineAddJobSchema):
+async def add_job(pipeline_id: str, body: PipelineAddJobSchema,
+                  _owned: dict = Depends(owned_pipeline)):
     try:
         result = await add_job_to_pipeline(pipeline_id, body.jobId)
         return {"success": True, **result}
@@ -448,7 +503,8 @@ async def add_job(pipeline_id: str, body: PipelineAddJobSchema):
 
 
 @router.delete("/{pipeline_id}/jobs/{job_id}")
-async def remove_job(pipeline_id: str, job_id: str, db=Depends(get_db)):
+async def remove_job(pipeline_id: str, job_id: str, db=Depends(get_db),
+                     _owned: dict = Depends(owned_pipeline)):
     """Remove a job from a pipeline.
 
     Candidates whose ``sourceJobIds`` is just this one job → deleted.
@@ -493,7 +549,8 @@ async def remove_job(pipeline_id: str, job_id: str, db=Depends(get_db)):
 
 
 @router.post("/{pipeline_id}/jobs/{job_id}/rerun")
-async def rerun_job(pipeline_id: str, job_id: str):
+async def rerun_job(pipeline_id: str, job_id: str,
+                    _owned: dict = Depends(owned_pipeline)):
     try:
         result = await rerun_job_search(pipeline_id, job_id)
         return {"success": True, **result}
@@ -511,6 +568,7 @@ async def rerun_job(pipeline_id: str, job_id: str):
 @router.post("/{pipeline_id}/jobs/{job_id}/suggest-filters")
 async def suggest_job_filters(
     pipeline_id: str, job_id: str, body: SuggestFiltersSchema | None = None,
+    _owned: dict = Depends(owned_pipeline),
 ):
     """AI-propose the LinkedIn search filters for a job (prefill).
 
@@ -538,7 +596,8 @@ async def suggest_job_filters(
 
 
 @router.post("/{pipeline_id}/jobs/{job_id}/discover")
-async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverSchema):
+async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverSchema,
+                                  _owned: dict = Depends(owned_pipeline)):
     """Run the Apify LinkedIn-search actor with the questionnaire filters, store
     the results as candidates, then auto-enrich each via the profile scraper —
     all in the background. Poll the job's ``searchStatus`` then ``enrichStatus``.
@@ -572,6 +631,7 @@ async def discover_job_candidates(pipeline_id: str, job_id: str, body: DiscoverS
 @router.post("/{pipeline_id}/jobs/{job_id}/discover-apollo")
 async def discover_job_candidates_apollo(
     pipeline_id: str, job_id: str, body: ApolloDiscoverSchema,
+    _owned: dict = Depends(owned_pipeline),
 ):
     """Run an Apollo people-search from the Apollo questionnaire filters, store
     the results as candidates (search-only), all in the background. Poll the
@@ -595,6 +655,7 @@ async def discover_job_candidates_apollo(
 @router.post("/{pipeline_id}/jobs/{job_id}/discover-combined")
 async def discover_job_candidates_combined(
     pipeline_id: str, job_id: str, body: CombinedDiscoverSchema,
+    _owned: dict = Depends(owned_pipeline),
 ):
     """Run the Apify LinkedIn search AND the Apollo people-search CONCURRENTLY
     from one payload, store both engines' results as candidates (deduped by
@@ -634,7 +695,8 @@ async def discover_job_candidates_combined(
 
 
 @router.post("/{pipeline_id}/jobs/{job_id}/enrich")
-async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichSchema):
+async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichSchema,
+                                _owned: dict = Depends(owned_pipeline)):
     """Queue a background bulk enrichment (Apollo /people/match → Apify profile)
     for the selected candidates (or all candidates in the job). Idempotent — each
     stage skips candidates already enriched. Poll the pipeline for the job's
@@ -671,6 +733,7 @@ async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichS
 @router.post("/{pipeline_id}/jobs/{job_id}/candidates/delete")
 async def delete_job_candidates(
     pipeline_id: str, job_id: str, body: DeleteCandidatesSchema, db=Depends(get_db),
+    _owned: dict = Depends(owned_pipeline),
 ):
     """Delete the selected candidates from a job.
 
@@ -707,7 +770,8 @@ async def delete_job_candidates(
 
 
 @router.post("/{pipeline_id}/jobs/{job_id}/match")
-async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSchema):
+async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSchema,
+                               _owned: dict = Depends(owned_pipeline)):
     """Start a background match run: score the job's JD against the selected
     candidates' enriched profiles (auto-enriching any that aren't yet). Returns
     a ``matchRunId`` to poll at ``GET /matching/run/{id}``."""
@@ -740,7 +804,8 @@ async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSche
 
 
 @router.get("/{pipeline_id}/jobs/{job_id}/requirements")
-async def get_job_requirements(pipeline_id: str, job_id: str):
+async def get_job_requirements(pipeline_id: str, job_id: str,
+                               _owned: dict = Depends(owned_pipeline)):
     """The parsed hiring requirements for a job — what a match run will score
     against. Parses the JD on first ask (cached by JD-text hash afterwards).
 
@@ -859,6 +924,7 @@ async def job_candidate_facets(
     match_min: Optional[int] = Query(None),
     match_max: Optional[int] = Query(None),
     db=Depends(get_db),
+    _owned: dict = Depends(owned_pipeline),
 ):
     """Distinct values + counts for each filterable column, honouring the other
     columns' active filters. Powers the checkboxes in the header dropdowns.
@@ -927,6 +993,7 @@ async def list_job_candidates(
     sort_by: str = Query("matchScore", description="matchScore|createdAt"),
     sort_order: str = Query("desc"),
     db=Depends(get_db),
+    _owned: dict = Depends(owned_pipeline),
 ):
     try:
         col = db["candidates"]
@@ -954,40 +1021,24 @@ async def list_job_candidates(
 
 
 @router.get("/candidates/{candidate_id}")
-async def get_candidate(candidate_id: str, db=Depends(get_db)):
+async def get_candidate(candidate_id: str, cand: dict = Depends(owned_candidate)):
     """Fetch one candidate (full doc incl. Apollo + Apify enrichment).
 
     Backs the matching-run slide-out (deep Apify profile) and the poll the
     client runs after the manual enrich button to watch the Apify stage settle.
-    """
-    try:
-        col = db["candidates"]
-        try:
-            oid = ObjectId(candidate_id)
-        except Exception:
-            raise HTTPException(400, "Invalid candidate id")
-        doc = await col.find_one({"_id": oid})
-        if not doc:
-            raise HTTPException(404, "Candidate not found")
-        return _serialize_candidate(doc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error fetching candidate: {e}")
+    owned_candidate 404s if the caller's tenant doesn't own the row."""
+    return _serialize_candidate(cand)
 
 
 # ── PATCH /candidates/{id} (accept/reject) ───────────────────────────────
 
 
 @router.patch("/candidates/{candidate_id}")
-async def patch_candidate(candidate_id: str, body: CandidatePatchSchema, db=Depends(get_db)):
+async def patch_candidate(candidate_id: str, body: CandidatePatchSchema,
+                          db=Depends(get_db), cand: dict = Depends(owned_candidate)):
     try:
         col = db["candidates"]
-        pipelines = db["candidatePipelines"]
-        oid = ObjectId(candidate_id)
-        cand = await col.find_one({"_id": oid})
-        if not cand:
-            raise HTTPException(404, "Candidate not found")
+        oid = cand["_id"]  # owned_candidate already loaded + authorised it
 
         update: Dict[str, Any] = {"updatedAt": datetime.utcnow()}
         if body.isAccepted is not None:
@@ -1063,7 +1114,8 @@ async def _bg_apify_enrich(candidate_id: str) -> None:
 
 
 @router.post("/candidates/{candidate_id}/enrich")
-async def enrich_candidate(candidate_id: str, db=Depends(get_db)):
+async def enrich_candidate(candidate_id: str, db=Depends(get_db),
+                           _owned: dict = Depends(owned_candidate)):
     """Manual enrichment — Apollo /people/match (inline) then the deep Apify
     LinkedIn profile (background).
 

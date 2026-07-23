@@ -30,6 +30,11 @@ from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
 from app.api.v1.pipelines import PipelineCreateSchema, create_pipeline
+from app.security.tenant import TenantContext
+
+# A concrete tenant scope for the direct-call tests (the API would inject this).
+_CTX = TenantContext(tenant_id="castle", is_admin=False, sub="auth0|tester",
+                     email="tester@castle-personal.de")
 
 
 class _FakeCompanies:
@@ -97,7 +102,7 @@ class TestRoleOnlyPipeline:
     @pytest.mark.asyncio
     async def test_no_company_fields_succeeds_with_blank_company(self):
         db = _FakeDb()
-        out = await create_pipeline(_schema(), db=db)
+        out = await create_pipeline(_schema(), db=db, ctx=_CTX)
         assert out["companyId"] is None
         assert out["companyName"] == ""
         assert out["companyDomain"] == ""
@@ -109,8 +114,8 @@ class TestRoleOnlyPipeline:
         both have no company — that used to crash (None has no `_id`) or would
         wrongly treat one role-only pipeline as a duplicate of another."""
         db = _FakeDb()
-        first = await create_pipeline(_schema(), db=db)
-        second = await create_pipeline(_schema(), db=db)
+        first = await create_pipeline(_schema(), db=db, ctx=_CTX)
+        second = await create_pipeline(_schema(), db=db, ctx=_CTX)
         assert first["_id"] != second["_id"]
         assert len(db.pipelines.docs) == 2
 
@@ -118,14 +123,14 @@ class TestRoleOnlyPipeline:
     async def test_lone_company_field_is_rejected_as_likely_typo(self):
         db = _FakeDb()
         with pytest.raises(HTTPException) as exc:
-            await create_pipeline(_schema(companyName="Acme Corp"), db=db)
+            await create_pipeline(_schema(companyName="Acme Corp"), db=db, ctx=_CTX)
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_lone_domain_is_also_rejected(self):
         db = _FakeDb()
         with pytest.raises(HTTPException) as exc:
-            await create_pipeline(_schema(companyDomain="acme.com"), db=db)
+            await create_pipeline(_schema(companyDomain="acme.com"), db=db, ctx=_CTX)
         assert exc.value.status_code == 400
 
 
@@ -134,7 +139,7 @@ class TestFullCompanyPipelineUnchanged:
     async def test_name_and_domain_together_creates_a_company(self):
         db = _FakeDb()
         out = await create_pipeline(
-            _schema(companyName="Acme Corp", companyDomain="acme.com"), db=db,
+            _schema(companyName="Acme Corp", companyDomain="acme.com"), db=db, ctx=_CTX,
         )
         assert out["companyName"] == "Acme Corp"
         assert out["companyDomain"] == "acme.com"
@@ -144,9 +149,9 @@ class TestFullCompanyPipelineUnchanged:
     @pytest.mark.asyncio
     async def test_same_domain_twice_is_still_a_duplicate(self):
         db = _FakeDb()
-        await create_pipeline(_schema(companyName="Acme Corp", companyDomain="acme.com"), db=db)
+        await create_pipeline(_schema(companyName="Acme Corp", companyDomain="acme.com"), db=db, ctx=_CTX)
         with pytest.raises(HTTPException) as exc:
-            await create_pipeline(_schema(companyName="Acme Corp Again", companyDomain="acme.com"), db=db)
+            await create_pipeline(_schema(companyName="Acme Corp Again", companyDomain="acme.com"), db=db, ctx=_CTX)
         assert exc.value.status_code == 409
         assert exc.value.detail["error"] == "pipeline_already_exists"
 
@@ -155,9 +160,9 @@ class TestFullCompanyPipelineUnchanged:
         """A role-only pipeline followed by a fully-specified one for an
         unrelated company must both succeed — order must not matter."""
         db = _FakeDb()
-        role_only = await create_pipeline(_schema(), db=db)
+        role_only = await create_pipeline(_schema(), db=db, ctx=_CTX)
         with_company = await create_pipeline(
-            _schema(companyName="Acme Corp", companyDomain="acme.com"), db=db,
+            _schema(companyName="Acme Corp", companyDomain="acme.com"), db=db, ctx=_CTX,
         )
         assert role_only["_id"] != with_company["_id"]
         assert with_company["companyDomain"] == "acme.com"

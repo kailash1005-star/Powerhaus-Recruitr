@@ -149,9 +149,20 @@ async def connect_to_mongo():
     # cv_candidates — uploaded CVs; dedup by content hash; filter by status.
     try:
         cv = database["cv_candidates"]
-        await cv.create_index("contentHash", name="idx_contentHash", unique=True)
+        # CV dedup is per-tenant: the same file uploaded by two clients is two
+        # distinct records (each private to its owner). The unique key is therefore
+        # (contentHash, tenantId), not contentHash alone — a global unique index
+        # would tell the second tenant "duplicate" and deny them their own copy.
+        # The legacy single-field unique index is dropped if present.
+        existing_cv = await cv.index_information()
+        if "idx_contentHash" in existing_cv and existing_cv["idx_contentHash"].get("key") == [("contentHash", 1)]:
+            await cv.drop_index("idx_contentHash")
+        await cv.create_index(
+            [("contentHash", 1), ("tenantId", 1)], name="idx_contentHash_tenant", unique=True,
+        )
         await cv.create_index("status", name="idx_status")
         await cv.create_index("batchId", name="idx_batchId")
+        await cv.create_index("tenantId", name="idx_cv_tenantId")
         await cv.create_index("createdAt", name="idx_cv_createdAt")
         print("[OK] cv_candidates indexes ensured")
     except Exception as e:

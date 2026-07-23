@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import get_database
+from app.security.tenant import TenantContext, tenant_scope
 from app.services import matching_service
 from app.services import email_service
 from app.services import llm_extraction_service as llm_extraction
@@ -58,14 +59,14 @@ def _oid(id_str: str):
 
 
 # ── CV ingestion ─────────────────────────────────────────────────────────────
-async def _ingest_batch(db, files: List[tuple], batch_id: str):
+async def _ingest_batch(db, files: List[tuple], batch_id: str, tenant_id: Optional[str] = None):
     """Background worker: ingest each (filename, bytes) with bounded concurrency."""
     import asyncio
     sem = asyncio.Semaphore(4)  # cap concurrent parse/LLM work
 
     async def one(filename, data):
         async with sem:
-            await matching_service.ingest_cv(db, data, filename, batch_id)
+            await matching_service.ingest_cv(db, data, filename, batch_id, tenant_id=tenant_id)
 
     await asyncio.gather(*[one(fn, data) for fn, data in files])
     logger.info("[Matching] batch %s ingestion complete (%d files)", batch_id, len(files))
@@ -75,6 +76,7 @@ async def _ingest_batch(db, files: List[tuple], batch_id: str):
 async def upload_cvs(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     """Upload a CV dump. Files are validated, read, then ingested in the
@@ -97,12 +99,12 @@ async def upload_cvs(
         raise HTTPException(status_code=400, detail="all files were empty")
 
     batch_id = uuid.uuid4().hex
-    background_tasks.add_task(_ingest_batch, db, payload, batch_id)
+    background_tasks.add_task(_ingest_batch, db, payload, batch_id, ctx.tenant_id)
     return {"batchId": batch_id, "received": len(payload), "status": "processing"}
 
 
 @router.get("/cv/stats")
-async def cv_stats(db=Depends(get_db)):
+async def cv_stats(ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Corpus health at a glance: how many CVs are matchable vs dead.
 
     Exists because 22 of 44 CVs sat in status=failed for days and every match
@@ -110,6 +112,7 @@ async def cv_stats(db=Depends(get_db)):
     corpus impossible.
     """
     cursor = db["cv_candidates"].aggregate([
+        {"$match": ctx.read_filter()},
         {"$group": {"_id": "$status", "count": {"$sum": 1}}},
     ])
     counts = {row["_id"]: row["count"] async for row in cursor}
@@ -117,7 +120,7 @@ async def cv_stats(db=Depends(get_db)):
 
 
 @router.post("/cv/reprocess-failed")
-async def reprocess_failed_cvs(background_tasks: BackgroundTasks, db=Depends(get_db)):
+async def reprocess_failed_cvs(background_tasks: BackgroundTasks, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Re-ingest every failed CV from its stored original bytes.
 
     Why this exists: 22 of 44 production CVs failed under the OLD parser
@@ -129,7 +132,7 @@ async def reprocess_failed_cvs(background_tasks: BackgroundTasks, db=Depends(get
     _require_matching_ready()
     payload: List[tuple] = []
     unrecoverable: List[str] = []
-    async for doc in db["cv_candidates"].find({"status": "failed"}, {"sourceFileName": 1}):
+    async for doc in db["cv_candidates"].find(ctx.read_filter({"status": "failed"}), {"sourceFileName": 1}):
         f = await db["cv_files"].find_one({"_id": doc["_id"]})
         if f and f.get("data"):
             payload.append((f.get("filename") or doc.get("sourceFileName"), bytes(f["data"])))
@@ -141,16 +144,16 @@ async def reprocess_failed_cvs(background_tasks: BackgroundTasks, db=Depends(get
                 "message": "No failed CVs with stored originals to reprocess."}
 
     batch_id = uuid.uuid4().hex
-    background_tasks.add_task(_ingest_batch, db, payload, batch_id)
+    background_tasks.add_task(_ingest_batch, db, payload, batch_id, ctx.tenant_id)
     return {"queued": len(payload), "unrecoverable": unrecoverable,
             "batchId": batch_id, "status": "processing"}
 
 
 @router.get("/cv/batch/{batch_id}")
-async def batch_status(batch_id: str, db=Depends(get_db)):
+async def batch_status(batch_id: str, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     col = db["cv_candidates"]
     cursor = col.aggregate([
-        {"$match": {"batchId": batch_id}},
+        {"$match": ctx.read_filter({"batchId": batch_id})},
         {"$group": {"_id": "$status", "count": {"$sum": 1}}},
     ])
     counts = {row["_id"]: row["count"] async for row in cursor}
@@ -168,13 +171,15 @@ async def batch_status(batch_id: str, db=Depends(get_db)):
 async def list_cvs(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     col = db["cv_candidates"]
     skip = (page - 1) * limit
-    total = await col.count_documents({})
+    scope = ctx.read_filter()
+    total = await col.count_documents(scope)
     items = []
-    cursor = col.find({}, {"markdown": 0, "embedding.vector": 0}).sort("createdAt", -1).skip(skip).limit(limit)
+    cursor = col.find(scope, {"markdown": 0, "embedding.vector": 0}).sort("createdAt", -1).skip(skip).limit(limit)
     async for doc in cursor:
         doc["_id"] = str(doc["_id"])
         items.append(doc)
@@ -182,21 +187,25 @@ async def list_cvs(
 
 
 @router.get("/cv/{cv_id}")
-async def get_cv(cv_id: str, db=Depends(get_db)):
+async def get_cv(cv_id: str, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     col = db["cv_candidates"]
     doc = await col.find_one({"_id": _oid(cv_id)}, {"embedding.vector": 0})
-    if not doc:
+    if not doc or not ctx.owns(doc):
         raise HTTPException(status_code=404, detail="CV not found")
     doc["_id"] = str(doc["_id"])
     return doc
 
 
 @router.get("/cv/{cv_id}/download")
-async def download_cv(cv_id: str, db=Depends(get_db)):
+async def download_cv(cv_id: str, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Download a candidate's CV. Serves the ORIGINAL uploaded file when we still
     have its bytes; otherwise falls back to the parsed text as a .txt so the
     button always returns something usable."""
     oid = _oid(cv_id)
+    # Authorize against the CV record's tenant before serving any bytes.
+    cv_meta = await db["cv_candidates"].find_one({"_id": oid}, {"tenantId": 1})
+    if not cv_meta or not ctx.owns(cv_meta):
+        raise HTTPException(status_code=404, detail="CV not found")
     f = await db["cv_files"].find_one({"_id": oid})
     if f and f.get("data"):
         filename = f.get("filename") or f"cv-{cv_id}"
@@ -231,6 +240,7 @@ async def run_matching(
     file: Optional[UploadFile] = File(None),
     jdText: Optional[str] = Form(None),
     returnTop: Optional[int] = Form(None),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     """THE 'Run Matching' button. Accepts a JD as an uploaded document (multipart
@@ -246,10 +256,12 @@ async def run_matching(
             if len(data) > max_bytes:
                 raise HTTPException(status_code=413, detail=f"JD exceeds {settings.MAX_UPLOAD_MB}MB")
             result = await matching_service.run_match(
-                db, jd_bytes=data, jd_filename=file.filename, return_top=returnTop
+                db, jd_bytes=data, jd_filename=file.filename, return_top=returnTop,
+                tenant_id=ctx.tenant_id,
             )
         elif jdText and jdText.strip():
-            result = await matching_service.run_match(db, jd_text=jdText, return_top=returnTop)
+            result = await matching_service.run_match(
+                db, jd_text=jdText, return_top=returnTop, tenant_id=ctx.tenant_id)
         else:
             raise HTTPException(status_code=400, detail="provide a JD file or jdText")
         return result
@@ -266,11 +278,12 @@ async def run_matching(
 
 
 @router.post("/run/json")
-async def run_matching_json(req: MatchTextRequest, db=Depends(get_db)):
+async def run_matching_json(req: MatchTextRequest, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """JSON convenience variant of /run for raw-text JDs."""
     _require_matching_ready()
     try:
-        return await matching_service.run_match(db, jd_text=req.jdText, return_top=req.returnTop)
+        return await matching_service.run_match(
+            db, jd_text=req.jdText, return_top=req.returnTop, tenant_id=ctx.tenant_id)
     except llm_extraction.ExtractionError as e:
         logger.exception("[Matching] JD extraction failed")
         raise HTTPException(status_code=502, detail=f"JD parsing failed — run not scored: {e}")
@@ -283,17 +296,19 @@ async def run_matching_json(req: MatchTextRequest, db=Depends(get_db)):
 async def list_match_runs(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     """Past matching runs — one per saved JD, with its top candidates. Powers the
     'Past runs' history in Candidate Matching."""
     col = db["match_runs"]
     skip = (page - 1) * limit
-    total = await col.count_documents({})
+    scope = ctx.read_filter()
+    total = await col.count_documents(scope)
     items = []
     # The full per-candidate analysis is large and the history list only renders
     # headlines — exclude it here; GET /run/{id} serves it.
-    cursor = col.find({}, {"analysis": 0, "logs": 0}).sort("createdAt", -1).skip(skip).limit(limit)
+    cursor = col.find(scope, {"analysis": 0, "logs": 0}).sort("createdAt", -1).skip(skip).limit(limit)
     async for doc in cursor:
         doc["_id"] = str(doc["_id"])
         items.append(doc)
@@ -304,6 +319,7 @@ async def list_match_runs(
 async def get_match_run(
     match_run_id: str,
     analysis: bool = Query(True, description="Include the full per-candidate scoring analysis"),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     """A saved run. Carries `analysis.candidates` — EVERY candidate scored, ranked,
@@ -313,7 +329,7 @@ async def get_match_run(
     col = db["match_runs"]
     projection = None if analysis else {"analysis": 0}
     doc = await col.find_one({"_id": _oid(match_run_id)}, projection)
-    if not doc:
+    if not doc or not ctx.owns(doc):
         raise HTTPException(status_code=404, detail="match run not found")
     doc["_id"] = str(doc["_id"])
     return doc
@@ -339,20 +355,20 @@ async def outreach_config():
 
 
 @router.post("/outreach/draft")
-async def outreach_draft(req: OutreachDraftRequest, db=Depends(get_db)):
+async def outreach_draft(req: OutreachDraftRequest, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Generate a professional HR-toned outreach email for a candidate.
 
     Looks the candidate up in the CV corpus first; falls back to a pipeline
     candidate (Apify-enriched) so "Reach out" works for pipeline match results.
     """
     oid = _oid(req.candidateId)
-    cv = await db["cv_candidates"].find_one({"_id": oid}, {"profile": 1, "contact": 1})
-    if cv:
+    cv = await db["cv_candidates"].find_one({"_id": oid}, {"profile": 1, "contact": 1, "tenantId": 1})
+    if cv and ctx.owns(cv):
         profile = cv.get("profile") or {}
         contact = cv.get("contact") or {}
     else:
         cand = await db["candidates"].find_one({"_id": oid})
-        if not cand:
+        if not cand or not ctx.owns(cand):
             raise HTTPException(status_code=404, detail="candidate not found")
         enrichment = cand.get("apifyEnrichment") or {}
         profile = enrichment.get("profile") or {

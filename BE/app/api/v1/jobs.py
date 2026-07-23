@@ -12,6 +12,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from app.database import get_database
+from app.security.tenant import TenantContext, tenant_scope
 from app.services.apollo_service import ApolloService
 from app.config import settings
 from bson import ObjectId
@@ -28,6 +29,22 @@ async def get_db():
     return await get_database()
 
 
+async def _tenant_owns(ctx: TenantContext, doc: dict | None, db) -> bool:
+    """True if the caller may see a job/prospect doc. Admins bypass; otherwise the
+    doc's own tenantId wins, falling back to its parent run for rows that predate
+    child-stamping."""
+    if doc is None:
+        return False
+    if ctx.is_admin or doc.get("tenantId") == ctx.tenant_id:
+        return True
+    rid = doc.get("runId")
+    if rid is not None:
+        run = await db["runs"].find_one({"_id": rid}, {"tenantId": 1})
+        if run and run.get("tenantId") == ctx.tenant_id:
+            return True
+    return False
+
+
 # ── GET / (list all jobs, paginated + sortable) ────────────────────────
 @router.get("")
 async def list_jobs(
@@ -39,6 +56,7 @@ async def list_jobs(
     ),
     sort_order: str = Query("desc", description="Sort order: asc|desc"),
     q: str = Query(None, description="Typeahead: matches title or location"),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     """
@@ -63,7 +81,7 @@ async def list_jobs(
         mongo_field = field_map.get(sort_by, "createdAt")
         sort_direction = 1 if sort_order == "asc" else -1
 
-        query = {}
+        query = ctx.read_filter()
         if q:
             regex = {"$regex": q.strip(), "$options": "i"}
             query["$or"] = [{"title": regex}, {"location": regex}]
@@ -111,7 +129,7 @@ class ManualJobCreateSchema(BaseModel):
 
 
 @router.post("")
-async def create_manual_job(body: ManualJobCreateSchema, db=Depends(get_db)):
+async def create_manual_job(body: ManualJobCreateSchema, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Create a manual job entry (not from a scraping run)."""
     try:
         jobs_col = db["jobs"]
@@ -122,6 +140,7 @@ async def create_manual_job(body: ManualJobCreateSchema, db=Depends(get_db)):
             "boardName": "manual",
             "qualityStatus": "good",
             "source": "manual",
+            "tenantId": ctx.tenant_id,
             "createdAt": now,
             "updatedAt": now,
         }
@@ -150,15 +169,15 @@ async def create_manual_job(body: ManualJobCreateSchema, db=Depends(get_db)):
 
 # ── GET /{job_id}/prospects ────────────────────────────────────────────
 @router.get("/{job_id}/prospects")
-async def get_job_prospects(job_id: str, db=Depends(get_db)):
+async def get_job_prospects(job_id: str, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Return prospects linked to the job's company. emailTemplate is stubbed."""
     try:
         job_oid = ObjectId(job_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid job id")
 
-    job = await db["jobs"].find_one({"_id": job_oid}, {"companyId": 1})
-    if not job:
+    job = await db["jobs"].find_one({"_id": job_oid}, {"companyId": 1, "tenantId": 1, "runId": 1})
+    if not job or not await _tenant_owns(ctx, job, db):
         raise HTTPException(status_code=404, detail="Job not found")
 
     company_id = job.get("companyId")
@@ -198,7 +217,7 @@ def _best_prospect_email(person: dict) -> str | None:
 
 
 @router.post("/prospects/{prospect_id}/enrich")
-async def enrich_prospect(prospect_id: str, db=Depends(get_db)):
+async def enrich_prospect(prospect_id: str, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """On-demand Apollo enrichment for a single prospect — reveals their email.
 
     The free Apollo people-search that originally found this prospect masks all
@@ -215,7 +234,7 @@ async def enrich_prospect(prospect_id: str, db=Depends(get_db)):
 
     col = db["prospects"]
     prospect = await col.find_one({"_id": oid})
-    if not prospect:
+    if not prospect or not await _tenant_owns(ctx, prospect, db):
         raise HTTPException(status_code=404, detail="Prospect not found")
 
     apollo_id = prospect.get("apolloId")
@@ -273,7 +292,7 @@ async def enrich_prospect(prospect_id: str, db=Depends(get_db)):
 
 # ── POST /prospects/{prospect_id}/enrich-mobile ─────────────────────────
 @router.post("/prospects/{prospect_id}/enrich-mobile")
-async def enrich_prospect_mobile(prospect_id: str, db=Depends(get_db)):
+async def enrich_prospect_mobile(prospect_id: str, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
     """Reveal a prospect's mobile number via Apollo (reveal_phone_number=True).
 
     Apollo may return the number immediately (cached) — saved at once — or deliver
@@ -297,7 +316,7 @@ async def enrich_prospect_mobile(prospect_id: str, db=Depends(get_db)):
     col = db["prospects"]
     companies_col = db["companies"]
     prospect = await col.find_one({"_id": oid})
-    if not prospect:
+    if not prospect or not await _tenant_owns(ctx, prospect, db):
         raise HTTPException(status_code=404, detail="Prospect not found")
 
     details = dict(prospect.get("prospectDetails") or {})

@@ -75,5 +75,16 @@ async def reap_stale_runs() -> None:
         )
         if res.modified_count:
             logger.warning("[Reaper] failed %d orphaned CV ingest(s)", res.modified_count)
+
+        # Campaign runs (the jobspy/ICP orchestrator). A crash mid-run leaves the
+        # run "active" on a scraping/companies/prospects phase with no worker — the
+        # Campaigns UI then streams a run that will never advance. Fail it forward.
+        res = await db["runs"].update_many(
+            {"status": "active", "updatedAt": {"$lt": cutoff}},
+            {"$set": {"status": "cancelled", "currentPhase": "failed",
+                      "error": _ORPHAN_MSG, "updatedAt": datetime.utcnow()}},
+        )
+        if res.modified_count:
+            logger.warning("[Reaper] failed %d orphaned campaign run(s)", res.modified_count)
     except Exception as exc:  # noqa: BLE001 — never block boot
         logger.warning("[Reaper] sweep skipped: %s", exc)

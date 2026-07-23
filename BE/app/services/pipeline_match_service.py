@@ -120,6 +120,10 @@ async def start_pipeline_match(
         "source": "pipeline",
         "pipelineId": pipeline_id,
         "jobId": job_id,
+        # Inherit the owning tenant from the pipeline so this match_run is only
+        # ever listed/opened by its tenant (the endpoint already gates the caller
+        # to a pipeline they own).
+        "tenantId": (pipeline or {}).get("tenantId"),
         "status": "running",
         "jdTitle": job_title,
         "jdText": jd_text,

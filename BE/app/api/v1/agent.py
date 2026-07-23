@@ -15,10 +15,14 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import get_database
+from app.security.tenant import require_admin
 from app.services.agent import memory
 from app.services.agent.runner import stream_agent_run
 
-router = APIRouter()
+# The AI Engineer is an internal system-engineering assistant with tool access and
+# shared chat threads (no per-user scoping). It is an operator tool, not a client
+# feature — gate the whole router to admins so a client can never read or run it.
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 async def get_db():

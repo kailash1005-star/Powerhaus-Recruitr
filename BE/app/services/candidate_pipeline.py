@@ -389,10 +389,22 @@ async def recount_pipeline(pipeline_id: str) -> Dict[str, int]:
     pipelines_col = await get_collection("candidatePipelines")
     oid = ObjectId(pipeline_id)
 
-    pipeline = await pipelines_col.find_one({"_id": oid}, {"jobs.jobId": 1})
+    pipeline = await pipelines_col.find_one({"_id": oid}, {"jobs.jobId": 1, "tenantId": 1})
     if not pipeline:
         return {}
     now = datetime.utcnow()
+
+    # Denormalize the pipeline's tenantId onto its candidates. Candidates are
+    # inserted across several discovery paths that don't carry the tenant; this is
+    # the one choke point every writer funnels through, so stamping here keeps all
+    # candidate queries a single tenant-scoped filter. No-op for admin/unmapped
+    # pipelines (no tenantId) and for already-stamped rows.
+    tid = pipeline.get("tenantId")
+    if tid:
+        await candidates_col.update_many(
+            {"pipelineId": pipeline_id, "tenantId": {"$ne": tid}},
+            {"$set": {"tenantId": tid}},
+        )
 
     for job in pipeline.get("jobs") or []:
         job_id = job.get("jobId")
@@ -717,6 +729,31 @@ async def _apollo_discover_for_job(
                 continue
             kept_people.append(p)
 
+        # ── quality gates (parity with the Apify path): location + prescreen ──
+        # Apollo results used to bypass BOTH gates — that is exactly how the
+        # "Ruhr, 4720 Kelmis, Belgium" candidate slipped into a Germany search.
+        # Now every Apollo hit runs the same deterministic country gate and the
+        # same title prescreen the Apify path does, so accuracy is engine-agnostic.
+        from app.config import settings as _settings
+        from app.services import location_resolver as _locres, prescreen_service
+
+        requirements: Dict[str, Any] = {}
+        try:
+            from app.database import get_database
+            from app.services import role_spec_service
+            spec = await role_spec_service.get_or_create_for_job(
+                await get_database(), job_id)
+            requirements = (spec or {}).get("requirements") or {}
+        except Exception as exc:  # noqa: BLE001 — no spec ⇒ screen() keeps everything
+            logger.warning("[Apollo] %s/%s no role spec for pre-screen: %s",
+                           pipeline_id, job_id, exc)
+        # Fold the Apollo key skills in as must-haves so the prescreen still has a
+        # yardstick when the job has no parsed role spec.
+        if filters.get("skills") and not requirements.get("mustHaveSkills"):
+            requirements = {**requirements, "mustHaveSkills": list(filters["skills"])}
+        gate_on = (_settings.SOURCING_LOCATION_GATE or "off").lower() == "country"
+        req_location = _locres.requested_location(filters, requirements)
+
         # ── insert / append ───────────────────────────────────────────────────
         now = datetime.utcnow()
         inserted = 0
@@ -735,6 +772,51 @@ async def _apollo_discover_for_job(
             # Source tag: keeps Apollo results in the same list but distinguishable
             # from Apify ones, and routes on-demand enrich through Apollo (not Apify).
             doc["source"] = "apollo_search"
+            doc["sourceChannels"] = ["apollo"]
+
+            # Gate 1: location (deterministic) — wrong COUNTRY is rejected outright.
+            loc_verdict = None
+            if gate_on and req_location:
+                loc_verdict = _locres.location_verdict(req_location, doc.get("location"))
+            if loc_verdict and loc_verdict["decision"] == "country_mismatch":
+                doc["isAccepted"] = False
+                doc["rejectionReason"] = f"Location mismatch — {loc_verdict['reason']}"
+                doc["locationMismatch"] = True
+                doc["decidedAt"] = now
+                doc["matchScore"] = 0
+                doc["matchReasons"] = [f"Location gate: {loc_verdict['reason']}"]
+                doc["prescreen"] = {
+                    "decision": "drop", "score": 0.0, "roleFit": 0.0,
+                    "matchedVia": None, "location": loc_verdict,
+                    "reasons": [f"Location gate: {loc_verdict['reason']}"],
+                    "at": now, "channels": ["apollo"],
+                }
+            else:
+                # Gate 2: title prescreen (same heuristic as the Apify path).
+                if _settings.PRESCREEN_ENABLED:
+                    keep, verdict = prescreen_service.screen(
+                        {"currentTitle": doc.get("currentTitle")},
+                        requirements=requirements, target_titles=titles,
+                        min_score=_settings.PRESCREEN_MIN_SCORE,
+                    )
+                else:
+                    keep, verdict = True, {"decision": "keep", "score": None,
+                                           "reasons": ["Pre-screen disabled."]}
+                verdict = {**verdict, "at": now, "channels": ["apollo"]}
+                if loc_verdict:
+                    verdict["location"] = loc_verdict
+                    if loc_verdict["decision"] == "region_mismatch":
+                        doc["locationFlag"] = loc_verdict["reason"]
+                doc["prescreen"] = verdict
+                if verdict.get("score") is not None:
+                    doc["matchScore"] = int(round(float(verdict["score"])))
+                    doc["matchReasons"] = list(verdict.get("reasons") or [])[:3]
+                if not keep:
+                    doc["isAccepted"] = False
+                    doc["rejectionReason"] = (
+                        verdict["reasons"][0] if verdict.get("reasons") else "Pre-screened out")
+                    doc["decidedAt"] = now
+
             try:
                 await candidates_col.insert_one(doc)
                 inserted += 1
@@ -898,6 +980,63 @@ async def _enrich_for_job(
         await enrich_candidates(pipeline_id=pipeline_id, job_id=job_id))
 
 
+async def _regate_locations_after_enrich(
+    pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
+) -> int:
+    """Re-run the deterministic country gate once REAL locations are known.
+
+    Apollo's people-search returns no location, so its search-time gate is a
+    no-op — the wrong-country reject can only happen after enrichment fills in
+    the city/country. This closes the "Kelmis, Belgium in a Germany search" leak
+    for Apollo (and mops up any Apify residue). Only CONFIRMED-foreign rows are
+    rejected; anything unresolved is left kept. Fail-open."""
+    from app.config import settings as _settings
+    from app.services import location_resolver as _locres
+    if (_settings.SOURCING_LOCATION_GATE or "off").lower() != "country":
+        return 0
+    pipelines_col = await get_collection("candidatePipelines")
+    doc = await pipelines_col.find_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id}, {"jobs.$": 1})
+    entry = (doc or {}).get("jobs", [{}])[0]
+    filters = entry.get("lastDiscoverFilters") or entry.get("lastApolloFilters") or {}
+    req_location = _locres.requested_location(filters, None)
+    if not req_location:
+        return 0
+
+    candidates_col = await get_collection("candidates")
+    scope: Dict[str, Any] = {"pipelineId": pipeline_id}
+    if candidate_ids:
+        scope["_id"] = {"$in": [ObjectId(c) for c in candidate_ids]}
+    else:
+        scope["sourceJobIds"] = job_id
+    # Only rows still in the running — never re-judge an already-rejected one.
+    scope["isAccepted"] = {"$ne": False}
+
+    rejected = 0
+    now = datetime.utcnow()
+    async for c in candidates_col.find(scope, {"location": 1}):
+        verdict = _locres.location_verdict(req_location, c.get("location"))
+        if verdict.get("decision") != "country_mismatch":
+            continue
+        await candidates_col.update_one(
+            {"_id": c["_id"]},
+            {"$set": {
+                "isAccepted": False,
+                "locationMismatch": True,
+                "rejectionReason": f"Location mismatch — {verdict['reason']}",
+                "matchScore": 0,
+                "decidedAt": now,
+                "updatedAt": now,
+            }},
+        )
+        rejected += 1
+    if rejected:
+        logger.info("[Enrich] %s/%s post-enrich location gate rejected %d wrong-country",
+                    pipeline_id, job_id, rejected)
+        await recount_pipeline(pipeline_id)
+    return rejected
+
+
 async def _run_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
     mode: str = "both",
@@ -910,6 +1049,13 @@ async def _run_job_enrich(
             cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
         ):
             summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids, mode)
+        # Now that real locations are known, reject confirmed wrong-country hits
+        # (the Apollo location gate can only run here). Fail-open.
+        try:
+            await _regate_locations_after_enrich(pipeline_id, job_id, candidate_ids)
+        except Exception as exc:  # noqa: BLE001 — gate must never fail enrichment
+            logger.warning("[Enrich] %s/%s post-enrich location gate error: %s",
+                           pipeline_id, job_id, exc)
         await _set_enrich(
             pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
         )
@@ -1125,7 +1271,7 @@ async def _run_search_channels(
 
 
 def _channel_screen_policy(
-    keep: bool, verdict: Dict[str, Any], channels: List[str],
+    keep: bool, verdict: Dict[str, Any], channels: List[str], *, title: str = "",
 ) -> Tuple[bool, Dict[str, Any]]:
     """Channel-aware adjustments to the title-only prescreen verdict.
 
@@ -1141,6 +1287,22 @@ def _channel_screen_policy(
     small rank bonus (capped) so it sorts above single-channel hits.
     """
     if not keep and "keyword" in channels:
+        # The keyword channel matches profile TEXT, so it pulls in owners and
+        # executives whose profile merely name-drops the tool (the "cofounder
+        # shows up as an SAP CO consultant" leak). Refuse the rescue for them:
+        # an owner/founder/Geschäftsführer is running a business, not doing the
+        # hands-on specialty. A genuine title match never reaches here (it was
+        # already kept), so this only ever drops a non-matching executive.
+        from app.services import prescreen_service as _ps
+        if _ps.is_executive_title(title):
+            return False, {
+                **verdict, "decision": "drop",
+                "reasons": [
+                    f"Title “{title}” is an owner/executive role, not the "
+                    "hands-on specialty — only the keyword channel matched it.",
+                    *(verdict.get("reasons") or []),
+                ],
+            }
         keep = True
         verdict = {
             **verdict,
@@ -1227,7 +1389,8 @@ async def _store_profiles(
                 p, requirements=requirements, target_titles=target_titles,
                 min_score=settings.PRESCREEN_MIN_SCORE,
             )
-            keep, verdict = _channel_screen_policy(keep, verdict, channels)
+            keep, verdict = _channel_screen_policy(
+                keep, verdict, channels, title=p.get("currentTitle") or "")
         else:
             keep, verdict = True, {"decision": "keep", "score": None,
                                    "reasons": ["Pre-screen disabled."]}
@@ -1285,11 +1448,13 @@ def _settings_qa_enabled() -> bool:
 async def _audit_sourcing_results(
     pipeline_id: str, job_id: str, filters: Dict[str, Any],
     requirements: Dict[str, Any], cand_ids: List[str], location_rejected: int,
-) -> None:
+) -> Dict[str, Any]:
     """Run the sourcing auditor over the kept candidates and record the report.
 
     Builds the auditor's view from the stored candidate rows (title/company/
-    channels) so it audits exactly what the recruiter will see."""
+    channels) so it audits exactly what the recruiter will see. The auditor now
+    HIDES high-confidence off-specialty results, so a recount follows any
+    rejection. Returns the QA summary (``{}`` if there was nothing to audit)."""
     from app.services import sourcing_qa_service
 
     candidates_col = await get_collection("candidates")
@@ -1310,7 +1475,7 @@ async def _audit_sourcing_results(
                 "channels": d.get("sourceChannels") or [],
             })
     if not kept:
-        return
+        return {}
 
     query = {
         "title": (requirements.get("title")
@@ -1326,9 +1491,77 @@ async def _audit_sourcing_results(
         jd_title=query["title"] or "", query=query,
         kept=kept, location_rejected=location_rejected,
     )
-    if summary.get("mismatchesFlagged"):
+    if summary.get("rejected"):
+        logger.info("[Discover] %s/%s sourcing QA HID %d wrong-specialty result(s)",
+                    pipeline_id, job_id, summary["rejected"])
+        # Hidden candidates change the accepted totals — recount so the header
+        # and the list agree.
+        try:
+            await recount_pipeline(pipeline_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Discover] %s/%s recount after QA reject failed: %s",
+                           pipeline_id, job_id, exc)
+    elif summary.get("mismatchesFlagged"):
         logger.info("[Discover] %s/%s sourcing QA flagged %d off-specialty result(s)",
                     pipeline_id, job_id, summary["mismatchesFlagged"])
+    return summary
+
+
+async def _audit_combined_results(
+    pipeline_id: str, job_id: str,
+    apify_filters: Dict[str, Any], apollo_filters: Dict[str, Any],
+) -> None:
+    """QA the MERGED kept set (both engines) in one pass.
+
+    Restores the guarantee the dual-engine push broke: EVERY candidate a recruiter
+    sees — Apollo included — goes through the adversarial sourcing auditor, not
+    just the Apify half. Fail-open; QA never fails a discovery run."""
+    if not _settings_qa_enabled():
+        return
+    candidates_col = await get_collection("candidates")
+    cand_ids: List[str] = []
+    location_rejected = 0
+    try:
+        async for d in candidates_col.find(
+            {"pipelineId": pipeline_id, "sourceJobIds": job_id},
+            {"isAccepted": 1, "locationMismatch": 1}):
+            if d.get("locationMismatch"):
+                location_rejected += 1
+            # Rows the gate (or recruiter) rejected carry isAccepted=False and
+            # are not part of the visible list, so they need no QA.
+            if d.get("isAccepted") is not False:
+                cand_ids.append(str(d["_id"]))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Combined] %s/%s QA gather failed: %s", pipeline_id, job_id, exc)
+        return
+    if not cand_ids:
+        return
+
+    requirements: Dict[str, Any] = {}
+    try:
+        from app.database import get_database
+        from app.services import role_spec_service
+        spec = await role_spec_service.get_or_create_for_job(
+            await get_database(), job_id)
+        requirements = (spec or {}).get("requirements") or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Combined] %s/%s QA no role spec: %s", pipeline_id, job_id, exc)
+
+    # Judge against BOTH engines' title families and fold Apollo skills in as a
+    # must-have fallback, so the auditor sees the full target.
+    titles = list(dict.fromkeys(
+        (apify_filters.get("currentJobTitles") or [])
+        + (apollo_filters.get("titles") or [])))
+    merged_filters = {**apify_filters, "currentJobTitles": titles}
+    if apollo_filters.get("skills") and not requirements.get("mustHaveSkills"):
+        requirements = {**requirements, "mustHaveSkills": list(apollo_filters["skills"])}
+
+    try:
+        await _audit_sourcing_results(
+            pipeline_id, job_id, merged_filters, requirements,
+            cand_ids, location_rejected)
+    except Exception as exc:  # noqa: BLE001 — QA never fails discovery
+        logger.warning("[Combined] %s/%s combined QA error: %s", pipeline_id, job_id, exc)
 
 
 async def _record_prescreen(
@@ -1557,7 +1790,12 @@ async def _discover_candidates_for_job(
         # an off-specialty profile the keyword channel let through (SAP FICO in
         # an SAP HCM search). It FLAGS, never deletes, and reports to the admin
         # QA page. Fail-open. Uses the stronger QA_AUDITOR_MODEL.
-        if _settings_qa_enabled() and cand_ids:
+        #
+        # Under the combined runner (``managed``) the QA pass is DEFERRED to the
+        # runner so it audits the MERGED Apify+Apollo set in one call — otherwise
+        # Apollo results (often the majority) would never be QA-verified, which
+        # is exactly the trust regression the dual-engine push introduced.
+        if _settings_qa_enabled() and cand_ids and not managed:
             try:
                 loc_rejected = sum(
                     1 for v in verdicts
@@ -1725,6 +1963,33 @@ async def _dedupe_cross_engine(pipeline_id: str, job_id: str) -> int:
     return merged
 
 
+# Markers that mean "the vendor refused on a billing/plan/quota limit", NOT
+# "no candidates matched". Surfacing the difference is the whole point of the
+# rollup fix — a plan limit must never read as an empty talent pool.
+_QUOTA_MARKERS = (
+    "free user run limit", "run limit reached", "monthly limit", "plan limit",
+    "quota", "credit", "out of credits", "payment required", "upgrade your plan",
+    "usage limit", "rate limit exceeded",
+)
+
+
+def _is_quota_error(msg: Optional[str]) -> bool:
+    if not msg:
+        return False
+    m = msg.lower()
+    return any(marker in m for marker in _QUOTA_MARKERS)
+
+
+async def _engine_errors(pipeline_id: str, job_id: str) -> Dict[str, Optional[str]]:
+    """The per-engine error strings the managed workers recorded on the job."""
+    pipelines_col = await get_collection("candidatePipelines")
+    doc = await pipelines_col.find_one(
+        {"_id": ObjectId(pipeline_id), "jobs.jobId": job_id}, {"jobs.$": 1})
+    job = ((doc or {}).get("jobs") or [{}])[0]
+    return {"apify": job.get("apifySearchError"),
+            "apollo": job.get("apolloSearchError")}
+
+
 async def _claim_combined(
     pipeline_id: str, job_id: str, run_apify: bool, run_apollo: bool,
 ) -> bool:
@@ -1815,8 +2080,13 @@ async def _combined_discover_for_job(
     the two managed workers never race on the rollup."""
     from app.services import cost_service
 
+    from app.config import settings as _settings
     run_apify = bool(engines.get("apify", True)) and bool(apify_filters)
-    run_apollo = bool(engines.get("apollo", True)) and bool(apollo_filters)
+    # Apollo is disabled for candidate search unless explicitly re-enabled — the
+    # product searches LinkedIn only. Apollo stays for contact enrichment.
+    run_apollo = (
+        bool(_settings.SOURCING_APOLLO_SEARCH_ENABLED)
+        and bool(engines.get("apollo", True)) and bool(apollo_filters))
     if not run_apify and not run_apollo:
         logger.info("[Combined] %s/%s no engine enabled — nothing to do",
                     pipeline_id, job_id)
@@ -1867,27 +2137,41 @@ async def _combined_discover_for_job(
 
         # Single authoritative recount, then roll the sub-statuses up.
         await recount_pipeline(pipeline_id)
-        total = await _job_candidate_count(pipeline_id, job_id)
 
-        apify_ok = (not run_apify) or (kept.get("apify") is not None)
-        apollo_ok = (not run_apollo) or (kept.get("apollo") is not None)
-        if not apify_ok and not apollo_ok:
+        # Judge success by what THIS run added, per-engine — never the job's
+        # cumulative candidate count. A stale candidate from an earlier run used
+        # to make a fully-failed re-run report "completed" (the exact bug: Apollo
+        # off, Apify failed on its cap, header still said "completed · 1").
+        ran = list(names)
+        failed = [n for n in ran if kept.get(n) is None]
+        this_run_added = sum(int(kept.get(n) or 0) for n in ran)
+
+        engine_errors = await _engine_errors(pipeline_id, job_id)
+        quota_hit = any(_is_quota_error(engine_errors.get(n)) for n in failed)
+
+        if ran and len(failed) == len(ran):
+            # Every engine that ran failed → the run failed, full stop.
             rollup = "failed"
-        elif total > 0:
+        elif this_run_added > 0:
             rollup = "completed"
         else:
             rollup = "awaiting_input"
 
+        # Surface an honest notice WHENEVER an engine failed — even on a partial
+        # success — distinguishing a plan/credit limit from an empty result.
         err = None
-        if rollup == "failed":
+        if failed:
             bits = []
-            if run_apify and kept.get("apify") is None:
-                bits.append("LinkedIn search failed")
-            if run_apollo and kept.get("apollo") is None:
-                bits.append("Apollo search failed")
-            err = "; ".join(bits) or "search failed"
+            for n in failed:
+                label = "LinkedIn" if n == "apify" else "Apollo"
+                if _is_quota_error(engine_errors.get(n)):
+                    bits.append(f"{label} hit its plan/credit limit — not an empty result")
+                else:
+                    bits.append(f"{label} search failed")
+            err = "; ".join(bits)
         await _finish(pipeline_id, job_id, status=rollup,
-                      lastSearchedAt=datetime.utcnow(), searchError=err)
+                      lastSearchedAt=datetime.utcnow(), searchError=err,
+                      searchNotice=err, searchQuotaHit=bool(quota_hit))
 
         # Enrich readiness follows the Apify (deep-scrape) side; Apollo is
         # search-only (contact revealed on demand).
@@ -1897,9 +2181,23 @@ async def _combined_discover_for_job(
             "ready" if apify_kept > 0 else "none",
             enrichError=None, enrichReady=apify_kept,
         )
+
+        # ── Unified sourcing QA over the MERGED set (both engines) ────────────
+        # The trust layer: every candidate the recruiter will see — Apollo
+        # included — is verified by the adversarial auditor here, in one pass.
+        # Fail-open, so a QA hiccup can never sink a completed search.
+        if rollup == "completed":
+            try:
+                await _audit_combined_results(
+                    pipeline_id, job_id, apify_filters, apollo_filters)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Combined] %s/%s QA pass failed: %s",
+                               pipeline_id, job_id, exc)
+
         logger.info(
-            "[Combined] %s/%s done — apify=%s apollo=%s total=%d rollup=%s",
-            pipeline_id, job_id, kept.get("apify"), kept.get("apollo"), total, rollup,
+            "[Combined] %s/%s done — apify=%s apollo=%s added=%d rollup=%s%s",
+            pipeline_id, job_id, kept.get("apify"), kept.get("apollo"),
+            this_run_added, rollup, " (quota)" if quota_hit else "",
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("[Combined] %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)

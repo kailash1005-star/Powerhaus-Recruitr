@@ -5,6 +5,7 @@ GET /api/v1/analytics/companies  - Companies analytics
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.database import get_database
+from app.security.tenant import TenantContext, tenant_scope
 from datetime import datetime, timedelta
 from bson import ObjectId
 
@@ -30,12 +31,14 @@ def _date_filter(days: int | None):
 @router.get("/jobs")
 async def jobs_analytics(
     days: int = Query(7, description="Date range: 7, 30, 90, or 0 for all time"),
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
     try:
         jobs_col = db["jobs"]
         date_match = _date_filter(days if days > 0 else None)
-        base_match = {"$match": date_match} if date_match else {"$match": {}}
+        # Scope every aggregation stage below to the caller's tenant (admins: all).
+        base_match = {"$match": ctx.read_filter(date_match)}
 
         # ── 1. Summary counts ────────────────────────────────────────────
         summary_pipeline = [
@@ -166,14 +169,24 @@ async def jobs_analytics(
 
 @router.get("/companies")
 async def companies_analytics(
+    ctx: TenantContext = Depends(tenant_scope),
     db=Depends(get_db),
 ):
-    """Company analytics — always across all data."""
+    """Company analytics — scoped to the caller's tenant (admins: all)."""
     try:
         companies_col = db["companies"]
 
+        # Companies are shared/deduped and carry no tenantId, so scope them to the
+        # set this tenant's jobs reference. `pre` is prepended to every pipeline.
+        pre: list = []
+        if not ctx.is_admin:
+            company_ids = [
+                cid for cid in await db["jobs"].distinct("companyId", {"tenantId": ctx.tenant_id}) if cid
+            ]
+            pre = [{"$match": {"_id": {"$in": company_ids}}}]
+
         # ── 1. Summary ───────────────────────────────────────────────────
-        summary_pipeline = [
+        summary_pipeline = pre + [
             {
                 "$group": {
                     "_id": None,
@@ -198,7 +211,7 @@ async def companies_analytics(
         summary["avgEmployees"] = round(summary.get("avgEmployees") or 0)
 
         # ── 2. By eligibility ────────────────────────────────────────────
-        elig_pipeline = [
+        elig_pipeline = pre + [
             {"$group": {"_id": "$isEligible", "count": {"$sum": 1}}},
         ]
         by_eligibility = [
@@ -211,7 +224,7 @@ async def companies_analytics(
 
         # ── 3. By industry ───────────────────────────────────────────────
         # industry field is comma-joined; split via $split
-        industry_pipeline = [
+        industry_pipeline = pre + [
             {"$project": {"industries": {"$split": ["$industry", ", "]}}},
             {"$unwind": "$industries"},
             {"$group": {"_id": "$industries", "count": {"$sum": 1}}},
@@ -224,7 +237,7 @@ async def companies_analytics(
         ]
 
         # ── 4. Top rejection reasons ─────────────────────────────────────
-        rejection_pipeline = [
+        rejection_pipeline = pre + [
             {"$match": {"isEligible": False, "notes": {"$ne": ""}}},
             {"$group": {"_id": "$notes", "count": {"$sum": 1}}},
             {"$sort": {"count": -1}},
@@ -236,7 +249,7 @@ async def companies_analytics(
         ]
 
         # ── 5. By employee count range ───────────────────────────────────
-        size_pipeline = [
+        size_pipeline = pre + [
             {
                 "$bucket": {
                     "groupBy": "$employeeCount",

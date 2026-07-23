@@ -66,8 +66,11 @@ class MongoVectorStore:
 
         ids: List[str] = []
         best: List[float] = []
+        base = {"status": "embedded", "embedding.vector": {"$exists": True, "$ne": None}}
+        if _filters:
+            base.update(_filters)  # tenant scoping etc. — restrict the corpus scanned
         cursor = self._col.find(
-            {"status": "embedded", "embedding.vector": {"$exists": True, "$ne": None}},
+            base,
             {"embedding.vector": 1, "chunks.vector": 1},
         )
         async for doc in cursor:
@@ -126,8 +129,13 @@ class AtlasVectorStore:
         return None
 
     async def _search_path(
-        self, path: str, vector: List[float], top_k: int, num_candidates: int
+        self, path: str, vector: List[float], top_k: int, num_candidates: int,
+        extra_filter: Optional[dict] = None,
     ) -> List[Tuple[str, float]]:
+        vfilter: dict = {"status": {"$eq": "embedded"}}
+        if extra_filter:
+            # e.g. {"tenantId": {"$eq": "castle"}} — server-side tenant pre-filter.
+            vfilter.update(extra_filter)
         pipeline = [
             {
                 "$vectorSearch": {
@@ -136,7 +144,7 @@ class AtlasVectorStore:
                     "queryVector": vector,
                     "numCandidates": num_candidates,
                     "limit": top_k,
-                    "filter": {"status": {"$eq": "embedded"}},
+                    "filter": vfilter,
                 }
             },
             {"$project": {"_id": 1, "score": {"$meta": "vectorSearchScore"}}},
@@ -151,10 +159,13 @@ class AtlasVectorStore:
         self, vector: List[float], top_k: int, _filters: Optional[dict] = None
     ) -> List[Tuple[str, float]]:
         num_candidates = max(top_k * self._mult, top_k)
+        # Translate a plain equality filter (e.g. {"tenantId": "castle"}) into the
+        # $vectorSearch filter operator form Atlas expects.
+        extra = {k: {"$eq": v} for k, v in (_filters or {}).items()}
         best: dict = {}
         for path in ("chunks.vector", "embedding.vector"):
             try:
-                hits = await self._search_path(path, vector, top_k, num_candidates)
+                hits = await self._search_path(path, vector, top_k, num_candidates, extra)
             except Exception:
                 # A path may be absent from the index (e.g. no legacy docs) — a
                 # missing path must not sink the whole query, the other still ran.
@@ -166,7 +177,9 @@ class AtlasVectorStore:
         ranked = sorted(best.items(), key=lambda x: (-x[1], x[0]))
         return ranked[:top_k]
 
-    async def lexical_query(self, query_text: str, top_k: int) -> List[Tuple[str, float]]:
+    async def lexical_query(
+        self, query_text: str, top_k: int, _filters: Optional[dict] = None
+    ) -> List[Tuple[str, float]]:
         """BM25 channel served from the persistent Atlas $search index.
 
         Replaces the per-query in-process BM25 rebuild (which re-tokenises the
@@ -176,6 +189,9 @@ class AtlasVectorStore:
         query_text = (query_text or "").strip()
         if not query_text:
             return []
+        match_stage: dict = {"status": "embedded"}
+        if _filters:
+            match_stage.update(_filters)  # tenant scoping — drop other tenants' hits
         pipeline = [
             {
                 "$search": {
@@ -186,7 +202,7 @@ class AtlasVectorStore:
                     },
                 }
             },
-            {"$match": {"status": "embedded"}},
+            {"$match": match_stage},
             {"$limit": top_k},
             {"$project": {"_id": 1, "score": {"$meta": "searchScore"}}},
         ]
@@ -271,6 +287,8 @@ _ATLAS_VECTOR_INDEX_DEF = {
         {"type": "vector", "path": "chunks.vector", "numDimensions": 1536, "similarity": "cosine"},
         # Pre-filter so ANN only ever considers embedded (matchable) docs.
         {"type": "filter", "path": "status"},
+        # Pre-filter so ANN only ever considers the querying tenant's CVs.
+        {"type": "filter", "path": "tenantId"},
     ]
 }
 _ATLAS_SEARCH_INDEX_DEF = {
@@ -279,6 +297,7 @@ _ATLAS_SEARCH_INDEX_DEF = {
         "fields": {
             "markdown": {"type": "string"},
             "status": {"type": "token"},
+            "tenantId": {"type": "token"},
             "profile": {
                 "type": "document",
                 "fields": {

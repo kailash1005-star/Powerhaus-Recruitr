@@ -13,12 +13,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.security.tenant import require_admin
 from app.services import cost_service as cost
 
-router = APIRouter()
+# The cost ledger is platform-wide with no per-tenant attribution (spend totals,
+# price book, subscriptions) — operator/founder data, never a client's. Gate the
+# whole router to admins so one tenant can never read the platform's economics.
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 _RANGES = {"7d", "14d", "30d", "90d", "all"}
 _STAGES = {

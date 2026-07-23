@@ -294,6 +294,26 @@ class Settings(BaseSettings):
         default="",
         description="Auth0 user ids (sub) allowed to read QA reports (comma-separated)")
 
+    # ── Tenant (company) data isolation ────────────────────────────────────
+    # Maps a client's users to their COMPANY tenant so they share that company's
+    # data and see no one else's. Comma-separated ``key=tenant`` where key is an
+    # exact email, an email DOMAIN, or an Auth0 sub. Most-specific match wins.
+    #   e.g. "castle-personal.de=castle, benedict.k@gmail.com=castle"
+    # A user who matches NOTHING is isolated to only their own data (fail-closed);
+    # the three admins bypass scoping entirely. Set this before onboarding a
+    # client so their users share a workspace.
+    TENANT_ASSIGNMENTS: str = Field(
+        default="",
+        description="email/domain/sub → company tenant id (comma-separated key=tenant)")
+
+    # ── GDPR / data protection ─────────────────────────────────────────────
+    # Retention window for scraped candidate PII (candidates, prospects, CVs and
+    # the enrichment cache). 0 = retain indefinitely (the exact lawful window is a
+    # business decision, deliberately left unset until agreed with the client).
+    # When > 0, a boot-time sweep hard-deletes PII whose createdAt is older.
+    PII_RETENTION_DAYS: int = Field(
+        default=0, description="Auto-erase scraped candidate PII older than N days (0 = disabled)")
+
     # ── OpenAI client hardening ────────────────────────────────────────────
     # The SDK default timeout is 600s per request; a hung call parks a worker
     # thread for 10 minutes. Retries are hand-rolled at the call sites (with
@@ -319,6 +339,19 @@ class Settings(BaseSettings):
     # and drops ~93% of those same people when aimed at an unrelated payroll role.
     PRESCREEN_ENABLED: bool = Field(default=True, description="Gate search hits before paying to enrich them")
     PRESCREEN_MIN_SCORE: float = Field(default=25.0, description="Drop search hits scoring below this (0-100)")
+
+    # Apollo is OFF for candidate SEARCH — LinkedIn (Apify) is the sole trusted
+    # source. Apollo stays available for on-demand contact/mobile enrichment
+    # only. Backend safety net: even if a caller requests the Apollo engine, the
+    # combined runner refuses it while this is False.
+    SOURCING_APOLLO_SEARCH_ENABLED: bool = Field(
+        default=False, description="Allow Apollo as a candidate-SEARCH engine (contact enrichment is separate)")
+
+    # Sourcing QA can REJECT (hide) a high-confidence off-specialty result, not
+    # just annotate it — the recruiter's list stays free of wrong-specialty
+    # people. Below the reject threshold but above the flag floor, it annotates.
+    SOURCING_QA_REJECT_CONFIDENCE: float = Field(
+        default=0.8, description="At/above this QA confidence an off-specialty hit is hidden, not just flagged")
 
     # Upload guard rails
     MAX_UPLOAD_MB: int = Field(default=10, description="Max size per uploaded document (MB)")
