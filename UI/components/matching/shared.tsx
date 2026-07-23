@@ -30,7 +30,7 @@ export function fmtRunDate(d?: string | null): string {
 // ── Score bar ─────────────────────────────────────────────────────────────────
 export function ScoreBar({ value }: { value: number }) {
   // Same cut points as BANDS below — every view must tell the same story.
-  const color = value >= 75 ? 'var(--status-success)' : value >= 60 ? 'var(--status-info)' : 'var(--status-warning)';
+  const color = value >= 80 ? 'var(--status-success)' : value >= 60 ? 'var(--status-info)' : 'var(--status-danger)';
   return (
     <div style={{ width: '100%', height: 6, background: 'var(--bg-app)', borderRadius: 9999, overflow: 'hidden' }}>
       <div style={{ width: `${Math.max(0, Math.min(100, value))}%`, height: '100%', background: color }} />
@@ -40,13 +40,15 @@ export function ScoreBar({ value }: { value: number }) {
 
 // ── Score bands ───────────────────────────────────────────────────────────────
 // A number alone doesn't tell a recruiter whether to pick up the phone; a verdict
-// does. Thresholds are a product decision, kept here so they're changed in one place.
+// does. Deliberately a strong three-color traffic-light read (green/blue/red), not
+// a muted palette — the color itself is the fast signal a recruiter scans a whole
+// list for, and it needs to land the same way every time it's seen. Thresholds are
+// a product decision, kept here so they're changed in one place.
 type Band = { label: string; fg: string; bg: string; line: string };
 const BANDS: Array<{ min: number } & Band> = [
-  { min: 75, label: 'Strong match', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
-  { min: 60, label: 'Worth a look', fg: 'var(--primary)', bg: '#EFF3FC', line: '#C9D6F0' },
-  { min: 40, label: 'Weak', fg: '#B45309', bg: '#FFFBEB', line: '#FDE68A' },
-  { min: -1, label: 'Not a fit', fg: 'var(--fg-muted)', bg: 'var(--bg-chip)', line: 'var(--border-card)' },
+  { min: 80, label: 'Strong match', fg: 'var(--status-success)', bg: 'var(--status-success-bg)', line: '#A7F3D0' },
+  { min: 60, label: 'Worth a look', fg: 'var(--status-info)', bg: 'var(--status-info-bg)', line: '#BFDBFE' },
+  { min: -1, label: 'Underfit', fg: 'var(--status-danger)', bg: 'var(--status-danger-bg)', line: '#FECACA' },
 ];
 export function bandFor(score: number): Band {
   return BANDS.find((b) => score >= b.min)!;
@@ -57,32 +59,53 @@ export function bandFor(score: number): Band {
  *  Cut points match BANDS — the same number must never read as "Strong" in one
  *  view and "Worth a look" in another. */
 function fitVerdict(v: number): { word: string; tone: string } {
-  if (v >= 75) return { word: 'Strong', tone: '#047857' };
-  if (v >= 60) return { word: 'Good', tone: '#047857' };
-  if (v >= 40) return { word: 'Moderate', tone: '#B45309' };
-  return { word: 'Weak', tone: '#B45309' };
+  if (v >= 80) return { word: 'Strong', tone: 'var(--status-success)' };
+  if (v >= 60) return { word: 'Good', tone: 'var(--status-info)' };
+  return { word: 'Weak', tone: 'var(--status-danger)' };
 }
 
 // ── Requirement evidence ──────────────────────────────────────────────────────
+// The scorer credits a requirement through NINE distinct methods — a plain name
+// match is just one of them; the rest are exactly the "same meaning, different
+// words" cases (a compound term, every word present but scattered across a
+// sentence, a claim made only in a narrative bullet, a quote the QA pass
+// independently re-verified against the CV). Every one of them is real,
+// evidenced credit and MUST read as such — a method missing from this table used
+// to silently fall through to "Missing / nothing evidences this" even when the
+// backend had already scored it as fully covered, which is exactly the false
+// "MISSING" the recruiter should never see next to a 100% match.
 const EV_TAG: Record<SkillEvidence['method'], { text: string; fg: string; bg: string; line: string }> = {
-  exact:    { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
-  specific: { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
-  fuzzy:    { text: 'Close',   fg: '#B45309', bg: '#FFFBEB', line: '#FDE68A' },
-  broader:  { text: 'Partial', fg: '#9A3412', bg: '#FFF7ED', line: '#FED7AA' },
-  none:     { text: 'Missing', fg: '#B91C1C', bg: '#FEF2F2', line: '#FECACA' },
+  exact:               { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
+  specific:            { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
+  'all-terms':         { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
+  'profile-text':      { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
+  qa_verified:         { text: 'Covered', fg: '#047857', bg: '#ECFDF5', line: '#A7F3D0' },
+  fuzzy:               { text: 'Close',   fg: '#B45309', bg: '#FFFBEB', line: '#FDE68A' },
+  'profile-text-terms':{ text: 'Close',   fg: '#B45309', bg: '#FFFBEB', line: '#FDE68A' },
+  broader:             { text: 'Partial', fg: '#9A3412', bg: '#FFF7ED', line: '#FED7AA' },
+  none:                { text: 'Missing', fg: '#B91C1C', bg: '#FEF2F2', line: '#FECACA' },
 };
 
 /** Recruiter-facing sentence for one requirement. The backend's note is written
- *  for the audit trail; this is written for the person reading it next to a name. */
+ *  for the audit trail; this is written for the person reading it next to a name.
+ *  `qa_verified` reads identically to a normal specific match — the quote WAS
+ *  found on their profile, just by the QA re-check rather than the first pass;
+ *  the reader needs "this is covered", not the internal fact that a second pass
+ *  is what found it. */
 function evidenceLine(e: SkillEvidence): React.ReactNode {
   const via = <q style={{ fontStyle: 'normal', color: 'var(--fg-secondary)' }}>{e.via}</q>;
   switch (e.method) {
     case 'exact':
       return 'Named directly on their profile';
     case 'specific':
+    case 'all-terms':
+    case 'profile-text':
+    case 'qa_verified':
       return <>Evidenced by {via}</>;
     case 'fuzzy':
       return <>They have {via} — the same area, not the exact term named</>;
+    case 'profile-text-terms':
+      return <>They have {via} — every part of it appears on their profile, just not as one exact phrase</>;
     case 'broader':
       return <>They have {via} — related, but narrower than the requirement</>;
     default:
@@ -271,7 +294,10 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
                 )}
                 {c.qa?.corrected && (
                   <span
-                    title={`The QA auditor verified evidence the scorer missed (${(c.qa.verifiedSkills || []).map((s) => s.skill).join(', ')}) and corrected the score from ${c.qa.originalScore ?? '—'} to ${c.score}.`}
+                    // Client-safe: states what was confirmed, never the before/after
+                    // score — that reads as "the tool was wrong", not as the trust
+                    // signal this badge is meant to be.
+                    title={`Profile evidence for ${(c.qa.verifiedSkills || []).map((s) => s.skill).join(', ')} was independently re-verified against their CV.`}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 4,
                       padding: '2px 8px', borderRadius: 9999, fontSize: 10.5, fontWeight: 700,

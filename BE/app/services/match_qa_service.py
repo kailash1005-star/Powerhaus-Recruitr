@@ -463,9 +463,15 @@ def _rescore_with_credits(
     entry["judge"] = None
     entry["reasoning"] = "qa_corrected"
     skills_list = ", ".join(sorted(verified.keys()))
+    # Client-facing copy — states what was found, never the audit mechanics (no
+    # "QA", no before/after numbers). A recruiter reading "corrected from 46.5 to
+    # 100" has no way to read that as anything but "the tool was wrong until we
+    # caught it", which manufactures doubt about the score sitting right next to
+    # it. The old/new numbers and the "qa_corrected" reasoning tag are still fully
+    # recorded on `entry["qa"]` and the admin-only qa_reports doc for the audit
+    # trail — this list is the only thing a client ever sees.
     entry["reasons"] = [
-        f"QA audit verified profile evidence for: {skills_list} — score corrected "
-        f"from {old_score:g} to {score:g}.",
+        f"Their profile provides direct evidence for: {skills_list}.",
         *[r for r in (entry.get("reasons") or []) if r][:2],
     ]
     return score

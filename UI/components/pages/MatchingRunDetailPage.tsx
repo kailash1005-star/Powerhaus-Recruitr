@@ -95,18 +95,21 @@ function RunSummary({ run }: { run: SavedMatchRun }) {
   const excluded = analysis?.excluded || [];
   if (!all.length) return null;
 
-  const strong = all.filter((c) => c.score >= 75).length;
-  const look = all.filter((c) => c.score >= 60 && c.score < 75).length;
+  // Same 80/60 cut points and green/blue/red read as the candidate cards below —
+  // a recruiter scanning this summary and then the list must never see the same
+  // score land in a different color band.
+  const strong = all.filter((c) => c.score >= 80).length;
+  const look = all.filter((c) => c.score >= 60 && c.score < 80).length;
   const below = all.filter((c) => c.score < 60).length;
   // Applicability is a property of the JD, so any candidate's breakdown answers it.
   const components = all[0]?.breakdown?.components || [];
 
-  const stat = (n: number, k: string, s: string, dim = false) => (
+  const stat = (n: number, k: string, s: string, tone?: string) => (
     <div style={{ padding: '18px 26px 16px', borderLeft: '1px solid var(--band-line)', minWidth: 0 }}>
       <div style={{
         fontFamily: 'var(--font-mono)', fontSize: 34, fontWeight: 600, lineHeight: 1,
         letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums',
-        color: dim ? 'var(--fg-subtle)' : 'var(--primary)',
+        color: tone || 'var(--fg-subtle)',
       }}>{n}</div>
       <div style={{
         fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em',
@@ -124,10 +127,10 @@ function RunSummary({ run }: { run: SavedMatchRun }) {
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
       }}>
-        {stat(strong, 'Strong matches', 'Worth contacting today')}
-        {stat(look, 'Worth a look', 'Some requirements unproven')}
-        {stat(below, 'Below the bar', 'Missing must-have skills', true)}
-        {stat(all.length, 'Reviewed in full', 'Every candidate sourced', true)}
+        {stat(strong, 'Strong matches', 'Worth contacting today', 'var(--status-success)')}
+        {stat(look, 'Worth a look', 'Some requirements unproven', 'var(--status-info)')}
+        {stat(below, 'Below the bar', 'Missing must-have skills', 'var(--status-danger)')}
+        {stat(all.length, 'Reviewed in full', 'Every candidate sourced')}
       </div>
 
       <div style={{

@@ -1057,6 +1057,25 @@ export function discoverCombined(
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/discover-combined`, payload);
 }
 
+/** One place-name suggestion from the offline gazetteer. */
+export interface LocationSuggestion {
+  /** Canonical label to store & send to both engines, e.g. "Koblenz, Germany". */
+  label: string;
+  country: string;
+  kind: 'city' | 'region' | 'country';
+}
+
+/**
+ * LinkedIn-style location typeahead. Offline (no geocoding API), so it's cheap
+ * enough to call per keystroke. Returns canonical labels the recruiter picks
+ * from, which kills the mis-spelled-location zero-result trap at the source.
+ */
+export function suggestLocations(q: string, limit = 8): Promise<{ suggestions: LocationSuggestion[] }> {
+  const query = q.trim();
+  if (!query) return Promise.resolve({ suggestions: [] });
+  return get(`/api/v1/locations/suggest?q=${encodeURIComponent(query)}&limit=${limit}`);
+}
+
 /**
  * Start a background match run: score the job's JD against the selected
  * candidates' enriched profiles (auto-enriching any that aren't yet). Returns a
@@ -1128,7 +1147,8 @@ export interface SkillEvidence {
   skill: string;
   /** 0..1 — 1 exact/specific, 0.75 fuzzy, 0.5 broader term, 0 no match. */
   credit: number;
-  method: 'exact' | 'specific' | 'broader' | 'fuzzy' | 'none';
+  method: 'exact' | 'specific' | 'all-terms' | 'profile-text' | 'profile-text-terms'
+    | 'qa_verified' | 'broader' | 'fuzzy' | 'none';
   /** The candidate skill that earned the credit. */
   via?: string | null;
   confidence: number;
