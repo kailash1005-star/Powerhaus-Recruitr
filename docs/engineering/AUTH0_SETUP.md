@@ -410,7 +410,7 @@ grows. I'll handle the code; it's listed here so the change isn't a surprise.
 [`BE/app/config.py:52`](BE/app/config.py) contains:
 
 ```python
-FIRECRAWL_API_KEY: str = Field(default="fc-a5218360c4624ed9b764dc0305c9d0ba", ...)
+FIRECRAWL_API_KEY: str = Field(default="", ...)  # set via env; never hardcode a key
 ```
 
 A live credential, in git history, as a default value. Anyone with repo access —

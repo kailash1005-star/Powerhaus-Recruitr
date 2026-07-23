@@ -122,7 +122,10 @@ def run_scraper(
     output_file: str = "job_listings.csv",
     scrape_descriptions: bool = True
 ):
-    api_key = "fc-a5218360c4624ed9b764dc0305c9d0ba"
+    import os
+    # SECURITY: previously hardcoded key was leaked/burned — rotate at Firecrawl
+    # and supply via env. Never restore a literal key here.
+    api_key = os.environ.get("FIRECRAWL_API_KEY", "")
     if not api_key:
         raise ValueError("FIRECRAWL_API_KEY environment variable is not set.")
 

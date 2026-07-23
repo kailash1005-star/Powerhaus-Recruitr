@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-FIRECRAWL_API_KEY = "fc-a5218360c4624ed9b764dc0305c9d0ba"
+import os
+# SECURITY: previously hardcoded key was leaked/burned — rotate at Firecrawl and
+# supply via env. Never restore a literal key here.
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 
 SEARCH_URL = (
     "https://www.naukri.com/software-development-software-testing-python-java-software-engineer-jobs-in-chennai"
