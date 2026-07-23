@@ -323,7 +323,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       };
       const bits = [
         part('LinkedIn', je?.apifySearchStatus, je?.apifyKept),
-        part('Apollo', je?.apolloSearchStatus, je?.apolloKept),
+        part('Contacts', je?.apolloSearchStatus, je?.apolloKept),
       ].filter(Boolean);
       return bits.length ? bits.join(' · ') : 'Searching for candidates…';
     };
@@ -508,7 +508,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       const st = je?.enrichStatus;
       const c = je?.enrichCounts || {};
       if (st === 'running' || st === 'queued') {
-        setBulkMsg(`Enriching… (Apollo ${c.apollo_enriched ?? 0} · Apify ${c.apify_enriched ?? 0})`);
+        setBulkMsg(`Enriching… (${c.apollo_enriched ?? 0} contact(s) · ${c.apify_enriched ?? 0} profile(s))`);
       }
       if (st === 'completed') {
         const apify = c.apify_enriched ?? 0;
@@ -518,7 +518,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         const parts: string[] = [];
         if (apollo) parts.push(`${apollo} contact(s) revealed`);
         if (apify) parts.push(`${apify} profile(s) enriched`);
-        if (apolloFailed) parts.push(`${apolloFailed} Apollo lookup(s) failed`);
+        if (apolloFailed) parts.push(`${apolloFailed} contact lookup(s) failed`);
         if (nf) parts.push(`${nf} no profile found`);
         setBulkMsg(`Enriched ✓ — ${parts.join(' · ') || 'nothing left to enrich'}`);
         await loadCandidates();
@@ -534,7 +534,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     setEnrichMenuOpen(false);
     setBulkBusy('enrich');
     setActionError(null);
-    const engine = mode === 'apollo' ? 'Apollo' : mode === 'apify' ? 'Apify' : 'Apollo + Apify';
+    const engine = mode === 'apollo' ? 'contact' : mode === 'apify' ? 'profile' : 'contact + profile';
     setBulkMsg(`Queuing ${engine} enrichment for ${selected.size} candidate(s)…`);
     try {
       await bulkEnrichJobCandidates(pipelineId, jobId, Array.from(selected), mode);
@@ -719,7 +719,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         <div style={{ flex: 1 }} />
         <button
           onClick={() => setDiscoverOpen(true)}
-          title="Search LinkedIn + Apollo for candidates"
+          title="Search the public talent market for candidates"
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 7, height: 34, padding: '0 14px',
             borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
@@ -892,9 +892,9 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
               const enrichDisabled = bulkBusy !== null || selected.size === 0 || selected.size > ENRICH_MAX;
               const overCap = selected.size > ENRICH_MAX;
               const opts: { mode: EnrichMode; label: string; desc: string }[] = [
-                { mode: 'apollo', label: 'Apollo enrich', desc: 'Verified email + contact. No profile scrape, no Apify.' },
-                { mode: 'apify', label: 'Apify enrich', desc: 'Full LinkedIn work history & skills. No Apollo credit.' },
-                { mode: 'both', label: 'Both', desc: 'Apollo contact, then Apify deep profile.' },
+                { mode: 'apollo', label: 'Contact details', desc: 'Verified email and contact details only.' },
+                { mode: 'apify', label: 'Full profile', desc: 'Complete LinkedIn work history & skills.' },
+                { mode: 'both', label: 'Contact + full profile', desc: 'Contact details, then the full profile.' },
               ];
               return (
                 <div style={{ position: 'relative', display: 'inline-flex' }}>
@@ -905,7 +905,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                       ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
                       : overCap
                       ? `Enrichment is capped at ${ENRICH_MAX} per batch — pick your ${ENRICH_MAX} strongest candidates. You can enrich more in a second batch.`
-                      : 'Choose an engine: Apollo (contact), Apify (deep profile), or both. Background, skips already-enriched. This is the paid step.'}
+                      : 'Choose what to pull: contact details, the full profile, or both. Runs in the background and skips anyone already enriched.'}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
                       borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
@@ -1224,7 +1224,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                           {c.isAccepted ? 'Accepted' : 'Rejected'}
                         </span>
                         {c.isApifyEnriched && (
-                          <span title="Deep LinkedIn profile enriched (Apify)" style={{
+                          <span title="Full LinkedIn profile added" style={{
                             display: 'inline-flex', alignItems: 'center', gap: 3,
                             padding: '2px 7px', borderRadius: 9999, fontSize: 10, fontWeight: 700,
                             background: '#EEF2FF', color: '#4F46E5', border: '1px solid #C7D2FE',

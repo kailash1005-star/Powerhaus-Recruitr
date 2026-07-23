@@ -163,10 +163,10 @@ export function ProspectsSlideOut({
       const { prospect, emailRevealed } = await enrichProspect(p._id);
       setProspects((prev) => prev.map((x) => (x._id === prospect._id ? { ...x, ...prospect } : x)));
       if (!emailRevealed) {
-        setEnrichError('Apollo had no email on file for this prospect.');
+        setEnrichError('No email is on file for this prospect.');
       }
     } catch {
-      setEnrichError('Enrichment failed. Check the Apollo API key / credits and try again.');
+      setEnrichError('Couldn’t retrieve contact details. Please try again in a moment.');
     } finally {
       setEnrichingId(null);
     }
@@ -201,14 +201,15 @@ export function ProspectsSlideOut({
         // it rather than making the user click Retry (which re-bills a credit).
         pollForPhone(p._id);
       } else {
-        setPhoneEnrichError('Apollo had no phone number on file for this prospect.');
+        setPhoneEnrichError('No phone number is on file for this prospect.');
       }
     } catch (e: any) {
       const msg = e?.message || '';
       if (msg.includes('503') || msg.includes('APOLLO_WEBHOOK_URL')) {
-        setPhoneEnrichError('Phone enrichment requires APOLLO_WEBHOOK_URL to be configured in the backend .env file.');
+        // Operator-facing config gap — keep it actionable but vendor-neutral for the recruiter.
+        setPhoneEnrichError('Phone lookup isn’t fully configured yet. Please contact your administrator.');
       } else {
-        setPhoneEnrichError('Phone enrichment failed. Check Apollo API key / credits.');
+        setPhoneEnrichError('Couldn’t retrieve the phone number. Please try again in a moment.');
       }
     } finally {
       setPhoneEnrichingId(null);
@@ -507,7 +508,7 @@ Best,
                                   <span style={{ fontWeight: 700, color: '#059669', background: '#ECFDF5', padding: '2px 8px', borderRadius: 4 }}>{phone}</span>
                                 ) : mobileStatus === 'pending' ? (
                                   <span style={{ fontWeight: 600, color: '#1D4ED8', background: '#EFF6FF', border: '1px solid #BFDBFE', padding: '2px 8px', borderRadius: 4, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                    <Icon name="loader" size={11} /> {isPolling ? 'Auto-checking…' : 'Awaiting callback'}
+                                    <Icon name="loader" size={11} /> Fetching number…
                                   </span>
                                 ) : (
                                   <span style={{ fontWeight: 600, color: '#6B7280', background: '#F3F4F6', border: '1px solid #E5E7EB', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
@@ -545,16 +546,16 @@ Best,
                                     }}
                                   >
                                     <Icon name={isPhoneEnriching ? 'loader' : 'phone'} size={13} />
-                                    {isPhoneEnriching ? 'Revealing…' : 'Find phone'}
+                                    {isPhoneEnriching ? 'Getting number…' : 'Get phone number'}
                                   </button>
                                 )}
                                 {mobileStatus === 'pending' && !phone && (
                                   // Free re-check: just refetch from the server (the webhook
-                                  // updates the DB). Does NOT re-trigger a credit-billing Apollo call.
+                                  // updates the DB). Does NOT re-trigger a credit-billing lookup.
                                   <button
                                     onClick={() => { refreshProspects().catch(() => {}); pollForPhone(active._id); }}
                                     disabled={isPolling}
-                                    title="Apollo delivers the number to our webhook within a few minutes. We check automatically — this just checks again now."
+                                    title="This number takes a moment to come back. We check for it automatically — click to check again now."
                                     style={{
                                       fontSize: 12, fontWeight: 600, cursor: isPolling ? 'wait' : 'pointer',
                                       border: '1px solid #BFDBFE', borderRadius: 6, padding: '5px 12px',

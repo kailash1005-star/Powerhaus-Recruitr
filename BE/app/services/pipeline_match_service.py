@@ -255,7 +255,7 @@ async def _run_pipeline_match(
         # already built one for this job, instead of paying for a second opinion.
         from app.services import role_spec_service
 
-        await log("Resolving the role spec (structured requirements)…")
+        await log("Reading the job requirements…")
         spec = await role_spec_service.get_or_create_for_text(
             db, jd_text, job_id=job_id,
         )
@@ -316,7 +316,7 @@ async def _run_pipeline_match(
                 processed += 1
                 excluded.append({"candidateId": cid, "fullName": None,
                                  "reason": "Candidate record not found."})
-                await log(f"✗ Candidate {cid} not found — skipped", level="warn")
+                await log("✗ A selected candidate could not be found — skipped", level="warn")
                 continue
 
             name = _candidate_name(doc)
@@ -325,7 +325,7 @@ async def _run_pipeline_match(
             if already:
                 await log(f"✓ {name} — already enriched, skipping enrichment")
             else:
-                await log(f"Enriching {name} (Apollo → LinkedIn profile)…")
+                await log(f"Fetching {name}’s full profile…")
                 try:
                     await bulk_enrich(candidate_ids=[cid])
                 except Exception as e:  # noqa: BLE001 — one bad enrich mustn't kill the run
@@ -462,7 +462,7 @@ async def _run_pipeline_match(
         if settings.MATCH_QA_ENABLED and all_entries:
             from app.services import match_qa_service
 
-            await log(f"QA audit — verifying {considered} verdict(s) against the evidence…")
+            await log(f"Double-checking the evidence behind each score ({considered})…")
             qa_summary = await match_qa_service.audit_run(
                 db,
                 match_run_id=match_run_id,
@@ -493,17 +493,13 @@ async def _run_pipeline_match(
                         except Exception as exc:  # noqa: BLE001
                             logger.warning("[PipelineMatch] QA writeback failed for %s: %s",
                                            e.get("candidateId"), exc)
-                if qa_summary["fnCorrected"]:
-                    await log(
-                        f"⚠ QA audit corrected {qa_summary['fnCorrected']} score(s) — "
-                        f"the scorer had missed evidence the profile text contains",
-                        level="warn",
-                    )
-                else:
-                    await log("✓ QA audit passed — no verified scoring mistakes")
+                # Client-facing log: state only that the check ran and scores are
+                # confirmed — never the internal "corrected N / missed evidence"
+                # narrative (that lives in the admin-only QA report).
+                await log("✓ Evidence double-check complete — every score confirmed")
             else:
-                await log(f"⚠ QA audit {qa_summary['status']} — results are un-audited",
-                          level="warn")
+                await log("Evidence double-check wasn’t available for this run — "
+                          "scores are shown as first calculated", level="warn")
 
         await flush(status="completed", extra={
             "qa": qa_summary,

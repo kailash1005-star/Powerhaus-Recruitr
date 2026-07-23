@@ -14,7 +14,7 @@ interface Integration {
 }
 
 const STATIC_INTEGRATIONS: Integration[] = [
-  { id: 'int1', name: 'Apollo.io', type: 'ENRICHMENT', status: 'CONNECTED', lastSync: 'Today, 09:30' },
+  { id: 'int1', name: 'Contact Enrichment', type: 'ENRICHMENT', status: 'CONNECTED', lastSync: 'Today, 09:30' },
   { id: 'int2', name: 'Microsoft 365', type: 'EMAIL', status: 'CONNECTED', lastSync: 'Today, 08:00' },
   { id: 'int3', name: 'Salesforce', type: 'CRM', status: 'DISCONNECTED', lastSync: null },
   { id: 'int4', name: 'LinkedIn Jobs', type: 'DISCOVERY', status: 'CONNECTED', lastSync: 'Yesterday' },

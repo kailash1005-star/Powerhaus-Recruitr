@@ -41,7 +41,7 @@ export function SettingsPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Apollo API Key</label>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Contact data key</label>
                 <input
                   type="password"
                   value={settings?.apiKeys.apollo || ''}
@@ -59,7 +59,7 @@ export function SettingsPage() {
                 />
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Apify API Key</label>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Profile data key</label>
                 <input
                   type="password"
                   value={settings?.apiKeys.apify || ''}
@@ -77,7 +77,7 @@ export function SettingsPage() {
                 />
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>OpenAI API Key</label>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6 }}>AI model key</label>
                 <input
                   type="password"
                   value={settings?.apiKeys.openai || ''}

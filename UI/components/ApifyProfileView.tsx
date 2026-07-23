@@ -107,7 +107,7 @@ export function ApifyProfileView({ candidate }: { candidate: Candidate }) {
           {Header}
           <StateBox icon="user-x" iconColor="var(--fg-muted)"
             title="No public LinkedIn profile found"
-            subtitle="Apollo contact data above is still available." />
+            subtitle="The contact details above are still available." />
         </div>
       );
     }

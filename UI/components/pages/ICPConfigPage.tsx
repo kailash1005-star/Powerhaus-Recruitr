@@ -779,7 +779,7 @@ function LaunchOverlay({
     { key: 'starting', label: 'Creating your run',              sublabel: 'Saving configuration & spinning up the pipeline' },
     { key: 'scraping', label: 'Scraping jobs',                   sublabel: 'Searching LinkedIn for matching job postings' },
     { key: 'companies', label: 'Resolving companies',            sublabel: 'Identifying target companies via LinkedIn & AI' },
-    { key: 'prospects', label: 'Finding prospects',              sublabel: 'Searching Apollo for HR decision-makers' },
+    { key: 'prospects', label: 'Finding prospects',              sublabel: 'Searching for HR decision-makers' },
   ];
 
   const phaseOrder: LaunchPhase[] = ['starting', 'created', 'scraping', 'companies', 'prospects', 'done'];

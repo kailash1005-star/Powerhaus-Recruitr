@@ -280,7 +280,7 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
       } catch { /* transient — keep polling to the cap */ }
       if (polls >= 30) {
         setPhoneState('idle');
-        setPhoneErr('No number delivered yet. Apollo may have none on file for this person.');
+        setPhoneErr('No number came back yet — try again shortly.');
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       }
     }, 5000);
@@ -299,17 +299,18 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
         pollForPhone();
       } else {
         setPhoneState('idle');
-        setPhoneErr('Apollo had no phone number on file for this candidate.');
+        setPhoneErr('No phone number is on file for this candidate.');
       }
     } catch (e: any) {
       setPhoneState('idle');
       const msg = e?.message || '';
       if (msg.includes('503') || msg.includes('APOLLO_WEBHOOK_URL')) {
-        setPhoneErr('Phone reveal needs APOLLO_WEBHOOK_URL set in the backend .env.');
+        // Operator-facing config gap — keep it vendor-neutral for the recruiter.
+        setPhoneErr('Phone lookup isn’t fully configured yet. Please contact your administrator.');
       } else if (msg.includes('422')) {
-        setPhoneErr('Couldn’t resolve this candidate on Apollo — no phone available.');
+        setPhoneErr('Couldn’t find a phone number for this candidate.');
       } else {
-        setPhoneErr('Phone reveal failed. Check the Apollo API key / credits.');
+        setPhoneErr('Couldn’t retrieve the phone number. Please try again in a moment.');
       }
     }
   };
@@ -469,7 +470,7 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
               <button
                 onClick={revealPhone}
                 disabled={phoneState !== 'idle'}
-                title={phoneErr || 'Reveal this candidate’s mobile number via Apollo'}
+                title={phoneErr || 'Get this candidate’s mobile number'}
                 style={{
                   height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
                   cursor: phoneState === 'idle' ? 'pointer' : 'wait',
@@ -480,9 +481,9 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
                 }}
               >
                 <Icon name={phoneState === 'idle' ? 'phone' : 'loader'} size={13} />
-                {phoneState === 'revealing' ? 'Revealing…'
-                  : phoneState === 'pending' ? 'Waiting for Apollo…'
-                  : phoneErr ? 'Retry phone' : 'Reveal phone'}
+                {phoneState === 'revealing' ? 'Getting number…'
+                  : phoneState === 'pending' ? 'Fetching number…'
+                  : phoneErr ? 'Try again' : 'Get phone number'}
               </button>
             ) : null}
             {c.source !== 'pipeline' ? (

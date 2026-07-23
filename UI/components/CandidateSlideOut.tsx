@@ -99,7 +99,7 @@ export function CandidateSlideOut({
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg-primary)' }}>Candidates</div>
-            <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Enriched profiles from Apollo</div>
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Sourced candidate profiles</div>
           </div>
           <button onClick={onClose} style={{ width: 32, height: 32, border: 'none', background: 'transparent', borderRadius: 6, cursor: 'pointer', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Icon name="x" size={18} />
@@ -173,11 +173,6 @@ export function CandidateSlideOut({
                         <div style={{ fontSize: 12, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {c.currentTitle || c.headline || '—'}
                         </div>
-                        {!c.isEnriched && (
-                          <div style={{ fontSize: 10, fontWeight: 700, color: '#D97706', textTransform: 'uppercase', letterSpacing: '0.04em', marginTop: 2 }}>
-                            Needs Enrichment
-                          </div>
-                        )}
                       </div>
                     </div>
                   );
@@ -266,21 +261,6 @@ export function CandidateSlideOut({
                       }}
                     >Accept</button>
                   )}
-                  <button
-                    disabled={busyId === active._id || active.isEnriched}
-                    onClick={() => onEnrich(active._id)}
-                    title={active.isEnriched ? 'Already enriched' : 'Pull full profile from Apollo (uses Apollo credits)'}
-                    style={{
-                      flex: 1, height: 36, borderRadius: 6, fontSize: 13, fontWeight: 600,
-                      cursor: busyId === active._id || active.isEnriched ? 'not-allowed' : 'pointer',
-                      border: 'none', background: active.isEnriched ? 'var(--bg-app)' : 'var(--primary)',
-                      color: active.isEnriched ? 'var(--fg-muted)' : '#FFF',
-                      fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                    }}
-                  >
-                    {busyId === active._id ? <Icon name="loader" size={14} /> : <Icon name="sparkles" size={14} />}
-                    {active.isEnriched ? 'Enriched' : 'Enrich'}
-                  </button>
                 </div>
 
                 {/* Match reasons */}
@@ -299,11 +279,11 @@ export function CandidateSlideOut({
                   </div>
                 )}
 
-                {/* Apollo enrichment */}
+                {/* Verified contact + profile details */}
                 {active.isEnriched && enriched ? (
                   <div style={{ marginBottom: 24 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <Icon name="sparkles" size={14} style={{ color: '#4F46E5' }} /> Apollo Enrichment
+                      <Icon name="sparkles" size={14} style={{ color: '#4F46E5' }} /> Contact &amp; details
                     </div>
 
                     {/* Contact card — email + email_status + personal emails */}
@@ -319,7 +299,7 @@ export function CandidateSlideOut({
                             </span>
                           )}
                           {enriched.emailStatus && enriched.email && (
-                            <span title="Apollo email confidence" style={{
+                            <span title="Email confidence" style={{
                               fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
                               textTransform: 'uppercase', letterSpacing: '0.04em',
                               background: enriched.emailStatus === 'verified' ? '#ECFDF5' : '#FFFBEB',
@@ -476,31 +456,14 @@ export function CandidateSlideOut({
                     )}
                   </div>
                 ) : (
-                  /* Not yet enriched — prompt */
+                  /* Contact + full profile not available for this candidate yet —
+                     a quiet, neutral note (no manual action, no vendor). */
                   <div style={{
-                    marginBottom: 24, padding: '24px 20px', textAlign: 'center',
-                    border: '1px dashed var(--border-card)', borderRadius: 10, background: '#FAFAFA',
+                    marginBottom: 24, padding: '16px 18px',
+                    border: '1px solid var(--border-card)', borderRadius: 10, background: '#FAFAFA',
+                    fontSize: 12.5, color: 'var(--fg-muted)', lineHeight: 1.5,
                   }}>
-                    <Icon name="sparkles" size={28} style={{ color: '#4F46E5', marginBottom: 10 }} />
-                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg-primary)', marginBottom: 4 }}>
-                      Not enriched yet
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 14 }}>
-                      Enrich this candidate to pull their email, phone, experience, education and skills from Apollo.
-                    </div>
-                    <button
-                      disabled={busyId === active._id}
-                      onClick={() => onEnrich(active._id)}
-                      style={{
-                        height: 36, padding: '0 18px', borderRadius: 6, fontSize: 13, fontWeight: 600,
-                        cursor: busyId === active._id ? 'not-allowed' : 'pointer',
-                        border: 'none', background: 'var(--primary)', color: '#FFF', fontFamily: 'inherit',
-                        display: 'inline-flex', alignItems: 'center', gap: 6,
-                      }}
-                    >
-                      {busyId === active._id ? <Icon name="loader" size={14} /> : <Icon name="sparkles" size={14} />}
-                      Enrich now
-                    </button>
+                    Full contact details and work history for this candidate aren’t available yet.
                   </div>
                 )}
 

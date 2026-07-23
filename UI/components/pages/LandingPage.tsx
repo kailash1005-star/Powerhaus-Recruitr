@@ -401,7 +401,7 @@ const WHAT_CARDS = [
   {
     icon: 'users',
     title: 'It sources new talent when you need it',
-    body: 'No match in your pool? Recruitr searches the public market via LinkedIn and Apollo, ranks what it finds, and drafts warm, personalized outreach to candidates and clients alike.',
+    body: 'No match in your pool? Recruitr searches the public talent market, ranks what it finds, and drafts warm, personalized outreach to candidates and clients alike.',
   },
 ];
 

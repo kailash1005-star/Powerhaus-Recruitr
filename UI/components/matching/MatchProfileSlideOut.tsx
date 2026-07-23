@@ -83,7 +83,7 @@ export function MatchProfileSlideOut({ matched, roleTitle, onClose }: {
               {matched?.fullName || 'Candidate profile'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {roleTitle ? `Match for ${roleTitle}` : 'Enriched profile from Apify'}
+              {roleTitle ? `Match for ${roleTitle}` : 'Candidate profile'}
             </div>
           </div>
           <button onClick={onClose} style={{ width: 32, height: 32, border: 'none', background: 'transparent', borderRadius: 6, cursor: 'pointer', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
