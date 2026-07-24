@@ -17,11 +17,18 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.database import get_database
+from app.security.tenant import require_admin
 from app.services import outreach_service
 from app.services.outreach_provider import get_source
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+
+# Admin-gated wholesale: outreach is still single-tenant (one global
+# OUTREACH_TENANT_ID, no per-tenant scoping on any query), so exposing it to a
+# client would show them OUR campaign data — prospects, drafts, real candidate
+# PII. Gate the whole router until outreach gets true per-tenant scoping; the
+# webhook_router below stays public (signature-authed, mounted separately).
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 # Provider callbacks (Smartlead, Cal.com). Mounted in router.py WITHOUT the
 # bearer dependency — these authenticate by HMAC signature instead, which is the
