@@ -188,6 +188,25 @@ async def connect_to_mongo():
     except Exception as e:
         print(f"[WARN] Could not create matching indexes: {e}")
 
+    # ── icpConfig: per-tenant version uniqueness ───────────────────────────
+    # The legacy manually-created `idx_version` was unique on `version` GLOBALLY,
+    # which made tenant clone-on-write (icp._tenant_writable) throw DuplicateKey
+    # the moment a client cloned the shared default (same version number) — a
+    # production 500 on "add title" for the first real tenant user. Version is a
+    # per-tenant sequence, so uniqueness must be (tenantId, version).
+    try:
+        icp = database["icpConfig"]
+        existing = await icp.index_information()
+        if "idx_version" in existing:
+            await icp.drop_index("idx_version")
+            print("[OK] dropped legacy global-unique icpConfig.idx_version")
+        await icp.create_index(
+            [("tenantId", 1), ("version", 1)], name="idx_tenant_version", unique=True,
+        )
+        print("[OK] icpConfig (tenantId, version) unique index ensured")
+    except Exception as e:
+        print(f"[WARN] Could not migrate icpConfig indexes: {e}")
+
     # ── Outreach CRM collections ───────────────────────────────────────────
     # outreach_messages — read model; one per (tenant, dedupeKey). Filter by
     # (audience, status); sort by lastActivityAt.

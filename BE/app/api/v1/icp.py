@@ -57,19 +57,41 @@ async def _tenant_writable(icp_collection, ctx: TenantContext):
     """A config document this caller may safely mutate. Admins and a tenant that
     already owns its config edit it in place. A non-admin tenant that only has the
     SHARED default gets a private clone first — otherwise one client editing their
-    target industries/titles would rewrite every other client's targeting."""
+    target industries/titles would rewrite every other client's targeting.
+
+    The clone starts its OWN version sequence at 1. Copying the source's version
+    collided with the legacy global-unique `idx_version` index (DuplicateKey →
+    500 on the first thing a real client clicked); the index is per-tenant now
+    (see database.py), and the retry loop below survives any index state — two
+    users of the same fresh tenant clicking at once simply converge on the doc
+    the winner inserted."""
     doc = await _active_or_latest(icp_collection, ctx)
     if ctx.is_admin or doc.get("tenantId") == ctx.tenant_id:
         return doc
     from datetime import datetime as _dt
+
+    from pymongo.errors import DuplicateKeyError
+
     clone = {k: v for k, v in doc.items() if k != "_id"}
     clone["tenantId"] = ctx.tenant_id
     clone["isActive"] = True
     clone["clonedFrom"] = doc["_id"]
     clone["createdAt"] = clone["updatedAt"] = _dt.utcnow()
-    res = await icp_collection.insert_one(clone)
-    clone["_id"] = res.inserted_id
-    return clone
+    clone["version"] = 1
+    for _attempt in range(3):
+        try:
+            res = await icp_collection.insert_one(clone)
+            clone["_id"] = res.inserted_id
+            return clone
+        except DuplicateKeyError:
+            # Lost a race with a teammate's clone (or a stale unique index).
+            # Prefer their doc; only bump the version if none exists yet.
+            existing = await icp_collection.find_one(
+                {"tenantId": ctx.tenant_id}, sort=[("version", -1)])
+            if existing:
+                return existing
+            clone["version"] = int(clone.get("version") or 1) + 1
+    raise HTTPException(status_code=500, detail="Could not create tenant ICP config")
 
 
 def _serialize(doc: dict) -> ICPConfigResponseSchema:

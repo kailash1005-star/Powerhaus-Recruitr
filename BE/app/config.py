@@ -280,6 +280,14 @@ class Settings(BaseSettings):
     SOURCING_LOCATION_GATE: str = Field(
         default="country", description='Location gate over results: "country" | "off"')
 
+    # Right country, wrong region: KEPT (relocation/remote is legitimate) but the
+    # sourcing score is capped so a Berlin profile can't wear a 100 on a Bamberg
+    # search — the recruiter reads the table score as overall fit, geography
+    # included. Found by Kastell's first real run: a "Network Engineer, Bamberg"
+    # search surfaced Hamburg/Berlin/NRW profiles at 100. 0 disables the cap.
+    SOURCING_REGION_MISMATCH_CAP: float = Field(
+        default=70.0, description="Max sourcing score for right-country/wrong-region candidates (0 = off)")
+
     # Operators (admins). This is not just the QA page: an admin BYPASSES tenant
     # scoping entirely (app/security/tenant.is_admin) and sees every tenant's data
     # plus the legacy/admin corpus (tenantId:null). Comma-separated, case-

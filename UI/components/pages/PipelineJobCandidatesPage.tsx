@@ -1207,6 +1207,19 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                       }} title={c.location || 'Unknown'}>
                         {c.location || 'Unknown'}
                       </span>
+                      {/* Honest geography: right country but not the requested
+                          region. The score is capped server-side; this says why. */}
+                      {c.locationFlag && (
+                        <span title={c.locationFlag} style={{
+                          display: 'inline-block', marginTop: 3, padding: '1px 7px',
+                          borderRadius: 9999, fontSize: 10, fontWeight: 600,
+                          background: '#FEF3C7', color: '#92400E', border: '1px solid #FDE68A',
+                          maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          Outside region
+                        </span>
+                      )}
                     </td>
                     <td style={tdStyle}>
                       <MatchBadge score={c.matchScore} provisional={c.matchScoreSource !== 'match_run'} />

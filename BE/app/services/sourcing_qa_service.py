@@ -213,10 +213,15 @@ async def audit_results(
                 update: Dict[str, Any] = {"sourcingQaFlag": qa_note, "updatedAt": _now()}
                 if reject:
                     metrics["rejected"] += 1
+                    # Client-facing string: the recruiter sees this on the row.
+                    # Name the specialty we believe they're actually in — never
+                    # internal instrument language ("QA:"), same standard as the
+                    # matching copy cleanup.
+                    specialty = (m.get("likelyActualSpecialty")
+                                 or m.get("reason") or "a different specialty")
                     update.update({
                         "isAccepted": False,
-                        "rejectionReason": (
-                            f"QA: wrong specialty — {m.get('reason') or 'off-target'}"),
+                        "rejectionReason": f"Different specialty: {specialty}",
                         "decidedAt": _now(),
                     })
                 try:

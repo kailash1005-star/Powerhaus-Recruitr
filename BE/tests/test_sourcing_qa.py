@@ -218,7 +218,11 @@ class TestSourcingAuditor:
         flt, update = db.candidates.updates[0]
         assert update["$set"]["isAccepted"] is False
         assert "sourcingQaFlag" in update["$set"]
-        assert "QA" in update["$set"]["rejectionReason"]
+        # Client-facing copy: names the specialty, never internal instrument
+        # language ("QA:") — the recruiter reads this on the candidate row.
+        reason = update["$set"]["rejectionReason"]
+        assert reason == "Different specialty: SAP FICO"
+        assert "QA" not in reason
 
     async def test_low_confidence_is_noted_not_flagged(self, monkeypatch):
         resp = {"mismatches": [

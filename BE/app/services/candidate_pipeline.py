@@ -807,6 +807,7 @@ async def _apollo_discover_for_job(
                     verdict["location"] = loc_verdict
                     if loc_verdict["decision"] == "region_mismatch":
                         doc["locationFlag"] = loc_verdict["reason"]
+                _cap_region_mismatch(verdict, loc_verdict, req_location)
                 doc["prescreen"] = verdict
                 if verdict.get("score") is not None:
                     doc["matchScore"] = int(round(float(verdict["score"])))
@@ -1069,6 +1070,30 @@ async def _run_job_enrich(
 
 
 # ── Apify discovery: search questionnaire → candidates → auto-enrich ────────
+
+
+def _cap_region_mismatch(verdict: Dict[str, Any], loc_verdict: Optional[Dict[str, Any]],
+                         requested_location: Optional[str]) -> None:
+    """Cap the prescreen score (in place) for right-country/wrong-region hits.
+
+    They stay KEPT — relocation/remote is legitimate and a false drop is
+    unrecoverable — but the table's score is how the recruiter reads overall
+    fit, and a Berlin profile wearing 100 on a Bamberg search destroys trust in
+    every other number. The cap (SOURCING_REGION_MISMATCH_CAP) drops them below
+    genuinely in-region candidates in the default sort, and the appended reason
+    says exactly why."""
+    from app.config import settings
+    cap = float(settings.SOURCING_REGION_MISMATCH_CAP or 0)
+    if not cap or not loc_verdict or loc_verdict.get("decision") != "region_mismatch":
+        return
+    score = verdict.get("score")
+    if score is None or float(score) <= cap:
+        return
+    verdict["score"] = cap
+    reasons = list(verdict.get("reasons") or [])
+    where = f" ({requested_location})" if requested_location else ""
+    reasons.append(f"Outside the requested region{where} — score capped at {cap:g}.")
+    verdict["reasons"] = reasons
 
 
 def _apify_score(profile: Dict[str, Any], search_query: str) -> Tuple[int, List[str]]:
@@ -1399,6 +1424,7 @@ async def _store_profiles(
             verdict["location"] = loc_verdict
             if loc_verdict["decision"] == "region_mismatch":
                 doc["locationFlag"] = loc_verdict["reason"]
+        _cap_region_mismatch(verdict, loc_verdict, requested_location)
         verdicts.append({**verdict, "title": p.get("currentTitle"),
                          "name": doc.get("displayName")})
 

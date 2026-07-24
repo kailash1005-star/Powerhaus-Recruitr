@@ -665,6 +665,9 @@ export interface Candidate {
     reasons?: string[];
     channels?: string[];
   } | null;
+  /** Set when the candidate is in the right country but outside the requested
+      region (the reason string). Score is capped server-side; UI shows a chip. */
+  locationFlag?: string | null;
   isAccepted: boolean;
   rejectionReason?: string | null;
   decidedAt?: string | null;
