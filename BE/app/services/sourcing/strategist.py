@@ -96,15 +96,29 @@ Rules for the filters you produce:
    the must-haves.
 6. If the recruiter named target companies, put them in `currentCompanies` — that
    is a deliberate poach and should be respected exactly.
-7. LANGUAGE. People describe themselves in the language they work in. If the JD
-   or its must-have skills are in a language other than English (German
-   "Entgeltabrechnung", French "Chargé de recrutement"), the people you want have
-   native-language headlines, and English titles will not find them. Emit titles
-   in THAT language — add the English variant only where it is genuinely also in
-   use locally (e.g. "Payroll Specialist" is common in Germany; "Labour Law
-   Clerk" is not). Set `profileLanguages` to that language when the role is
-   plainly local. Domain vocabulary is the strongest language signal — trust it
-   over the posting title.
+7. LANGUAGE — for DACH and other non-English markets, GO BILINGUAL BY DEFAULT.
+   People describe themselves in the language they work in, and in German-speaking
+   tech, IT, engineering, finance and SAP roles that is BOTH German AND English:
+   a Bamberg sysadmin is as likely to headline "System Administrator" as
+   "Systemadministrator", and plenty write "Linux Administrator" or "IT
+   Infrastructure Engineer" outright. So whenever the JD, its must-have skills, or
+   the location is German/Austrian/Swiss (or any non-English market), emit the
+   local-language AND the common English form of EACH title — pair them, do not
+   choose one. Emitting only one language is a top cause of the empty or thin
+   result you exist to prevent. Examples of the pairing required:
+     • "IT-Systemadministrator" → also "System Administrator", "IT Administrator"
+     • "Netzwerkadministrator" → also "Network Administrator", "Network Engineer"
+     • "Softwareentwickler" → also "Software Engineer", "Software Developer"
+     • "Entgeltabrechner" → also "Payroll Specialist"
+   The ONLY exception is a term with no real English currency in that market (a
+   German labour-law clerk headlines "Personalsachbearbeiter", never "Labour Law
+   Clerk") — drop the English form ONLY when it genuinely isn't used locally,
+   never as the default. Because these professionals keep German, English, OR
+   mixed profiles, leave `profileLanguages` = null (Any) for such roles unless the
+   work truly cannot be done in English — setting a single language here silently
+   drops the very bilingual candidates these paired titles are meant to catch.
+   Domain vocabulary is the strongest language signal — trust it over the posting
+   title.
 
 Enum filters MUST use one of these codes (emit the CODE, not the label):
 {enum_vocabulary_prompt()}
