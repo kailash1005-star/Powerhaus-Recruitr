@@ -245,7 +245,14 @@ async def run_matching(
 ):
     """THE 'Run Matching' button. Accepts a JD as an uploaded document (multipart
     `file`) OR raw text (`jdText`). Runs the full pipeline and returns top-N
-    candidates with reasoning + contact."""
+    candidates with reasoning + contact.
+
+    Tenant scoping mirrors ctx.read_filter(): an admin matches against the WHOLE
+    corpus (tenant_id=None → no filter, includes the legacy tenantId:null CVs),
+    a tenant user only against their own CVs. Passing ctx.tenant_id
+    unconditionally was a production regression — admins resolve to a private
+    u:<sub> tenant (they're not in TENANT_ASSIGNMENTS), so every admin match ran
+    against an empty corpus and returned 0 candidates."""
     _require_matching_ready()
     try:
         if file is not None:
@@ -257,11 +264,12 @@ async def run_matching(
                 raise HTTPException(status_code=413, detail=f"JD exceeds {settings.MAX_UPLOAD_MB}MB")
             result = await matching_service.run_match(
                 db, jd_bytes=data, jd_filename=file.filename, return_top=returnTop,
-                tenant_id=ctx.tenant_id,
+                tenant_id=None if ctx.is_admin else ctx.tenant_id,
             )
         elif jdText and jdText.strip():
             result = await matching_service.run_match(
-                db, jd_text=jdText, return_top=returnTop, tenant_id=ctx.tenant_id)
+                db, jd_text=jdText, return_top=returnTop,
+                tenant_id=None if ctx.is_admin else ctx.tenant_id)
         else:
             raise HTTPException(status_code=400, detail="provide a JD file or jdText")
         return result
@@ -279,11 +287,13 @@ async def run_matching(
 
 @router.post("/run/json")
 async def run_matching_json(req: MatchTextRequest, ctx: TenantContext = Depends(tenant_scope), db=Depends(get_db)):
-    """JSON convenience variant of /run for raw-text JDs."""
+    """JSON convenience variant of /run for raw-text JDs. Same admin-vs-tenant
+    scoping as /run (see run_matching)."""
     _require_matching_ready()
     try:
         return await matching_service.run_match(
-            db, jd_text=req.jdText, return_top=req.returnTop, tenant_id=ctx.tenant_id)
+            db, jd_text=req.jdText, return_top=req.returnTop,
+            tenant_id=None if ctx.is_admin else ctx.tenant_id)
     except llm_extraction.ExtractionError as e:
         logger.exception("[Matching] JD extraction failed")
         raise HTTPException(status_code=502, detail=f"JD parsing failed — run not scored: {e}")

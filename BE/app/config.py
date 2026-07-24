@@ -280,19 +280,29 @@ class Settings(BaseSettings):
     SOURCING_LOCATION_GATE: str = Field(
         default="country", description='Location gate over results: "country" | "off"')
 
-    # Admins see the QA reports page (per-run false-positive/negative metrics).
-    # Comma-separated, case-insensitive. Principals with the 'admin' role pass too.
+    # Operators (admins). This is not just the QA page: an admin BYPASSES tenant
+    # scoping entirely (app/security/tenant.is_admin) and sees every tenant's data
+    # plus the legacy/admin corpus (tenantId:null). Comma-separated, case-
+    # insensitive. Principals with the 'admin' role pass too. NOTE: matched on the
+    # email claim, which our access tokens don't always carry — prefer ADMIN_SUBS.
     ADMIN_EMAILS: str = Field(
         default="kailash@vanceltech.com",
-        description="Emails allowed to read QA reports (comma-separated)")
+        description="Operator emails — full all-tenant admin bypass (comma-separated)")
 
-    # Fallback admin allowlist keyed on the Auth0 user id (the `sub` claim).
-    # `sub` is present in EVERY access token, so this works even when the
-    # post-login Action that stamps email/roles isn't firing. Comma-separated,
-    # e.g. "auth0|abc123,google-oauth2|xyz789".
+    # The RELIABLE admin allowlist, keyed on the Auth0 user id (`sub`). `sub` is
+    # present in EVERY verified access token, so this works even when the post-login
+    # Action that stamps the email/roles claim isn't firing — the exact failure that
+    # otherwise drops an operator to a self-isolated tenant (u:<sub>) with an empty
+    # corpus. Same full all-tenant bypass as ADMIN_EMAILS. Comma-separated, e.g.
+    # "auth0|abc123,google-oauth2|xyz789".
+    # Default carries the founder's sub for the same reason ADMIN_EMAILS defaults
+    # to his email: production must not depend on a Cloud Run env edit landing.
+    # Proven failure 2026-07-24: access tokens arrived without the email claim,
+    # is_admin() missed on all three checks, and the founder ran matches against
+    # an empty self-isolated corpus minutes before a client onboarding call.
     ADMIN_SUBS: str = Field(
-        default="",
-        description="Auth0 user ids (sub) allowed to read QA reports (comma-separated)")
+        default="auth0|6a5a20ee666978eb666268a3",
+        description="Operator Auth0 subs — full all-tenant admin bypass (comma-separated)")
 
     # ── Tenant (company) data isolation ────────────────────────────────────
     # Maps a client's users to their COMPANY tenant so they share that company's
