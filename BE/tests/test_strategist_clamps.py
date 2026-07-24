@@ -80,12 +80,14 @@ class TestTitleClamp:
 class TestLocationCanonicalisation:
     def test_apify_location_repaired(self):
         out = _sanitize(_hallucinated(), _brief())
-        assert out.filters.locations == ["Koblenz, Germany"]
+        # Canonical German city labels carry the federal state.
+        assert out.filters.locations == ["Koblenz, Rhineland-Palatinate, Germany"]
 
     def test_both_engines_get_identical_location(self):
         out = _sanitize(_hallucinated(), _brief())
         # The single-source guarantee: no 'Kolenz' vs 'Koblenz' divergence.
-        assert out.apolloPlan.locations == out.filters.locations == ["Koblenz, Germany"]
+        assert (out.apolloPlan.locations == out.filters.locations
+                == ["Koblenz, Rhineland-Palatinate, Germany"])
 
 
 class TestApolloDerivation:

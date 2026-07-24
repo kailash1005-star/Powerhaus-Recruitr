@@ -300,6 +300,85 @@ _REGIONS: List[Tuple[str, str, List[str]]] = [
     ("Rhineland", "Germany", ["Rheinland"]),
 ]
 
+# German city → federal state. Canonical city labels become
+# "City, State, Country" ("Bamberg, Bavaria, Germany") — the exact shape
+# LinkedIn itself uses, so the actor's location facet matches more reliably and
+# the location gate gets the state for free (its region check intersects comma
+# segments). State names MUST match the _REGIONS labels verbatim: the broadening
+# clamp widens a city to f"{state}, {country}", which must itself be a
+# catalogue entry. City-states (Berlin/Hamburg/Bremen) are deliberately absent —
+# "Berlin, Berlin, Germany" reads like a stutter and adds nothing.
+_DE_STATES: Dict[str, str] = {
+    "Munich": "Bavaria", "Nuremberg": "Bavaria", "Augsburg": "Bavaria",
+    "Regensburg": "Bavaria", "Ingolstadt": "Bavaria", "Würzburg": "Bavaria",
+    "Erlangen": "Bavaria", "Bamberg": "Bavaria", "Bayreuth": "Bavaria",
+    "Fürth": "Bavaria", "Aschaffenburg": "Bavaria", "Schweinfurt": "Bavaria",
+    "Kempten": "Bavaria", "Rosenheim": "Bavaria", "Landshut": "Bavaria",
+    "Passau": "Bavaria", "Coburg": "Bavaria", "Amberg": "Bavaria",
+    "Ansbach": "Bavaria", "Hof": "Bavaria", "Straubing": "Bavaria",
+    "Memmingen": "Bavaria",
+    "Stuttgart": "Baden-Württemberg", "Mannheim": "Baden-Württemberg",
+    "Karlsruhe": "Baden-Württemberg", "Freiburg": "Baden-Württemberg",
+    "Heidelberg": "Baden-Württemberg", "Ulm": "Baden-Württemberg",
+    "Walldorf": "Baden-Württemberg", "Heilbronn": "Baden-Württemberg",
+    "Reutlingen": "Baden-Württemberg", "Pforzheim": "Baden-Württemberg",
+    "Esslingen": "Baden-Württemberg", "Tübingen": "Baden-Württemberg",
+    "Konstanz": "Baden-Württemberg", "Friedrichshafen": "Baden-Württemberg",
+    "Ravensburg": "Baden-Württemberg", "Aalen": "Baden-Württemberg",
+    "Göppingen": "Baden-Württemberg", "Sindelfingen": "Baden-Württemberg",
+    "Böblingen": "Baden-Württemberg", "Ludwigsburg": "Baden-Württemberg",
+    "Villingen-Schwenningen": "Baden-Württemberg", "Offenburg": "Baden-Württemberg",
+    "Baden-Baden": "Baden-Württemberg",
+    "Cologne": "North Rhine-Westphalia", "Düsseldorf": "North Rhine-Westphalia",
+    "Dortmund": "North Rhine-Westphalia", "Essen": "North Rhine-Westphalia",
+    "Bonn": "North Rhine-Westphalia", "Münster": "North Rhine-Westphalia",
+    "Duisburg": "North Rhine-Westphalia", "Wuppertal": "North Rhine-Westphalia",
+    "Bielefeld": "North Rhine-Westphalia", "Bochum": "North Rhine-Westphalia",
+    "Aachen": "North Rhine-Westphalia", "Siegen": "North Rhine-Westphalia",
+    "Paderborn": "North Rhine-Westphalia", "Mönchengladbach": "North Rhine-Westphalia",
+    "Gütersloh": "North Rhine-Westphalia", "Neuss": "North Rhine-Westphalia",
+    "Krefeld": "North Rhine-Westphalia", "Oberhausen": "North Rhine-Westphalia",
+    "Hagen": "North Rhine-Westphalia", "Hamm": "North Rhine-Westphalia",
+    "Herne": "North Rhine-Westphalia", "Solingen": "North Rhine-Westphalia",
+    "Leverkusen": "North Rhine-Westphalia", "Gelsenkirchen": "North Rhine-Westphalia",
+    "Bottrop": "North Rhine-Westphalia", "Recklinghausen": "North Rhine-Westphalia",
+    "Remscheid": "North Rhine-Westphalia", "Bergisch Gladbach": "North Rhine-Westphalia",
+    "Witten": "North Rhine-Westphalia", "Ratingen": "North Rhine-Westphalia",
+    "Lünen": "North Rhine-Westphalia", "Minden": "North Rhine-Westphalia",
+    "Detmold": "North Rhine-Westphalia", "Lippstadt": "North Rhine-Westphalia",
+    "Frankfurt": "Hesse", "Wiesbaden": "Hesse", "Darmstadt": "Hesse",
+    "Kassel": "Hesse", "Offenbach": "Hesse", "Hanau": "Hesse",
+    "Gießen": "Hesse", "Marburg": "Hesse", "Fulda": "Hesse",
+    "Bad Homburg": "Hesse", "Rüsselsheim": "Hesse",
+    "Hanover": "Lower Saxony", "Braunschweig": "Lower Saxony",
+    "Osnabrück": "Lower Saxony", "Wolfsburg": "Lower Saxony",
+    "Göttingen": "Lower Saxony", "Oldenburg": "Lower Saxony",
+    "Hildesheim": "Lower Saxony", "Wilhelmshaven": "Lower Saxony",
+    "Salzgitter": "Lower Saxony", "Wolfenbüttel": "Lower Saxony",
+    "Celle": "Lower Saxony", "Lüneburg": "Lower Saxony", "Emden": "Lower Saxony",
+    "Mainz": "Rhineland-Palatinate", "Koblenz": "Rhineland-Palatinate",
+    "Trier": "Rhineland-Palatinate", "Kaiserslautern": "Rhineland-Palatinate",
+    "Ludwigshafen": "Rhineland-Palatinate", "Worms": "Rhineland-Palatinate",
+    "Speyer": "Rhineland-Palatinate",
+    "Neustadt an der Weinstraße": "Rhineland-Palatinate",
+    "Leipzig": "Saxony", "Dresden": "Saxony", "Chemnitz": "Saxony",
+    "Zwickau": "Saxony", "Plauen": "Saxony", "Görlitz": "Saxony",
+    "Erfurt": "Thuringia", "Jena": "Thuringia", "Gera": "Thuringia",
+    "Weimar": "Thuringia",
+    "Magdeburg": "Saxony-Anhalt", "Halle": "Saxony-Anhalt", "Dessau": "Saxony-Anhalt",
+    "Rostock": "Mecklenburg-Western Pomerania", "Schwerin": "Mecklenburg-Western Pomerania",
+    "Neubrandenburg": "Mecklenburg-Western Pomerania",
+    "Greifswald": "Mecklenburg-Western Pomerania",
+    "Stralsund": "Mecklenburg-Western Pomerania",
+    "Kiel": "Schleswig-Holstein", "Lübeck": "Schleswig-Holstein",
+    "Flensburg": "Schleswig-Holstein", "Neumünster": "Schleswig-Holstein",
+    "Norderstedt": "Schleswig-Holstein",
+    "Potsdam": "Brandenburg", "Cottbus": "Brandenburg",
+    "Frankfurt (Oder)": "Brandenburg",
+    "Saarbrücken": "Saarland",
+    "Bremerhaven": "Bremen",
+}
+
 # Countries as first-class picks (for remote / country-wide searches).
 _COUNTRIES: List[str] = [
     "Germany", "Austria", "Switzerland", "Netherlands", "Belgium", "France",
@@ -329,11 +408,11 @@ def _fold(s: str) -> str:
 
 
 class _Entry:
-    __slots__ = ("label", "country", "kind", "keys", "primary", "order")
+    __slots__ = ("label", "country", "kind", "keys", "primary", "order", "state")
 
     def __init__(self, label: str, country: str, kind: str, keys: List[str],
-                 order: int):
-        self.label = label          # "Koblenz, Germany"
+                 order: int, state: Optional[str] = None):
+        self.label = label          # "Bamberg, Bavaria, Germany" / "Koblenz, Rhineland-Palatinate, Germany"
         self.country = country      # "Germany"
         self.kind = kind            # city | region | country
         self.keys = keys            # folded match keys
@@ -341,6 +420,7 @@ class _Entry:
         # Catalogue position — cities are listed largest-talent-pool first within
         # a country, so this is the tiebreak that puts Berlin above Bern for "ber".
         self.order = order
+        self.state = state          # federal state for cities that have one
 
 
 @lru_cache(maxsize=1)
@@ -349,7 +429,9 @@ def _entries() -> List[_Entry]:
     i = 0
     for city, country, aliases in _CITIES:
         keys = [_fold(city)] + [_fold(a) for a in aliases]
-        out.append(_Entry(f"{city}, {country}", country, "city", keys, i)); i += 1
+        state = _DE_STATES.get(city) if country == "Germany" else None
+        label = f"{city}, {state}, {country}" if state else f"{city}, {country}"
+        out.append(_Entry(label, country, "city", keys, i, state=state)); i += 1
     for region, country, aliases in _REGIONS:
         keys = [_fold(region)] + [_fold(a) for a in aliases]
         out.append(_Entry(f"{region}, {country}", country, "region", keys, i)); i += 1
@@ -505,6 +587,51 @@ def country_of(text: Optional[str], *, fuzzy: bool = False) -> Optional[str]:
     rejection. Input normalisation calls ``normalize`` (fuzzy) instead."""
     e = _entry_for(text or "", fuzzy=fuzzy)
     return e.country if e else None
+
+
+def state_widening(location: Optional[str]) -> Optional[str]:
+    """The one legitimate automatic widening of a location: a city → its OWN
+    federal state ("Bamberg, Bavaria, Germany" → "Bavaria, Germany"). None for
+    regions, countries, unrecognised places, and city-states — those have no
+    in-state step to take."""
+    e = _entry_for(location or "", fuzzy=False)
+    if e is None or e.kind != "city" or not e.state:
+        return None
+    return f"{e.state}, {e.country}"
+
+
+def clamp_locations(initial: List[str], proposed: List[str]) -> List[str]:
+    """The recruiter's location policy, as one enforceable function.
+
+    A search may run with (a) exactly the locations the recruiter picked, or
+    (b) those cities widened to their OWN federal state — never the country,
+    never a different state. Anything else in ``proposed`` snaps the whole set
+    back to ``initial``: geographic drift is all-or-nothing, because a mixed
+    set ("Bamberg" + "Germany") is country-wide in effect while looking local.
+
+    Comparison is on canonical labels so "Bavaria", "Bayern" and
+    "Bavaria, Germany" all count as the same place. Used by BOTH the Broadener
+    clamp and the Strategist ladder lock, so the two paths can't diverge.
+    """
+    initial = [l for l in (initial or []) if l and str(l).strip()]
+    proposed = [l for l in (proposed or []) if l and str(l).strip()]
+    if not initial:
+        # Nothing to protect (recruiter gave no location) — let it be.
+        return proposed
+    if not proposed:
+        return list(initial)
+
+    def canon(s: str) -> str:
+        return normalize(s) or s.strip()
+
+    allowed = {canon(l) for l in initial}
+    for l in initial:
+        w = state_widening(l)
+        if w:
+            allowed.add(canon(w))
+    if all(canon(p) in allowed for p in proposed):
+        return [canon(p) for p in proposed]
+    return list(initial)
 
 
 def place_country_map() -> Dict[str, str]:

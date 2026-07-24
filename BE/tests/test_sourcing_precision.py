@@ -81,11 +81,11 @@ class TestDomainAnchor:
 
 class TestLockTarget:
     def test_titles_query_and_location_clamped(self):
-        # Location is clamped alongside titles/query: a "Bamberg" search must
-        # never silently widen to "Germany" — where to search is the
-        # recruiter's decision (found live on Kastell's first sourcing run).
+        # Location has a state ceiling: a "Bamberg" search must never silently
+        # widen to "Germany" — beyond the city's own state is the recruiter's
+        # next run (found live on Kastell's first sourcing run).
         attempts = [_attempt(["SAP HCM Consultant", "SAP HR Consultant"], "SAP HCM",
-                             locations=["Bamberg, Germany"])]
+                             locations=["Bamberg, Bavaria, Germany"])]
         drifted = BroadenDecision(
             action="generalise_titles", reasoning="",
             filters=SearchFilters(currentJobTitles=["SAP Consultant"],
@@ -94,7 +94,20 @@ class TestLockTarget:
         locked = lock_target(drifted, attempts)
         assert locked.filters.currentJobTitles == ["SAP HCM Consultant", "SAP HR Consultant"]
         assert locked.filters.searchQuery == "SAP HCM"
-        assert locked.filters.locations == ["Bamberg, Germany"]
+        assert locked.filters.locations == ["Bamberg, Bavaria, Germany"]
+
+    def test_widening_to_own_state_is_allowed(self):
+        # The ONE legal location relaxation: city → its own federal state.
+        attempts = [_attempt(["SAP HCM Consultant"], "SAP HCM",
+                             locations=["Bamberg, Bavaria, Germany"])]
+        proposal = BroadenDecision(
+            action="widen_location", reasoning="",
+            filters=SearchFilters(currentJobTitles=["SAP HCM Consultant"],
+                                  searchQuery="SAP HCM",
+                                  locations=["Bavaria, Germany"]),
+        )
+        locked = lock_target(proposal, attempts)
+        assert locked.filters.locations == ["Bavaria, Germany"]
 
     async def test_ladder_fallback_is_clamped_too(self, monkeypatch):
         """A legacy persisted ladder with a generalise_titles step must run with

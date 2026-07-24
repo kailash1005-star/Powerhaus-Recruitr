@@ -4,10 +4,13 @@ Called ONLY when a search attempt returns zero candidates. It sees the full
 attempt history — every filter set already tried and what each returned — and
 decides the next, strictly broader attempt.
 
-THE TARGET IS LOCKED — AND SO IS THE LOCATION. The Broadener relaxes the net
-around the target — enum filters, companies, profile language — and never the
-target or the geography: ``currentJobTitles``, ``searchQuery`` AND ``locations``
-are clamped in code to the initial attempt's values, whatever the model proposes. This is deliberate and
+THE TARGET IS LOCKED — AND THE LOCATION HAS A STATE CEILING. The Broadener
+relaxes the net around the target — enum filters, companies, profile language,
+and at most a city widened to its OWN federal state — never the target and
+never geography beyond that: ``currentJobTitles`` and ``searchQuery`` are
+clamped in code to the initial attempt's values, and ``locations`` through
+``location_catalog.clamp_locations`` (recruiter's picks ∪ their own states),
+whatever the model proposes. This is deliberate and
 load-bearing: told "the titles are too specific", a model will happily relax
 "SAP HCM Consultant" into "SAP Consultant" — a different profession sharing a
 platform brand — and the actor ORs titles, so ONE off-domain entry floods the
@@ -58,11 +61,12 @@ profession actually uses, and any further title change means searching for a
 DIFFERENT job, which is the recruiter's decision, not yours. (This is also
 enforced in code: title changes you propose are discarded.)
 
-THE LOCATION IS ALSO LOCKED. `locations` must be copied UNCHANGED from the
-initial attempt — where to search is the recruiter's decision. A thin market is
-a fact to report, not a constraint to quietly relax; if the honest result is
-"few people in this city", the recruiter widens the location themselves.
-(Enforced in code: location changes you propose are discarded.)
+THE LOCATION HAS A HARD CEILING: THE RECRUITER'S OWN STATE. You may widen a
+city to the federal state it belongs to ("Bamberg, Bavaria, Germany" →
+"Bavaria, Germany") as a LAST resort — never to the country, never to a
+different state, never to a bigger region. Searching elsewhere is the
+recruiter's decision for their next run, not yours. (Enforced in code:
+anything beyond the city's own state is discarded.)
 
 What you MAY relax, in THIS order — cheapest, most speculative filters first:
   1. Enum filters (`seniorityLevel`, `yearsOfExperience`, `function`,
@@ -73,21 +77,23 @@ What you MAY relax, in THIS order — cheapest, most speculative filters first:
   2. `currentCompanies` — restricts to a handful of employers. Drop it unless the
      recruiter explicitly asked to poach from them.
   3. `profileLanguages` — only if the role plausibly exists in English too.
+  4. LAST: `locations` — the city widened to its OWN federal state, exactly as
+     written above. Nothing beyond that, ever.
 
 Widen ONE dimension per attempt where possible, so the result stays attributable.
 Only widen two when the remaining budget is nearly spent.
 
-Choose `decision: "broaden"` whenever ANY of those three dimensions is still left
-to relax — that is the normal case, and it means "run the filters I'm giving you
+Choose `decision: "broaden"` whenever ANY of those dimensions is still left to
+relax — that is the normal case, and it means "run the filters I'm giving you
 next".
 
-Choose `decision: "give_up"` when the last attempt was already the bare titles in
-the recruiter's location with no enum filters and STILL returned zero. That means
-this exact specialty isn't findable there this way, another paid attempt only
-burns money, and the recruiter will be shown the option to deliberately widen the
-specialty — or the location — themselves. Say so in `reasoning`. If you are
-proposing a filter set you believe in, the decision is "broaden" — never pair a
-real proposal with "give_up".
+Choose `decision: "give_up"` when the last attempt was already the bare titles
+across the recruiter's whole state with no enum filters and STILL returned zero.
+That means this exact specialty isn't findable there this way, another paid
+attempt only burns money, and the recruiter will be shown the option to
+deliberately widen the specialty — or search another region — themselves. Say so
+in `reasoning`. If you are proposing a filter set you believe in, the decision is
+"broaden" — never pair a real proposal with "give_up".
 
 `reasoning` is shown to the recruiter: one plain sentence on what you changed and
 why, referencing the actual values (e.g. "Dropped the Senior filter — SAP
@@ -109,27 +115,33 @@ def _build_agent() -> Agent:
 def lock_target(
     decision: BroadenDecision, attempts: List[SearchAttempt],
 ) -> BroadenDecision:
-    """Clamp the decision's titles + query + LOCATION to the INITIAL attempt.
+    """Clamp the decision's titles + query + LOCATION to the recruiter's intent.
 
-    The structural guarantee behind "widening never means a different job — or a
-    different place": whatever the model proposed, the target it searches and
-    the geography the recruiter picked are exactly what they approved. Runs on
-    every path that produces a next attempt — agent proposal and planned-ladder
-    fallback alike (so persisted ladders carrying old ``widen_location`` steps
-    are neutralised too).
+    Titles/query: copied verbatim from the INITIAL attempt — the structural
+    guarantee behind "widening never means a different job".
+
+    Location: clamped to the recruiter's radius via
+    ``location_catalog.clamp_locations`` — a proposal may keep the exact
+    locations they picked or widen a city to its OWN federal state
+    ("Bamberg, Bavaria, Germany" → "Bavaria, Germany"), never the country and
+    never another state. Widening past the state is the recruiter's next run,
+    not a fallback's. Runs on every path that produces a next attempt — agent
+    proposal and planned-ladder fallback alike (so persisted ladders carrying
+    country-level ``widen_location`` steps are neutralised too).
 
     Location joined the clamp after Kastell's first live run: a "Network
-    Engineer, Bamberg" search auto-widened city→Bavaria and the loose vendor
-    filter turned that into Germany-wide results at score 100. Where to search
-    is the recruiter's call — a thin market must surface as a short honest
-    result set they can consciously widen, never as silent geographic drift.
+    Engineer, Bamberg" search auto-widened city→state→beyond and the loose
+    vendor filter turned that into Germany-wide results at score 100.
     """
     if not attempts:
         return decision
+    from app.services import location_catalog
+
     initial = attempts[0].filters
     decision.filters.currentJobTitles = list(initial.get("currentJobTitles") or [])
     decision.filters.searchQuery = str(initial.get("searchQuery") or "")
-    decision.filters.locations = list(initial.get("locations") or [])
+    decision.filters.locations = location_catalog.clamp_locations(
+        list(initial.get("locations") or []), list(decision.filters.locations or []))
     return decision
 
 
