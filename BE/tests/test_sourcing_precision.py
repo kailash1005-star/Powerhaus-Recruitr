@@ -80,8 +80,12 @@ class TestDomainAnchor:
 # ── The Broadener cannot change the target ───────────────────────────────────
 
 class TestLockTarget:
-    def test_titles_and_query_clamped(self):
-        attempts = [_attempt(["SAP HCM Consultant", "SAP HR Consultant"], "SAP HCM")]
+    def test_titles_query_and_location_clamped(self):
+        # Location is clamped alongside titles/query: a "Bamberg" search must
+        # never silently widen to "Germany" — where to search is the
+        # recruiter's decision (found live on Kastell's first sourcing run).
+        attempts = [_attempt(["SAP HCM Consultant", "SAP HR Consultant"], "SAP HCM",
+                             locations=["Bamberg, Germany"])]
         drifted = BroadenDecision(
             action="generalise_titles", reasoning="",
             filters=SearchFilters(currentJobTitles=["SAP Consultant"],
@@ -90,7 +94,7 @@ class TestLockTarget:
         locked = lock_target(drifted, attempts)
         assert locked.filters.currentJobTitles == ["SAP HCM Consultant", "SAP HR Consultant"]
         assert locked.filters.searchQuery == "SAP HCM"
-        assert locked.filters.locations == ["Germany"]  # non-target dims survive
+        assert locked.filters.locations == ["Bamberg, Germany"]
 
     async def test_ladder_fallback_is_clamped_too(self, monkeypatch):
         """A legacy persisted ladder with a generalise_titles step must run with

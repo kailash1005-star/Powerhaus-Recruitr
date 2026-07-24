@@ -144,13 +144,14 @@ Also produce:
     `currentJobTitles`.
   • `broadeningLadder` — 3 fallback attempts, tried in order ONLY if the search
     returns zero. Each step carries a COMPLETE filter set (not a diff), and each
-    must be strictly broader than the one before. The titles and searchQuery are
-    LOCKED: every step keeps `currentJobTitles` and `searchQuery` exactly as in
-    your main filters — steps relax ONLY the other dimensions (drop the
-    narrowest enum → drop companies → widen the location to the country → drop
-    profileLanguages). Changing the target is the recruiter's decision, never a
-    fallback's. Step 3 should be broad enough that returning zero means the
-    talent genuinely isn't findable this way.
+    must be strictly broader than the one before. The titles, searchQuery AND
+    locations are LOCKED: every step keeps `currentJobTitles`, `searchQuery` and
+    `locations` exactly as in your main filters — steps relax ONLY the other
+    dimensions (drop the narrowest enum → drop companies → drop
+    profileLanguages). Changing the target — or where to search — is the
+    recruiter's decision, never a fallback's. Step 3 should be broad enough that
+    returning zero means the talent genuinely isn't findable this way in that
+    location.
   • `confidence` — 0..1. Be honest: a vague one-line JD with no location is 0.3,
     not 0.9.
   • `warnings` — anything the recruiter should know (title is region-specific,
@@ -450,14 +451,17 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     ][:6]
 
     # Renumber the ladder so `step` is authoritative regardless of what came
-    # back — and LOCK its titles/query: a fallback step may relax enums,
-    # companies, location and language, never the target. This is the code-level
-    # guarantee behind "widening never means a different job".
+    # back — and LOCK its titles/query/locations: a fallback step may relax
+    # enums, companies and language, never the target or the geography. This is
+    # the code-level guarantee behind "widening never means a different job —
+    # or a different place" (locations joined after a Bamberg search silently
+    # widened to state level and, via the vendor's loose filter, Germany-wide).
     ladder: list[BroadeningStep] = []
     for i, step in enumerate(strategy.broadeningLadder[:5], start=1):
         step.step = i
         step.filters.currentJobTitles = list(f.currentJobTitles)
         step.filters.searchQuery = f.searchQuery
+        step.filters.locations = list(f.locations or [])
         if not step.filters.is_empty():
             ladder.append(step)
     strategy.broadeningLadder = ladder

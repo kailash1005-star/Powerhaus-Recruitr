@@ -4,10 +4,10 @@ Called ONLY when a search attempt returns zero candidates. It sees the full
 attempt history — every filter set already tried and what each returned — and
 decides the next, strictly broader attempt.
 
-THE TARGET IS LOCKED. The Broadener relaxes the net around the target —
-enum filters, companies, location, profile language — and never the target
-itself: ``currentJobTitles`` and ``searchQuery`` are clamped in code to the
-initial attempt's values, whatever the model proposes. This is deliberate and
+THE TARGET IS LOCKED — AND SO IS THE LOCATION. The Broadener relaxes the net
+around the target — enum filters, companies, profile language — and never the
+target or the geography: ``currentJobTitles``, ``searchQuery`` AND ``locations``
+are clamped in code to the initial attempt's values, whatever the model proposes. This is deliberate and
 load-bearing: told "the titles are too specific", a model will happily relax
 "SAP HCM Consultant" into "SAP Consultant" — a different profession sharing a
 platform brand — and the actor ORs titles, so ONE off-domain entry floods the
@@ -58,6 +58,12 @@ profession actually uses, and any further title change means searching for a
 DIFFERENT job, which is the recruiter's decision, not yours. (This is also
 enforced in code: title changes you propose are discarded.)
 
+THE LOCATION IS ALSO LOCKED. `locations` must be copied UNCHANGED from the
+initial attempt — where to search is the recruiter's decision. A thin market is
+a fact to report, not a constraint to quietly relax; if the honest result is
+"few people in this city", the recruiter widens the location themselves.
+(Enforced in code: location changes you propose are discarded.)
+
 What you MAY relax, in THIS order — cheapest, most speculative filters first:
   1. Enum filters (`seniorityLevel`, `yearsOfExperience`, `function`,
      `companyHeadcount`). ALWAYS start here. They are INFERRED from the JD, not
@@ -66,27 +72,26 @@ What you MAY relax, in THIS order — cheapest, most speculative filters first:
      is the single most common cause of a zero-result search.
   2. `currentCompanies` — restricts to a handful of employers. Drop it unless the
      recruiter explicitly asked to poach from them.
-  3. `locations` — widen the city to the metro, then to the country. Talent
-     clusters in a few metros, not the town the office is in.
-  4. `profileLanguages` — only if the role plausibly exists in English too.
+  3. `profileLanguages` — only if the role plausibly exists in English too.
 
 Widen ONE dimension per attempt where possible, so the result stays attributable.
 Only widen two when the remaining budget is nearly spent.
 
-Choose `decision: "broaden"` whenever ANY of those four dimensions is still left
+Choose `decision: "broaden"` whenever ANY of those three dimensions is still left
 to relax — that is the normal case, and it means "run the filters I'm giving you
 next".
 
-Choose `decision: "give_up"` when the last attempt was already the bare titles
-plus a country with no enum filters and STILL returned zero. That means this
-exact specialty isn't findable this way, another paid attempt only burns money,
-and the recruiter will be shown the option to deliberately widen the specialty
-instead. Say so in `reasoning`. If you are proposing a filter set you believe
-in, the decision is "broaden" — never pair a real proposal with "give_up".
+Choose `decision: "give_up"` when the last attempt was already the bare titles in
+the recruiter's location with no enum filters and STILL returned zero. That means
+this exact specialty isn't findable there this way, another paid attempt only
+burns money, and the recruiter will be shown the option to deliberately widen the
+specialty — or the location — themselves. Say so in `reasoning`. If you are
+proposing a filter set you believe in, the decision is "broaden" — never pair a
+real proposal with "give_up".
 
 `reasoning` is shown to the recruiter: one plain sentence on what you changed and
-why, referencing the actual values (e.g. "Dropped the Senior filter and widened
-Walldorf to Germany — SAP consultants there rarely tag seniority"). No jargon.
+why, referencing the actual values (e.g. "Dropped the Senior filter — SAP
+consultants rarely tag seniority on their profiles"). No jargon.
 
 Enum filters MUST use one of these codes (emit the CODE, not the label):
 {enum_vocabulary_prompt()}"""
@@ -104,18 +109,27 @@ def _build_agent() -> Agent:
 def lock_target(
     decision: BroadenDecision, attempts: List[SearchAttempt],
 ) -> BroadenDecision:
-    """Clamp the decision's titles + query to the INITIAL attempt's values.
+    """Clamp the decision's titles + query + LOCATION to the INITIAL attempt.
 
-    The structural guarantee behind "widening never means a different job":
-    whatever the model proposed, the target it searches is the target the
-    recruiter approved. Runs on every path that produces a next attempt —
-    agent proposal and planned-ladder fallback alike.
+    The structural guarantee behind "widening never means a different job — or a
+    different place": whatever the model proposed, the target it searches and
+    the geography the recruiter picked are exactly what they approved. Runs on
+    every path that produces a next attempt — agent proposal and planned-ladder
+    fallback alike (so persisted ladders carrying old ``widen_location`` steps
+    are neutralised too).
+
+    Location joined the clamp after Kastell's first live run: a "Network
+    Engineer, Bamberg" search auto-widened city→Bavaria and the loose vendor
+    filter turned that into Germany-wide results at score 100. Where to search
+    is the recruiter's call — a thin market must surface as a short honest
+    result set they can consciously widen, never as silent geographic drift.
     """
     if not attempts:
         return decision
     initial = attempts[0].filters
     decision.filters.currentJobTitles = list(initial.get("currentJobTitles") or [])
     decision.filters.searchQuery = str(initial.get("searchQuery") or "")
+    decision.filters.locations = list(initial.get("locations") or [])
     return decision
 
 

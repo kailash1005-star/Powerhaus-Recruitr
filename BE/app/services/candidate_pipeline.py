@@ -1650,13 +1650,16 @@ async def _search_with_broadening(
     only the title channel, because the keyword channel doesn't carry the
     filters being relaxed.
 
-    Cost is bounded three ways: ``SOURCING_MAX_BROADEN_ATTEMPTS`` caps the retries,
-    the Broadener refuses to repeat a filter set it already tried, and it stops
+    Cost is bounded four ways: ``SOURCING_MAX_BROADEN_ATTEMPTS`` caps the retries,
+    the Broadener refuses to repeat a filter set it already tried, a structural
+    repeat-check below stops the loop if a proposal still duplicates an earlier
+    attempt (a clamped field can make two proposals converge), and it stops
     early once the filters are broad enough that zero means "not on LinkedIn".
-    The Broadener may relax enums/companies/location/language ONLY — the titles
-    and query are clamped in code to the recruiter-approved target
-    (``broadener.lock_target``), so drifting into a neighbouring profession is
-    structurally impossible.
+    The Broadener may relax enums/companies/language ONLY — the titles, query
+    AND locations are clamped in code to the recruiter-approved values
+    (``broadener.lock_target``), so drifting into a neighbouring profession or
+    a different geography is structurally impossible. A thin market surfaces as
+    an honest short/empty result the recruiter can consciously widen.
     """
     from app.config import settings
     from app.services.apify_profile_service import ApifyRunFailed
@@ -1724,7 +1727,16 @@ async def _search_with_broadening(
             logger.info("[Discover] %s/%s broadening stopped after %d attempt(s)",
                         pipeline_id, job_id, len(attempts))
             return [], attempts, current
-        current = decision.filters.to_search_input()
+        proposed = decision.filters.to_search_input()
+        # Structural repeat-guard: the clamp (titles/query/locations) can collapse
+        # a proposal into a set already tried — e.g. a persisted ladder step whose
+        # only change was widening the location. Re-running an identical search is
+        # a guaranteed-zero paid call, so stop instead.
+        if any(proposed == a.filters for a in attempts):
+            logger.info("[Discover] %s/%s broadening proposal repeats attempt filters "
+                        "after clamping — stopping", pipeline_id, job_id)
+            return [], attempts, current
+        current = proposed
         action, reasoning = decision.action, decision.reasoning
 
 
