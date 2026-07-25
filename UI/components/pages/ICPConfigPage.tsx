@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TopBar } from '../TopBar';
@@ -13,6 +13,7 @@ import {
   startRun,
   streamRunProgress,
   type ICPBackendConfig,
+  type RunProgressStream,
 } from '@/lib/api';
 
 // ── local UI state types ────────────────────────────────────────
@@ -168,6 +169,12 @@ export function ICPConfigPage() {
   const [addingTitle, setAddingTitle] = useState(false);
   const [newLocation, setNewLocation] = useState('');
   const [addingLocation, setAddingLocation] = useState(false);
+
+  // Live progress subscription for the launch overlay. Held in a ref so it can
+  // be torn down if the user leaves mid-run — it owns both an EventSource and a
+  // polling timer, and neither should outlive this screen.
+  const progressRef = useRef<RunProgressStream | null>(null);
+  useEffect(() => () => progressRef.current?.close(), []);
 
   // Pipeline / scraper config
   // Naukri option is hidden for now — only linkedin is active
@@ -334,6 +341,7 @@ export function ICPConfigPage() {
           setStartingRun(false);
         },
       );
+      progressRef.current = es;
     } catch (e: any) {
       setLaunchPhase('idle');
       setError('Failed to start run: ' + e.message);

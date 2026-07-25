@@ -323,10 +323,29 @@ async def trigger_email_flow(run_id: str, _run: dict = Depends(owned_run)):
 @router.get("/{run_id}/stream")
 async def stream_run_progress(run_id: str, _run: dict = Depends(owned_run), db=Depends(get_db)):
     """SSE endpoint that streams pipeline phase transitions in real time.
-    
+
     The frontend connects after POST /start returns, and receives events
     as the orchestrator updates `currentPhase` on the run document.
     Events: phase (with phase name + stats), done, error.
+
+    Two properties this stream MUST hold, because the launch progress bar only
+    ever leaves its last step when it receives `done`:
+
+      * A finished run is reported on EVERY poll, not just when something
+        changed. The terminal check used to sit INSIDE the "did phase/stats
+        change?" branch, so a client that connected (or reconnected) after the
+        run had already settled sat there watching an unchanging document and
+        was never told it was over.
+      * A long run outlives one HTTP connection. Cloud Run caps request
+        duration, so this generator now ends CLEANLY when its own shorter
+        budget is spent — deliberately without an `error` frame — which lets
+        the browser's EventSource reconnect by itself and pick the run up where
+        it left off. The old code ended a still-healthy run with a hard
+        "Stream timed out" error, which the UI showed as a failure.
+
+    Heartbeat comments keep idle proxies from dropping the connection during a
+    quiet phase (company classification and prospect search can both run for
+    minutes without a single field changing).
     """
     run_oid = ObjectId(run_id)
 
@@ -334,7 +353,15 @@ async def stream_run_progress(run_id: str, _run: dict = Depends(owned_run), db=D
         last_phase = None
         last_stats = None
         polls = 0
-        max_polls = 600  # 10 minutes max (600 * 1s)
+        # One connection's lifetime, kept comfortably under Cloud Run's request
+        # timeout so WE close the stream tidily rather than the platform cutting
+        # it mid-frame. Recycling is invisible: the client reconnects and the
+        # first poll of the new stream re-sends the current phase.
+        max_polls = 240          # 4 minutes (240 * 1s)
+        heartbeat_every = 15     # seconds of silence before a keepalive frame
+
+        # How soon the browser should reconnect after we close.
+        yield "retry: 3000\n\n"
 
         while polls < max_polls:
             doc = await db["runs"].find_one(
@@ -349,29 +376,38 @@ async def stream_run_progress(run_id: str, _run: dict = Depends(owned_run), db=D
             status = doc.get("status") or "active"
             stats = doc.get("stats") or {}
 
-            # Emit an event whenever phase or stats change
+            # ── Terminal state: checked unconditionally, every poll ──────────
+            # This is the fix for the stuck progress bar. It must not depend on
+            # having observed a change, because the change may have happened
+            # while nobody was connected.
+            if status == "completed" or phase == "done":
+                yield _sse("phase", {"phase": "done", "stats": stats})
+                yield _sse("done", {"runId": run_id})
+                return
+
+            if status in ("cancelled", "failed") or phase == "failed":
+                yield _sse("error", {
+                    "message": doc.get("error") or "Run failed",
+                    "phase": phase,
+                })
+                return
+
+            # ── Still running: report progress, else keep the pipe warm ──────
             if phase != last_phase or stats != last_stats:
                 last_phase = phase
                 last_stats = dict(stats)  # shallow copy
-
-                if status == "completed" or phase == "done":
-                    yield _sse("phase", {"phase": "done", "stats": stats})
-                    yield _sse("done", {"runId": run_id})
-                    return
-
-                if status in ("cancelled", "failed") or phase == "failed":
-                    yield _sse("error", {
-                        "message": doc.get("error") or "Run failed",
-                        "phase": phase,
-                    })
-                    return
-
                 yield _sse("phase", {"phase": phase, "stats": stats})
+            elif polls and polls % heartbeat_every == 0:
+                # A comment frame: invisible to the client's listeners, enough
+                # to stop an intermediary from reclaiming an "idle" connection.
+                yield ": keepalive\n\n"
 
             await asyncio.sleep(1)
             polls += 1
 
-        yield _sse("error", {"message": "Stream timed out"})
+        # Budget spent on a run that is still going. Fall through and close the
+        # response WITHOUT an error frame — EventSource treats that as a dropped
+        # connection and reconnects, which is exactly what we want.
 
     return StreamingResponse(
         event_generator(),

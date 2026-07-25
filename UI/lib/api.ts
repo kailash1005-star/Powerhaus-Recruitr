@@ -205,34 +205,104 @@ export function startRun(payload: StartRunPayload): Promise<{ id: string; _id?: 
   return post('/api/v1/runs/start', payload);
 }
 
+/** Handle returned by {@link streamRunProgress}. */
+export interface RunProgressStream {
+  /** Stop listening (stream + backstop poll). Safe to call more than once. */
+  close(): void;
+}
+
 /**
- * Subscribe to real-time pipeline progress via SSE.
- * Returns an EventSource that emits 'phase', 'done', and 'error' events.
+ * Subscribe to real-time pipeline progress.
+ *
+ * Emits 'phase' while the run works, then exactly ONE terminal outcome —
+ * `onDone` or `onError` — whichever comes first from either of two independent
+ * sources:
+ *
+ *   1. the SSE stream, and
+ *   2. a slow poll of the run document itself.
+ *
+ * The second source is what makes the launch UI trustworthy. A campaign run
+ * outlives a single HTTP connection, so the stream WILL be interrupted at least
+ * once on a real run. `EventSource` recovers from that by itself — but only if
+ * it is left alone: the previous version called `close()` on every 'error',
+ * including the payload-free ones that merely signal "connection dropped,
+ * reconnecting". That permanently killed the subscription mid-run, which is why
+ * the progress bar froze on its last step while the run went on to finish
+ * normally in the background.
+ *
+ * So: a payload-free 'error' is now ignored (the browser reconnects), only a
+ * server-sent error frame is fatal, and the poll guarantees the UI still
+ * completes even if the stream can never be re-established at all.
  */
 export function streamRunProgress(
   runId: string,
   onPhase: (data: { phase: string; stats: Record<string, number> }) => void,
   onDone: (data: { runId: string }) => void,
   onError: (data: { message: string }) => void,
-): EventSource {
-  const es = new EventSource(`${API_BASE}/api/v1/runs/${runId}/stream`);
+): RunProgressStream {
+  /** How often the backstop confirms the run's real state in the database. */
+  const POLL_MS = 8000;
+
+  let settled = false;
+  let es: EventSource | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const cleanup = () => {
+    if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+    if (es) { es.close(); es = null; }
+  };
+
+  /** Deliver the first terminal outcome and tear everything down. */
+  const settle = (deliver: () => void) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    deliver();
+  };
+
+  es = new EventSource(`${API_BASE}/api/v1/runs/${runId}/stream`);
 
   es.addEventListener('phase', (e) => {
+    if (settled) return;
     try { onPhase(JSON.parse((e as MessageEvent).data)); } catch {}
   });
+
   es.addEventListener('done', (e) => {
-    try { onDone(JSON.parse((e as MessageEvent).data)); } catch {}
-    es.close();
-  });
-  es.addEventListener('error', (e) => {
-    // SSE 'error' can be a reconnect or a real error event from the server
-    if ((e as MessageEvent).data) {
-      try { onError(JSON.parse((e as MessageEvent).data)); } catch {}
-    }
-    es.close();
+    let payload: { runId: string } = { runId };
+    try { payload = JSON.parse((e as MessageEvent).data); } catch {}
+    settle(() => onDone(payload));
   });
 
-  return es;
+  es.addEventListener('error', (e) => {
+    // Two very different things arrive on this listener:
+    //  * a frame the SERVER sent (carries .data) — the run genuinely failed;
+    //  * a transport hiccup with no payload — the stream was recycled by the
+    //    backend or cut by the platform. Do NOT close: EventSource is already
+    //    reconnecting, and the reconnected stream re-reports the current phase.
+    const data = (e as MessageEvent).data;
+    if (!data) return;
+    let msg = { message: 'Pipeline failed' };
+    try { msg = JSON.parse(data); } catch {}
+    settle(() => onError(msg));
+  });
+
+  // Backstop. The run's authoritative state is the document, not the socket.
+  pollTimer = setInterval(async () => {
+    if (settled) return;
+    try {
+      const run = await fetchRun(runId);
+      const status = String(run.status);
+      if (status === 'completed') {
+        settle(() => onDone({ runId }));
+      } else if (status === 'cancelled' || status === 'failed') {
+        settle(() => onError({ message: 'Pipeline failed' }));
+      }
+    } catch {
+      // Transient (token refresh, blip) — try again on the next tick.
+    }
+  }, POLL_MS);
+
+  return { close: () => { settled = true; cleanup(); } };
 }
 
 // ── Run Jobs ──────────────────────────────────────────────────────────────────
