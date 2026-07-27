@@ -425,6 +425,8 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
                       <div><label style={label}>Company headcount</label>{sel('companyHeadcount', HEADCOUNT)}<Why text={why('companyHeadcount')} /></div>
                     </div>
                     <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                      <div><label style={label}>Industry IDs <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>(e.g. 4=Software, 96=IT, 43=Finance)</span></label><TagInput value={f.industryIds || []} onChange={(v) => set('industryIds', v)} placeholder="Code, e.g. 4" /><Why text={why('industryIds')} /></div>
+                      <div><label style={label}>Exclude industry IDs</label><TagInput value={f.excludeIndustryIds || []} onChange={(v) => set('excludeIndustryIds', v)} placeholder="Code, e.g. 4" /></div>
                       <div><label style={label}>Current companies</label><TagInput value={f.currentCompanies || []} onChange={(v) => set('currentCompanies', v)} placeholder="Company name" /><Why text={why('currentCompanies')} /></div>
                       <div><label style={label}>Past companies</label><TagInput value={f.pastCompanies || []} onChange={(v) => set('pastCompanies', v)} placeholder="Company name" /></div>
                       <div><label style={label}>Past job titles</label><TagInput value={f.pastJobTitles || []} onChange={(v) => set('pastJobTitles', v)} placeholder="Title" /><Why text={why('pastJobTitles')} /></div>
@@ -433,7 +435,13 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
                       <div><label style={label}>Company HQ locations</label><TagInput value={f.companyHqLocations || []} onChange={(v) => set('companyHqLocations', v)} placeholder="Location" /></div>
                       <div><label style={label}>Exclude locations</label><TagInput value={f.excludeLocations || []} onChange={(v) => set('excludeLocations', v)} placeholder="Location" /></div>
                       <div><label style={label}>Exclude current companies</label><TagInput value={f.excludeCurrentCompanies || []} onChange={(v) => set('excludeCurrentCompanies', v)} placeholder="Company" /></div>
+                      <div><label style={label}>Exclude past companies</label><TagInput value={f.excludePastCompanies || []} onChange={(v) => set('excludePastCompanies', v)} placeholder="Company" /></div>
                       <div><label style={label}>Exclude current titles</label><TagInput value={f.excludeCurrentJobTitles || []} onChange={(v) => set('excludeCurrentJobTitles', v)} placeholder="Title" /><Why text={why('excludeCurrentJobTitles')} /></div>
+                      <div><label style={label}>Exclude past titles</label><TagInput value={f.excludePastJobTitles || []} onChange={(v) => set('excludePastJobTitles', v)} placeholder="Title" /></div>
+                      <div><label style={label}>Exclude schools</label><TagInput value={f.excludeSchools || []} onChange={(v) => set('excludeSchools', v)} placeholder="School" /></div>
+                      <div><label style={label}>Exclude seniority level</label>{sel('excludeSeniorityLevel', SENIORITY)}</div>
+                      <div><label style={label}>Exclude function</label>{sel('excludeFunction', FUNCTIONS)}</div>
+                      <div><label style={label}>Exclude company HQ locations</label><TagInput value={f.excludeCompanyHqLocations || []} onChange={(v) => set('excludeCompanyHqLocations', v)} placeholder="Location" /></div>
                       <div style={{ gridColumn: '1 / -1' }}>
                         <label style={label}>Profile languages</label>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>

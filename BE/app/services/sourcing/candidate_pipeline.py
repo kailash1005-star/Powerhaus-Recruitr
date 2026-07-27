@@ -1301,7 +1301,7 @@ async def _run_search_channels(
 
 
 def _channel_screen_policy(
-    keep: bool, verdict: Dict[str, Any], channels: List[str], *, title: str = "",
+    keep: bool, verdict: Dict[str, Any], channels: List[str], *, title: str = "", company: str = "",
 ) -> Tuple[bool, Dict[str, Any]]:
     """Channel-aware adjustments to the title-only prescreen verdict.
 
@@ -1316,6 +1316,17 @@ def _channel_screen_policy(
     keyword search is the strongest pre-enrichment signal there is — it gets a
     small rank bonus (capped) so it sorts above single-channel hits.
     """
+    from app.services.sourcing import prescreen_service as _ps
+    is_fl, fl_reason = _ps.is_freelance_or_self_employed(title=title, company=company)
+    if is_fl or verdict.get("isFreelance"):
+        return False, {
+            **verdict, "decision": "drop", "isFreelance": True, "score": 0.0,
+            "reasons": [
+                fl_reason or "Candidate is marked as freelance / self-employed — rejected by policy.",
+                *(verdict.get("reasons") or []),
+            ],
+        }
+
     if not keep and "keyword" in channels:
         # The keyword channel matches profile TEXT, so it pulls in owners and
         # executives whose profile merely name-drops the tool (the "cofounder
@@ -1323,7 +1334,6 @@ def _channel_screen_policy(
         # an owner/founder/Geschäftsführer is running a business, not doing the
         # hands-on specialty. A genuine title match never reaches here (it was
         # already kept), so this only ever drops a non-matching executive.
-        from app.services.sourcing import prescreen_service as _ps
         if _ps.is_executive_title(title):
             return False, {
                 **verdict, "decision": "drop",
@@ -1347,6 +1357,74 @@ def _channel_screen_policy(
     if keep and len(channels) > 1 and verdict.get("score") is not None:
         verdict = {**verdict, "score": min(95.0, float(verdict["score"]) + 5.0)}
     return keep, verdict
+
+
+async def rescreen_freelance_candidates(pipeline_id: Optional[str] = None, job_id: Optional[str] = None) -> int:
+    """Pass over candidates collection and reject any candidate whose company/title/headline is freelance or self-employed."""
+    from app.services.sourcing import prescreen_service as _ps
+    candidates_col = await get_collection("candidates")
+    scope: Dict[str, Any] = {"isAccepted": {"$ne": False}}
+    if pipeline_id:
+        scope["pipelineId"] = pipeline_id
+    if job_id:
+        scope["sourceJobIds"] = job_id
+
+    rejected = 0
+    now = datetime.utcnow()
+    async for c in candidates_col.find(scope, {"currentTitle": 1, "currentCompany": 1, "company": 1, "headline": 1}):
+        title = c.get("currentTitle") or ""
+        company = c.get("currentCompany") or c.get("company") or ""
+        headline = c.get("headline") or ""
+        is_fl, fl_reason = _ps.is_freelance_or_self_employed(title=title, company=company, headline=headline)
+        if is_fl:
+            await candidates_col.update_one(
+                {"_id": c["_id"]},
+                {"$set": {
+                    "isAccepted": False,
+                    "rejectionReason": fl_reason,
+                    "matchScore": 0,
+                    "decidedAt": now,
+                    "updatedAt": now,
+                }},
+            )
+            rejected += 1
+    if rejected and pipeline_id:
+        logger.info("[Prescreen] %s/%s freelance policy gate rejected %d freelance/self-employed candidates",
+                    pipeline_id, job_id, rejected)
+        await recount_pipeline(pipeline_id)
+    return rejected
+
+
+async def _run_job_enrich(
+    pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
+    mode: str = "both",
+) -> None:
+    """Background worker: enrich the selected candidates (or all in the job)."""
+    from app.services.operations import cost_service
+    try:
+        await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
+        async with cost_service.cost_context(
+            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
+        ):
+            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids, mode)
+        # Now that real locations are known, reject confirmed wrong-country hits
+        # (the Apollo location gate can only run here). Fail-open.
+        try:
+            await _regate_locations_after_enrich(pipeline_id, job_id, candidate_ids)
+            await rescreen_freelance_candidates(pipeline_id, job_id)
+        except Exception as exc:  # noqa: BLE001 — gate must never fail enrichment
+            logger.warning("[Enrich] %s/%s post-enrich gate error: %s",
+                           pipeline_id, job_id, exc)
+        await _set_enrich(
+            pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
+        )
+        logger.info("[Phase4] enrich %s/%s done: %s", pipeline_id, job_id, summary)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[Phase4] enrich %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)
+        try:
+            await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(exc)[:300])
+        except Exception:
+            pass
 
 
 async def _store_profiles(
@@ -1413,14 +1491,17 @@ async def _store_profiles(
                 logger.warning("[Discover] location-gated upsert failed: %s", exc)
             continue
 
-        # ── Gate 2: title pre-screen ──
+        # ── Gate 2: title & company pre-screen ──
         if settings.PRESCREEN_ENABLED:
             keep, verdict = prescreen_service.screen(
                 p, requirements=requirements, target_titles=target_titles,
                 min_score=settings.PRESCREEN_MIN_SCORE,
             )
             keep, verdict = _channel_screen_policy(
-                keep, verdict, channels, title=p.get("currentTitle") or "")
+                keep, verdict, channels,
+                title=p.get("currentTitle") or "",
+                company=p.get("currentCompany") or p.get("company") or "",
+            )
         else:
             keep, verdict = True, {"decision": "keep", "score": None,
                                    "reasons": ["Pre-screen disabled."]}

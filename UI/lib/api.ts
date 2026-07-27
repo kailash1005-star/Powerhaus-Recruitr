@@ -981,6 +981,7 @@ export interface DiscoverFilters {
   excludeCurrentJobTitles?: string[];
   excludePastJobTitles?: string[];
   excludeIndustryIds?: string[];
+  excludeCompanyHqLocations?: string[];
   excludeSeniorityLevel?: string;
   excludeFunction?: string;
   yearsOfExperience?: string;

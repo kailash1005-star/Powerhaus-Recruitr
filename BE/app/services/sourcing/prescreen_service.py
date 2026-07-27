@@ -166,6 +166,46 @@ def is_executive_title(title: str) -> bool:
     return bool(set(tokens(title)) & _EXEC_TOKENS)
 
 
+# ── Freelance / Self-Employed detection ──────────────────────────────────────
+
+_FREELANCE_TOKENS = {
+    "freelance", "freelancer", "freelancing",
+    "freiberufler", "freiberuflich", "freiberuflerin", "freiberufliche", "freiberuflicher",
+    "selbständig", "selbstständig", "selbstständige", "selbstständiger", "selbstständiges",
+    "autoentrepreneur", "contractor", "contracting",
+}
+
+_FREELANCE_PHRASES = [
+    "self employed", "self-employed", "self employment", "self-employment",
+    "independent contractor", "independent consultant", "auto entrepreneur", "auto-entrepreneur",
+    "eigenes unternehmen", "einzelunternehmen", "freelance / self-employed", "freelance | self-employed",
+]
+
+
+def is_freelance_or_self_employed(
+    title: str = "",
+    company: str = "",
+    headline: str = "",
+) -> Tuple[bool, str]:
+    """True if currentTitle, currentCompany, or headline indicates freelance or self-employed status."""
+    blobs = [("company", company or ""), ("title", title or ""), ("headline", headline or "")]
+    for source_name, text in blobs:
+        if not text:
+            continue
+        text_lower = text.lower()
+        for phrase in _FREELANCE_PHRASES:
+            if phrase in text_lower:
+                return True, f"Freelance / Self-employed candidate detected in {source_name} ('{text}')"
+
+        toks = set(tokens(text))
+        matched_toks = toks & _FREELANCE_TOKENS
+        if matched_toks:
+            matched_str = ", ".join(sorted(matched_toks))
+            return True, f"Freelance / Self-employed candidate detected in {source_name} ('{text}') [{matched_str}]"
+
+    return False, ""
+
+
 # ── Deterministic seniority / role-form hardening ────────────────────────────
 #
 # Title-overlap alone gives a "Junior Process Consultant SAP HCM" and a "Senior
@@ -233,9 +273,22 @@ def score_profile(
     """
     requirements = requirements or {}
     targets = [t for t in (target_titles or []) if t]
-    title = (profile.get("currentTitle") or "").strip()
-    title_tokens = tokens(title)
+    title = (profile.get("currentTitle") or profile.get("title") or "").strip()
+    company = (profile.get("currentCompany") or profile.get("company") or profile.get("companyName") or "").strip()
+    headline = (profile.get("headline") or "").strip()
 
+    # 0. Check for Freelance / Self-Employed status — hard reject policy
+    is_fl, fl_reason = is_freelance_or_self_employed(title=title, company=company, headline=headline)
+    if is_fl:
+        return {
+            "score": 0.0,
+            "roleFit": 0.0,
+            "matchedVia": None,
+            "isFreelance": True,
+            "reasons": [fl_reason],
+        }
+
+    title_tokens = tokens(title)
     reasons: List[str] = []
     if not title:
         # No title is not evidence of a bad candidate — the actor just didn't
@@ -301,12 +354,18 @@ def screen(
     so everything is kept — a missing role spec must never silently empty a
     recruiter's pipeline.
     """
+    verdict = score_profile(profile, requirements=requirements, target_titles=target_titles)
+
+    # Freelance / Self-employed candidates are hard-rejected regardless of spec
+    if verdict.get("isFreelance"):
+        verdict["decision"] = "drop"
+        return False, verdict
+
     if not (target_titles or (requirements or {}).get("mustHaveSkills")
             or (requirements or {}).get("title")):
         return True, {"score": 50.0, "roleFit": 0.5, "decision": "keep", "matchedVia": None,
                       "reasons": ["No role spec to screen against — kept."]}
 
-    verdict = score_profile(profile, requirements=requirements, target_titles=target_titles)
     keep = verdict["score"] >= min_score
     verdict["decision"] = "keep" if keep else "drop"
     return keep, verdict

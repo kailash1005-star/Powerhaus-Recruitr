@@ -61,26 +61,47 @@ class SearchFilters(BaseModel):
     """
     # Fuzzy free-text. Keep SHORT — the actor treats it as a keyword match.
     searchQuery: str = ""
-    # Real-world titles people actually carry. This is the field that fixes
-    # "SAP Consultant FI" returning nothing.
+    # Real-world titles people actually carry.
     currentJobTitles: List[str] = Field(default_factory=list)
     pastJobTitles: List[str] = Field(default_factory=list)
     locations: List[str] = Field(default_factory=list)
     currentCompanies: List[str] = Field(default_factory=list)
     pastCompanies: List[str] = Field(default_factory=list)
+    schools: List[str] = Field(default_factory=list)
+    industryIds: List[str] = Field(default_factory=list)
+    firstNames: List[str] = Field(default_factory=list)
+    lastNames: List[str] = Field(default_factory=list)
+    companyHqLocations: List[str] = Field(default_factory=list)
+
+    # Exclusions
+    excludeLocations: List[str] = Field(default_factory=list)
     excludeCurrentCompanies: List[str] = Field(default_factory=list)
+    excludePastCompanies: List[str] = Field(default_factory=list)
+    excludeSchools: List[str] = Field(default_factory=list)
     excludeCurrentJobTitles: List[str] = Field(default_factory=list)
+    excludePastJobTitles: List[str] = Field(default_factory=list)
+    excludeIndustryIds: List[str] = Field(default_factory=list)
+    excludeCompanyHqLocations: List[str] = Field(default_factory=list)
+
     profileLanguages: List[str] = Field(default_factory=list)
+
     # Enum filters — codes from the actor's vocabulary (see ENUM_TABLES).
     yearsOfExperience: Optional[str] = None
+    yearsAtCurrentCompany: Optional[str] = None
     seniorityLevel: Optional[str] = None
+    excludeSeniorityLevel: Optional[str] = None
     function: Optional[str] = None
+    excludeFunction: Optional[str] = None
     companyHeadcount: Optional[str] = None
     recentlyChangedJobs: bool = False
     recentlyPostedOnLinkedin: bool = False
 
-    @field_validator("yearsOfExperience", "seniorityLevel", "function",
-                     "companyHeadcount", mode="before")
+    @field_validator(
+        "yearsOfExperience", "yearsAtCurrentCompany",
+        "seniorityLevel", "excludeSeniorityLevel",
+        "function", "excludeFunction",
+        "companyHeadcount", mode="before"
+    )
     @classmethod
     def _coerce_enum(cls, v: Any, info) -> Optional[str]:
         """Accept a code or a human title; store the code. Drop the unknown.

@@ -185,5 +185,35 @@ def test_junior_not_penalised_when_role_names_no_seniority():
     assert v["score"] >= 90
 
 
+# ── freelance / self-employed detection & rejection ────────────────────────────
+@pytest.mark.parametrize("company,title", [
+    ("Freelance | Self-Employed", "DevOps & Cloud Infrastructure Engineer"),
+    ("Self-Employed", "Infrastructure Engineer"),
+    ("Freelance", "SAP HCM Consultant"),
+    ("Freiberufler", "Senior System Administrator"),
+    ("Acme Corp", "Freelance DevOps Consultant"),
+    ("Acme Corp", "Selbstständiger Berater"),
+    ("Independent Contractor", "Cloud Architect"),
+    ("Auto-Entrepreneur", "Software Engineer"),
+])
+def test_freelance_or_self_employed_detected(company, title):
+    is_fl, reason = ps.is_freelance_or_self_employed(title=title, company=company)
+    assert is_fl, f"Failed to detect freelance/self-employed for company={company!r}, title={title!r}"
+
+
+def test_freelance_candidate_is_rejected_by_prescreen():
+    # Salar Gholizadeh scenario: DevOps engineer with Freelance | Self-Employed as company
+    profile = {
+        "currentTitle": "DevOps & Cloud Infrastructure Engineer",
+        "currentCompany": "Freelance | Self-Employed",
+    }
+    keep, verdict = ps.screen(profile, requirements={"title": "DevOps Engineer"}, target_titles=["DevOps Engineer"])
+    assert not keep, "Freelance candidate must be rejected"
+    assert verdict["decision"] == "drop"
+    assert verdict["score"] == 0.0
+    assert verdict["isFreelance"] is True
+    assert "Freelance / Self-employed candidate detected" in verdict["reasons"][0]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

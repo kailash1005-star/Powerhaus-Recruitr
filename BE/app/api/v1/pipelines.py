@@ -213,7 +213,14 @@ class DiscoverSchema(BaseModel):
     companyHqLocations: Optional[List[str]] = None
     excludeLocations: Optional[List[str]] = None
     excludeCurrentCompanies: Optional[List[str]] = None
+    excludePastCompanies: Optional[List[str]] = None
+    excludeSchools: Optional[List[str]] = None
     excludeCurrentJobTitles: Optional[List[str]] = None
+    excludePastJobTitles: Optional[List[str]] = None
+    excludeIndustryIds: Optional[List[str]] = None
+    excludeCompanyHqLocations: Optional[List[str]] = None
+    excludeSeniorityLevel: Optional[str] = None
+    excludeFunction: Optional[str] = None
     yearsOfExperience: Optional[str] = None
     yearsAtCurrentCompany: Optional[str] = None
     seniorityLevel: Optional[str] = None
@@ -996,6 +1003,12 @@ async def list_job_candidates(
     _owned: dict = Depends(owned_pipeline),
 ):
     try:
+        from app.services.sourcing import candidate_pipeline
+        try:
+            await candidate_pipeline.rescreen_freelance_candidates(pipeline_id, job_id)
+        except Exception as _rescreen_err:
+            logger.debug("Freelance rescreen pass skipped: %s", _rescreen_err)
+
         col = db["candidates"]
         query = _candidate_query(
             pipeline_id, job_id, name=name, role=role, companies=companies,
