@@ -8,7 +8,7 @@ import importlib
 
 import pytest
 
-ms = importlib.import_module("app.services.matching_service")
+ms = importlib.import_module("app.services.matching.matching_service")
 
 
 # ── skill matching ───────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ import {
   addLocation,
   startRun,
   streamRunProgress,
+  fetchMittelstandStatus,
   type ICPBackendConfig,
   type RunProgressStream,
 } from '@/lib/api';
@@ -112,6 +113,56 @@ const sourceCard = (selected: boolean): React.CSSProperties => ({
   fontFamily: 'inherit',
 });
 
+/** One selectable data source in "Scraper Mode & Source". */
+function SourceToggle({
+  label,
+  description,
+  selected,
+  onToggle,
+  disabled = false,
+  disabledHint,
+}: {
+  label: string;
+  description: string;
+  selected: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  disabledHint?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      title={disabled ? disabledHint : undefined}
+      aria-pressed={selected}
+      style={{
+        ...sourceCard(selected),
+        flex: '1 1 300px',
+        maxWidth: 360,
+        opacity: disabled ? 0.55 : 1,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>{label}</span>
+        <span
+          style={{
+            width: 16, height: 16, borderRadius: 9999,
+            border: `2px solid ${selected ? 'var(--fg-primary)' : 'var(--border-strong)'}`,
+            background: selected ? 'var(--primary)' : 'transparent',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          {selected && <Icon name="check" size={10} style={{ color: '#FFF' }} />}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{description}</div>
+    </button>
+  );
+}
+
 // Back link node used as the TopBar "title"
 const BackLink = () => (
   <Link
@@ -181,6 +232,20 @@ export function ICPConfigPage() {
   const [activeSources] = useState<string[]>(['linkedin']);
   const [resultsPerBatch, setResultsPerBatch] = useState('10');
   const [maxPostingAge, setMaxPostingAge] = useState('24');
+
+  // Sources for this run. LinkedIn is on by default because that is the existing
+  // behaviour; Mittelstand is off because it crawls company websites live, which
+  // is slower and costlier than a board query. Either can be turned off, so a run
+  // can be Mittelstand-only.
+  const [linkedinOn, setLinkedinOn] = useState(true);
+  const [mittelstandOn, setMittelstandOn] = useState(false);
+  const [mittelstandAvailable, setMittelstandAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetchMittelstandStatus()
+      .then((s) => setMittelstandAvailable(s.available))
+      .catch(() => setMittelstandAvailable(false));
+  }, []);
 
   // ── Load ICP config ───────────────────────────────────────────
 
@@ -282,6 +347,7 @@ export function ICPConfigPage() {
     const selectedIndustries = industries.filter((i) => i.selected).map((i) => i.name);
 
     if (selectedIndustries.length === 0) { alert('Please select at least one target industry.'); return; }
+    if (!linkedinOn && !mittelstandOn) { alert('Select at least one source under Scraper Mode & Source.'); return; }
 
     setStartingRun(true);
     setError(null);
@@ -293,17 +359,30 @@ export function ICPConfigPage() {
     setLaunchPhase('starting');
 
     try {
+      // Whichever sources are switched on. Both write into the same run, so the
+      // results screen and prospect enrichment stay exactly as they are.
+      const sites = [
+        ...(linkedinOn ? ['linkedin'] : []),
+        ...(mittelstandOn ? ['mittelstand'] : []),
+      ];
+      const sourceLabel = [
+        linkedinOn ? 'LinkedIn' : null,
+        mittelstandOn ? 'Mittelstand' : null,
+      ].filter(Boolean).join(' + ');
+
       const result = await startRun({
-        title: `Run (LinkedIn) — ${new Date().toLocaleDateString()}`,
-        source: 'jobspy',
+        title: `Run (${sourceLabel}) — ${new Date().toLocaleDateString()}`,
+        source: linkedinOn ? 'jobspy' : 'mittelstand',
         runConfig: {
           searchTitles: selectedTitles,
           searchLocations: selectedLocations,
           targetIndustries: selectedIndustries,
           customIndustries: [],
           hoursOld: parseInt(maxPostingAge) || 24,
+          // One batch size for both sources: jobs per query for LinkedIn,
+          // companies returned for Mittelstand.
           resultsPerSearch: parseInt(resultsPerBatch) || 10,
-          siteName: ['linkedin'],
+          siteName: sites,
           icpConfigSnapshot: icpConfig ? { version: icpConfig.version } : null,
         },
       });
@@ -350,6 +429,10 @@ export function ICPConfigPage() {
   };
 
   // ── Derived / filtered ────────────────────────────────────────
+
+  // A run needs at least one target industry and at least one source.
+  const runBlocked =
+    startingRun || industries.filter((i) => i.selected).length === 0 || (!linkedinOn && !mittelstandOn);
 
   const filteredTitles = titles.filter((t) => {
     const matchesSearch = t.name.toLowerCase().includes(titleSearch.toLowerCase());
@@ -548,24 +631,25 @@ export function ICPConfigPage() {
                 <Icon name="play" size={16} style={{ color: 'var(--status-info)' }} />
                 Scraper Mode &amp; Source
               </div>
-              <div style={{ display: 'flex', gap: 12, marginBottom: 4 }}>
-                {/* LinkedIn / JobSpy — always active */}
-                <button style={{ ...sourceCard(true), flex: 'none', width: '100%', maxWidth: 360 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>LinkedIn / JobSpy</span>
-                    <span style={{
-                      width: 16, height: 16, borderRadius: 9999,
-                      border: '2px solid var(--fg-primary)',
-                      background: 'var(--primary)',
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      <Icon name="check" size={10} style={{ color: '#FFF' }} />
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-                    Search professional networks via JobSpy. Best for US/EU.
-                  </div>
-                </button>
+              <div style={{ display: 'flex', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
+                {/* Both sources toggle independently, so a run can be one, the
+                    other, or both. Running Mittelstand on its own is the only way
+                    to see what it found without a LinkedIn scrape in the way. */}
+                <SourceToggle
+                  label="LinkedIn / JobSpy"
+                  description="Search professional networks via JobSpy. Best for US/EU."
+                  selected={linkedinOn}
+                  onToggle={() => setLinkedinOn((v) => !v)}
+                />
+
+                <SourceToggle
+                  label="Mittelstand companies"
+                  description="German company careers pages, verified against the trade register. Flags roles not advertised on the public job board."
+                  selected={mittelstandOn}
+                  disabled={mittelstandAvailable === false}
+                  disabledHint="The Mittelstand engine is not available on this backend"
+                  onToggle={() => setMittelstandOn((v) => !v)}
+                />
 
                 {/* Naukri — hidden from UI for now
                 <button key="naukri" onClick={() => toggleSource('naukri')} style={sourceCard(activeSources.includes('naukri'))}>
@@ -577,6 +661,19 @@ export function ICPConfigPage() {
                 </button>
                 */}
               </div>
+
+              {mittelstandOn && (
+                <div style={{
+                  marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-card)',
+                  fontSize: 11.5, color: 'var(--fg-muted)', lineHeight: 1.6,
+                }}>
+                  Returns up to <strong>{parseInt(resultsPerBatch) || 10}</strong> companies —
+                  taken from <em>Results per Batch</em> below, so both sources share one setting.
+                  Uses the first selected title and location. Each company is matched to its
+                  trade-register entry before its careers page is read, and every opening is
+                  checked against the Bundesagentur für Arbeit — other job boards are not checked.
+                </div>
+              )}
             </div>
 
             {/* Pipeline Configuration — compact inputs */}
@@ -747,12 +844,12 @@ export function ICPConfigPage() {
           </Link>
           <button
             onClick={handleStartRun}
-            disabled={startingRun || industries.filter((i) => i.selected).length === 0}
+            disabled={runBlocked}
             style={{
               height: 36, padding: '0 20px', borderRadius: 6, fontSize: 13, fontWeight: 600,
-              cursor: startingRun || industries.filter((i) => i.selected).length === 0 ? 'not-allowed' : 'pointer',
+              cursor: runBlocked ? 'not-allowed' : 'pointer',
               border: 'none',
-              background: startingRun || industries.filter((i) => i.selected).length === 0 ? '#999' : 'var(--primary)',
+              background: runBlocked ? '#999' : 'var(--primary)',
               color: '#FFF', fontFamily: 'inherit',
               display: 'inline-flex', alignItems: 'center', gap: 8,
             }}

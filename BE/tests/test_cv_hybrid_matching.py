@@ -29,15 +29,15 @@ from typing import List, Tuple
 
 import pytest
 
-from app.services import lexical_index as lx
-from app.services import semantic_chunking as sc
-from app.services.matching_service import (
+from app.services.matching import lexical_index as lx
+from app.services.matching import semantic_chunking as sc
+from app.services.matching.matching_service import (
     SCORING_VERSION,
     _free_text_entries,
     _score_candidate,
     _skill_variants,
 )
-from app.services.match_qa_service import _evidence_corpus, verify_quote
+from app.services.matching.match_qa_service import _evidence_corpus, verify_quote
 
 
 # ── Semantic chunking ────────────────────────────────────────────────────────

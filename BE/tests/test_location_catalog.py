@@ -7,7 +7,7 @@ into a wrong-country match.
 """
 from __future__ import annotations
 
-from app.services import location_catalog as lc
+from app.services.sourcing import location_catalog as lc
 
 
 class TestSuggest:

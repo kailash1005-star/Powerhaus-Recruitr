@@ -103,7 +103,7 @@ def test_stamp_tags_tenant():
 # ── GDPR: subject matching stays tenant-scoped ───────────────────────────────
 
 def test_gdpr_match_filters_are_tenant_scoped():
-    from app.services import gdpr_service
+    from app.services.operations import gdpr_service
 
     async def go():
         # No DB is touched: _match_filters only builds the query dicts.
@@ -121,7 +121,7 @@ def test_gdpr_match_filters_are_tenant_scoped():
 
 
 def test_gdpr_admin_scope_is_unrestricted():
-    from app.services import gdpr_service
+    from app.services.operations import gdpr_service
 
     async def go():
         return await gdpr_service._match_filters(
@@ -135,13 +135,13 @@ def test_gdpr_admin_scope_is_unrestricted():
 
 
 def test_gdpr_linkedin_slug_extraction():
-    from app.services import gdpr_service
+    from app.services.operations import gdpr_service
     assert gdpr_service._linkedin_slug("https://www.linkedin.com/in/jane-doe/") == "jane-doe"
     assert gdpr_service._linkedin_slug("jane-doe") == "jane-doe"
 
 
 def test_gdpr_subject_key_prefers_stable_id():
-    from app.services import gdpr_service
+    from app.services.operations import gdpr_service
     assert gdpr_service._subject_key({"candidateId": "abc"}) == "candidateId:abc"
     assert gdpr_service._subject_key({"email": "a@b.com"}) == "email:a@b.com"
     assert gdpr_service._subject_key({}) == "unknown"

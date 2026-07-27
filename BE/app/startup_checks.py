@@ -49,6 +49,24 @@ def outreach_readiness() -> dict:
     }
 
 
+def alerts_readiness() -> dict:
+    """Report whether operator alerts could actually be delivered.
+
+    Surfaced on /health because "are my alerts armed?" must be answerable without
+    reading env vars on a container — an alerting system you cannot verify is one
+    you will assume is working on the day it isn't.
+    """
+    from app.services.operations import alerts
+
+    return {
+        "enabled": settings.ALERTS_ENABLED,
+        "deliverable": alerts.alerts_configured(),
+        "recipients": len(alerts.alert_recipients()),
+        "cooldownMinutes": settings.ALERT_COOLDOWN_MINUTES,
+        "apifyUsageWarnPct": settings.APIFY_USAGE_WARN_PCT,
+    }
+
+
 def auth_readiness() -> dict:
     """Report the auth configuration. Surfaced on /health."""
     return {

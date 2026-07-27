@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from app.database import get_database
 from app.security.tenant import TenantContext, tenant_scope
-from app.services.apollo_service import ApolloService
+from app.services.sourcing.apollo_service import ApolloService
 from app.config import settings
 from bson import ObjectId
 

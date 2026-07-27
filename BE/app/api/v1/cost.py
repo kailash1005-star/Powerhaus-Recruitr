@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.security.tenant import require_admin
-from app.services import cost_service as cost
+from app.services.operations import cost_service as cost
 
 # The cost ledger is platform-wide with no per-tenant attribution (spend totals,
 # price book, subscriptions) — operator/founder data, never a client's. Gate the

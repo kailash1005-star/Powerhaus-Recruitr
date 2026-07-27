@@ -24,7 +24,7 @@ from typing import Optional
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from app.services import location_catalog
+from app.services.sourcing import location_catalog
 from app.services.sourcing.common import (
     ECOSYSTEM_TOKENS, GENERIC_ROLE_WORDS, derive_anchor_terms, get_model,
     llm_available, title_in_domain,

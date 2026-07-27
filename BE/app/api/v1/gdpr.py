@@ -18,7 +18,7 @@ from pydantic import BaseModel, model_validator
 
 from app.database import get_database
 from app.security.tenant import TenantContext, require_admin, tenant_scope
-from app.services import gdpr_service
+from app.services.operations import gdpr_service
 
 router = APIRouter()
 

@@ -8,7 +8,7 @@ import importlib
 
 import pytest
 
-pp = importlib.import_module("app.services.profile_photo")
+pp = importlib.import_module("app.services.operations.profile_photo")
 
 
 def _doc(*widths):

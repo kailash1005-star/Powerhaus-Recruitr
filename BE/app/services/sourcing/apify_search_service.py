@@ -18,9 +18,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
-from app.services.apify_profile_service import (
-    ApifyEnrichmentError, ApifyNotConfigured, ApifyRunFailed, _run_to_dict,
-    call_actor_bounded,
+from app.services.sourcing import apify_health
+from app.services.sourcing.apify_profile_service import (
+    ApifyAuthFailed, ApifyEnrichmentError, ApifyNotConfigured, ApifyQuotaExceeded,
+    ApifyRunFailed, _run_to_dict, call_actor_bounded, translate_vendor_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,21 +158,28 @@ def _clean_list(v: Any) -> List[str]:
 # pipeline silently empties. Observed live: "free user run limit reached" returned
 # 0 profiles for every query, including ones that had returned results an hour
 # earlier.
-_QUOTA_MARKERS = ("run limit reached", "usage limit", "quota", "exceeded",
-                  "insufficient credit", "payment required", "upgrade")
+# Markers now live in apify_health (one list, shared with the profile service and
+# the pipeline rollup — the three copies used to disagree).
 
 
 def _raise_if_quota_exhausted(info: Dict[str, Any]) -> None:
     msg = str(info.get("statusMessage") or info.get("status_message") or "").strip()
     if not msg:
         return
-    low = msg.lower()
-    if any(m in low for m in _QUOTA_MARKERS):
-        raise ApifyRunFailed(
-            f"Apify refused the search: {msg!r}. The run 'succeeded' but returned no "
-            f"data — this is an account/billing limit, NOT an empty candidate pool. "
-            f"Do not treat it as 'no candidates found'."
-        )
+    verdict = apify_health.classify(msg)
+    if verdict.kind not in (apify_health.KIND_SPEND, apify_health.KIND_AUTH):
+        return
+    detail = (
+        f"Apify refused the search: {msg!r}. The run 'succeeded' but returned no "
+        f"data — this is an account/billing limit, NOT an empty candidate pool. "
+        f"Do not treat it as 'no candidates found'. {verdict.action}"
+    )
+    # Raised as the specific type so the operator alert names the right fix; both
+    # still subclass ApifyEnrichmentError, and the Broadener's abort catches
+    # ApifyRunFailed, so the widening loop is stopped either way.
+    if verdict.kind == apify_health.KIND_AUTH:
+        raise ApifyAuthFailed(detail)
+    raise ApifyQuotaExceeded(detail)
 
 
 def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
@@ -295,7 +303,10 @@ class ApifySearchService:
                 timeout_secs=settings.APIFY_CALL_TIMEOUT_SECS,
             )
         except Exception as exc:
-            raise ApifyRunFailed(f"Apify search actor call failed: {exc}") from exc
+            # Classified rather than blanket-wrapped — see translate_vendor_error.
+            # A dead token used to arrive here as a retryable ApifyRunFailed, which
+            # sent the Broadener widening filters against a search that never ran.
+            raise translate_vendor_error(exc, context="Apify search actor call failed") from exc
 
         info = _run_to_dict(run)
         if info.get("status") != "SUCCEEDED":
@@ -315,7 +326,7 @@ class ApifySearchService:
         # Best-effort by design (metering must not fail a paid search that already
         # succeeded) — but LOGGED: a silent pass here hid every gap in the ledger.
         try:
-            from app.services import cost_service
+            from app.services.operations import cost_service
             vendor = info.get("usageTotalUsd") or info.get("usage_total_usd")
             cost_service.record_event(
                 service="apify", operation="profile_search", unit="page", quantity=1,

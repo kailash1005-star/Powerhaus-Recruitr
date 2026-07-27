@@ -33,8 +33,8 @@ from typing import Any, Dict, List, Optional
 from bson import ObjectId
 
 from app.config import settings
-from app.services import embedding_service as embeddings
-from app.services import llm_extraction_service as llm
+from app.services.matching import embedding_service as embeddings
+from app.services.matching import llm_extraction_service as llm
 
 logger = logging.getLogger(__name__)
 

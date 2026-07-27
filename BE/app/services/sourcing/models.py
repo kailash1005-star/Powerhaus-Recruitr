@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.services.apify_search_service import ENUM_TABLES, resolve_enum
+from app.services.sourcing.apify_search_service import ENUM_TABLES, resolve_enum
 
 
 # ─────────────────────────── Recruiter input ────────────────────────────

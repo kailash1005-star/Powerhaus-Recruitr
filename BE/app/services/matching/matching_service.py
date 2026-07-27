@@ -24,12 +24,12 @@ from bson import Binary, ObjectId
 from rapidfuzz import fuzz
 
 from app.config import settings
-from app.services import document_parsing_service as docparser
-from app.services import embedding_service as embeddings
-from app.services import lexical_index
-from app.services import llm_extraction_service as llm
-from app.services import semantic_chunking
-from app.services.vector_store import get_vector_store
+from app.services.matching import document_parsing_service as docparser
+from app.services.matching import embedding_service as embeddings
+from app.services.matching import lexical_index
+from app.services.matching import llm_extraction_service as llm
+from app.services.matching import semantic_chunking
+from app.services.matching.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -670,7 +670,7 @@ def _score_candidate(
     # fallback only handles what the verdict can't resolve (city-only strings) —
     # it used to speak first, and partial_ratio ≥ 80 scored "Frankfurt am Main"
     # as a perfect match for a JD in "Frankfurt an der Oder".
-    from app.services import location_resolver
+    from app.services.sourcing import location_resolver
 
     jd_loc = (jd.get("location") or "").lower().strip()
     cand_loc = (profile.get("location") or "").lower().strip()
@@ -854,7 +854,7 @@ async def run_match(
     embedding/extraction/judge spend used to land as orphan events with no
     attribution while only the pipeline engine metered properly.
     """
-    from app.services import cost_service
+    from app.services.operations import cost_service
 
     async with cost_service.cost_context(
         cost_service.STAGE_MATCHING, label=(jd_filename or "CV corpus match"), jobId=job_id,
@@ -892,7 +892,7 @@ async def _run_match_impl(
 
     # 2/3. JD → the canonical role spec (structured requirements + embedding),
     # parsed once and shared with sourcing rather than re-derived per run.
-    from app.services import role_spec_service
+    from app.services.sourcing import role_spec_service
 
     spec = await role_spec_service.get_or_create_for_text(
         db, jd_markdown, job_id=job_id, jd_filename=jd_filename
@@ -1153,7 +1153,7 @@ async def _run_match_impl(
     # updated; the response carries the corrected ranking. Fail-open by design.
     qa_summary: Optional[Dict[str, Any]] = None
     if settings.MATCH_QA_ENABLED and all_entries:
-        from app.services import match_qa_service
+        from app.services.matching import match_qa_service
 
         profiles_by_cid = {str(d["_id"]): (d.get("profile") or {}) for d in candidates}
         qa_summary = await match_qa_service.audit_run(

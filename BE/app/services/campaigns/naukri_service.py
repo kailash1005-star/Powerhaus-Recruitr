@@ -433,7 +433,7 @@ def enrich_naukri_descriptions(firecrawl: Firecrawl, jobs: List[dict], max_desc:
             )
             desc = safe_json(result)
             try:
-                from app.services import cost_service
+                from app.services.operations import cost_service
                 cost_service.record_event(
                     service="firecrawl", operation="scrape", unit="page", quantity=1)
             except Exception:  # noqa: BLE001

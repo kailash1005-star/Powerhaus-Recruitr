@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.security.deps import Principal
-from app.services.user_service import build_upsert, upsert_user
+from app.services.operations.user_service import build_upsert, upsert_user
 
 NOW = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
 

@@ -19,9 +19,9 @@ from pydantic import BaseModel
 from app.config import settings
 from app.database import get_database
 from app.security.tenant import TenantContext, tenant_scope
-from app.services import matching_service
-from app.services import email_service
-from app.services import llm_extraction_service as llm_extraction
+from app.services.matching import matching_service
+from app.services.operations import email_service
+from app.services.matching import llm_extraction_service as llm_extraction
 from app.startup_checks import matching_readiness
 
 logger = logging.getLogger(__name__)
@@ -390,7 +390,7 @@ async def outreach_draft(req: OutreachDraftRequest, ctx: TenantContext = Depends
         if not contact.get("email"):
             contact = {**contact, "email": (cand.get("enrichedData") or {}).get("email")}
     try:
-        from app.services import cost_service
+        from app.services.operations import cost_service
         async with cost_service.cost_context(
             cost_service.STAGE_OUTREACH, label=profile.get("fullName"),
             candidateId=req.candidateId,

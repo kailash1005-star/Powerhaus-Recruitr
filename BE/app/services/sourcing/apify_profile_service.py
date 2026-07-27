@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from app.config import settings
+from app.services.sourcing import apify_health
 
 logger = logging.getLogger(__name__)
 
@@ -131,17 +132,40 @@ class ApifyQuotaExceeded(ApifyEnrichmentError):
     """
 
 
-# Substrings that mark a dataset "error" row as an account/plan block (as opposed
-# to a per-profile private/not-found error). Matched case-insensitively.
-_QUOTA_ERROR_MARKERS = (
-    "limited to", "upgrade to a paid plan", "item limit", "run limit",
-    "monthly usage", "usage limit", "not enough", "exceeded",
-)
+class ApifyAuthFailed(ApifyEnrichmentError):
+    """The token was rejected (HTTP 401/403) — expired, revoked or wrong.
+
+    Split out from ApifyRunFailed because the two need OPPOSITE handling: a run
+    failure is worth retrying, a dead token is not — every retry hits the same
+    wall while the Broadener widens filters against searches that never ran.
+    Until this existed, an expired token was invisible: it arrived as a generic
+    ``ApifyRunFailed`` and read to the recruiter as "no candidates matched".
+    """
 
 
-def _is_quota_error(msg: Any) -> bool:
-    m = str(msg or "").lower()
-    return any(marker in m for marker in _QUOTA_ERROR_MARKERS)
+# The quota/auth marker lists used to live here, in apify_search_service and in
+# candidate_pipeline — three copies that disagreed, so which one classified a
+# failure depended on which layer saw it first. They now live in one place.
+_is_quota_error = apify_health.is_spend_error
+
+
+def translate_vendor_error(exc: Exception, *, context: str) -> ApifyEnrichmentError:
+    """Map a raw apify-client exception onto our typed hierarchy.
+
+    Both actor call sites previously wrapped EVERY failure as ``ApifyRunFailed``
+    ("transient — retry once"), which is how a dead token stayed invisible.
+    Classification is delegated to ``apify_health`` so the actor path, the
+    dataset-row path and the pipeline rollup all agree.
+    """
+    verdict = apify_health.classify(exc)
+    message = f"{context}: {exc}"
+    if verdict.kind == apify_health.KIND_AUTH:
+        return ApifyAuthFailed(f"{message} — {verdict.action}")
+    if verdict.kind == apify_health.KIND_SPEND:
+        return ApifyQuotaExceeded(f"{message} — {verdict.action}")
+    # Rate limits and unknown failures stay ApifyRunFailed: existing catch sites
+    # (notably the Broadener's abort) already treat it as retry-then-give-up.
+    return ApifyRunFailed(message)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -345,7 +369,9 @@ class ApifyProfileService:
                 timeout_secs=settings.APIFY_CALL_TIMEOUT_SECS,
             )
         except Exception as exc:  # network / actor-call failure
-            raise ApifyRunFailed(f"Apify actor call failed: {exc}") from exc
+            # Classified, not blanket-wrapped: a 401 here means the token is dead
+            # and retrying is pointless, which the old ApifyRunFailed hid.
+            raise translate_vendor_error(exc, context="Apify actor call failed") from exc
 
         run_info = _run_to_dict(run)
         status = run_info.get("status")
@@ -394,7 +420,7 @@ class ApifyProfileService:
         # must not fail an enrichment that already succeeded) — but logged.
         added = len(results) - n_found_before
         try:
-            from app.services import cost_service
+            from app.services.operations import cost_service
             if added > 0:
                 vendor_usd = run_info.get("usageTotalUsd") or run_info.get("usage_total_usd")
                 cost_service.record_event(

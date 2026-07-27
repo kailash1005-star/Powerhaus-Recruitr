@@ -41,7 +41,7 @@ def embedding_version() -> str:
 
 
 def _embed_sync(texts: List[str]) -> List[List[float]]:
-    from app.services import cost_service
+    from app.services.operations import cost_service
 
     client = _get_client()
     model = settings.EMBEDDING_MODEL

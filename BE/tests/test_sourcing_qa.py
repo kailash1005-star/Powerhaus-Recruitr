@@ -19,9 +19,9 @@ from typing import Any, Dict, List
 
 import pytest
 
-from app.services import location_resolver as lr
-from app.services import sourcing_qa_service as sqa
-from app.services.llm_extraction_service import ExtractionError
+from app.services.sourcing import location_resolver as lr
+from app.services.sourcing import sourcing_qa_service as sqa
+from app.services.matching.llm_extraction_service import ExtractionError
 
 
 # ── Deterministic location gate ──────────────────────────────────────────────
@@ -81,7 +81,7 @@ class _FakeCandidatesCol:
 
 class TestStoreProfilesLocationGate:
     async def test_india_candidate_for_germany_search_is_rejected(self, monkeypatch):
-        from app.services import candidate_pipeline as cp
+        from app.services.sourcing import candidate_pipeline as cp
 
         col = _FakeCandidatesCol()
 
@@ -113,7 +113,7 @@ class TestStoreProfilesLocationGate:
         assert "India" in rejected["rejectionReason"]
 
     async def test_gate_off_keeps_everyone(self, monkeypatch):
-        from app.services import candidate_pipeline as cp
+        from app.services.sourcing import candidate_pipeline as cp
         col = _FakeCandidatesCol()
 
         async def fake_get_collection(name):

@@ -30,7 +30,7 @@ from app.models.outreach import (
     STAGE_RANK,
     TERMINAL_TYPES,
 )
-from app.services.outreach_provider import CanonicalEvent, get_sender
+from app.services.operations.outreach_provider import CanonicalEvent, get_sender
 
 logger = logging.getLogger(__name__)
 

@@ -22,7 +22,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from app.services import candidate_pipeline as cp
+from app.services.sourcing import candidate_pipeline as cp
 
 
 # ── URL normalisation ────────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ def _patch_combined(monkeypatch, *, apify_ret, apollo_ret, job_total):
     async def fake_ctx(*a, **k):
         yield
 
-    from app.services import cost_service
+    from app.services.operations import cost_service
     # These tests exercise the dual-engine rollup; Apollo search is disabled by
     # default in prod, so enable it here to drive both engines.
     from app.config import settings as _cfg
@@ -319,7 +319,7 @@ class TestApolloSearchPeople:
     def _svc_recording(self, monkeypatch, *, win_stage: int):
         """An ApolloService whose paged search records params and returns people
         only at ``win_stage`` (0-based)."""
-        from app.services.apollo_service import ApolloService
+        from app.services.sourcing.apollo_service import ApolloService
         svc = ApolloService(api_key="k")
         calls: List[dict] = []
 
@@ -356,7 +356,7 @@ class TestApolloSearchPeople:
         assert calls[0]["include_similar_titles"] == "true"
 
     def test_no_titles_no_keywords_returns_empty(self):
-        from app.services.apollo_service import ApolloService
+        from app.services.sourcing.apollo_service import ApolloService
         out = ApolloService(api_key="k").search_people(titles=[], skills=[])
         assert out == {"people": [], "params_used": {}}
 
@@ -365,16 +365,16 @@ class TestApolloSearchPeople:
 
 class TestApifySegmentation:
     def test_on_for_multipage_title_search(self):
-        from app.services.apify_search_service import _build_input
+        from app.services.sourcing.apify_search_service import _build_input
         ri = _build_input({"currentJobTitles": ["SAP EWM Consultant"]}, 50)
         assert ri.get("autoQuerySegmentation") is True
 
     def test_off_for_single_page(self):
-        from app.services.apify_search_service import _build_input
+        from app.services.sourcing.apify_search_service import _build_input
         ri = _build_input({"currentJobTitles": ["SAP EWM Consultant"]}, 25)
         assert "autoQuerySegmentation" not in ri
 
     def test_off_when_nothing_to_search(self):
-        from app.services.apify_search_service import _build_input
+        from app.services.sourcing.apify_search_service import _build_input
         ri = _build_input({"locations": ["Germany"]}, 100)
         assert "autoQuerySegmentation" not in ri

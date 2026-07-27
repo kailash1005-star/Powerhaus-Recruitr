@@ -21,7 +21,7 @@ from pydantic_ai import Agent, RunContext
 
 from app.config import settings
 from app.services.agent.agent_factory import _ensure_provider_env
-from app.services.apollo_service import ApolloService
+from app.services.sourcing.apollo_service import ApolloService
 
 logger = logging.getLogger(__name__)
 

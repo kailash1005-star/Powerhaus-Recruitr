@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.matching_service import (
+from app.services.matching.matching_service import (
     _free_text_entries,
     _match_skill,
     _score_candidate,

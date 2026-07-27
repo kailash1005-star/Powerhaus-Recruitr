@@ -18,10 +18,10 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_database
 from app.security.tenant import TenantContext, tenant_scope
-from app.services.apify_profile_service import ApifyCostGuard, ApifyNotConfigured
-from app.services.apollo_service import ApolloService
-from app.services.candidate_enrichment import enrich_candidates
-from app.services.linkedin_profile_service import (
+from app.services.sourcing.apify_profile_service import ApifyCostGuard, ApifyNotConfigured
+from app.services.sourcing.apollo_service import ApolloService
+from app.services.sourcing.candidate_enrichment import enrich_candidates
+from app.services.sourcing.linkedin_profile_service import (
     extract_profile_slug,
     get_linkedin_profile_service,
 )

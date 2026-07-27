@@ -18,8 +18,8 @@ from pydantic import BaseModel
 from app.config import settings
 from app.database import get_database
 from app.security.tenant import require_admin
-from app.services import outreach_service
-from app.services.outreach_provider import get_source
+from app.services.operations import outreach_service
+from app.services.operations.outreach_provider import get_source
 
 logger = logging.getLogger(__name__)
 

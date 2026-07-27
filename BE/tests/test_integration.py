@@ -6,7 +6,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import connect_to_mongo, close_mongo_connection, get_collection
-from app.services.orchestrator import process_run_background
+from app.services.campaigns.orchestrator import process_run_background
 from datetime import datetime
 from bson import ObjectId
 

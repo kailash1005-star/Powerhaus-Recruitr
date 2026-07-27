@@ -9,8 +9,8 @@ import importlib
 
 import pytest
 
-ms = importlib.import_module("app.services.matching_service")
-llm = importlib.import_module("app.services.llm_extraction_service")
+ms = importlib.import_module("app.services.matching.matching_service")
+llm = importlib.import_module("app.services.matching.llm_extraction_service")
 
 
 # ── semantic calibration ─────────────────────────────────────────────────────
@@ -116,13 +116,13 @@ def test_cv_fields_coerces_years_and_lists():
 
 # ── profileLanguage plumbing (the dead questionnaire field) ──────────────────
 def test_singular_profile_language_reaches_the_actor():
-    from app.services.apify_search_service import _build_input
+    from app.services.sourcing.apify_search_service import _build_input
     run_input = _build_input({"profileLanguage": "German"}, max_items=10)
     assert run_input.get("profileLanguages") == ["German"]
 
 
 def test_plural_profile_languages_still_win_over_singular():
-    from app.services.apify_search_service import _build_input
+    from app.services.sourcing.apify_search_service import _build_input
     run_input = _build_input(
         {"profileLanguage": "French", "profileLanguages": ["German"]}, max_items=10)
     assert run_input.get("profileLanguages") == ["German"]

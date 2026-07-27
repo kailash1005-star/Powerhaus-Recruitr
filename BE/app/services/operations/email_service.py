@@ -78,7 +78,7 @@ def _draft_sync(candidate: Dict[str, Any], role_title: Optional[str], sender_nam
                 response_format={"type": "json_object"},
                 messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}],
             )
-            from app.services import cost_service
+            from app.services.operations import cost_service
             cost_service.record_chat(resp, model=settings.REASONING_MODEL, operation="outreach_draft")
             raw = (resp.choices[0].message.content or "").strip()
             data = json.loads(raw)

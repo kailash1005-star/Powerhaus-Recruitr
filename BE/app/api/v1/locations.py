@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from app.services import location_catalog
+from app.services.sourcing import location_catalog
 
 router = APIRouter()
 

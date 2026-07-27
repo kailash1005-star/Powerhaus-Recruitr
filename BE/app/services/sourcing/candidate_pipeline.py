@@ -36,8 +36,9 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.database import get_collection
-from app.services.apollo_service import ApolloService
-from app.services.location_resolver import resolve_search_country
+from app.services.sourcing import apify_health
+from app.services.sourcing.apollo_service import ApolloService
+from app.services.sourcing.location_resolver import resolve_search_country
 
 logger = logging.getLogger(__name__)
 
@@ -679,7 +680,7 @@ async def _apollo_discover_for_job(
     final ``recount_pipeline`` (the runner owns both), and RETURN the kept count
     (None on failure) so the runner can compute the rollup.
     """
-    from app.services import cost_service
+    from app.services.operations import cost_service
 
     sfield = "apolloSearchStatus" if managed else "searchStatus"
     efield = "apolloSearchError" if managed else "searchError"
@@ -735,12 +736,12 @@ async def _apollo_discover_for_job(
         # Now every Apollo hit runs the same deterministic country gate and the
         # same title prescreen the Apify path does, so accuracy is engine-agnostic.
         from app.config import settings as _settings
-        from app.services import location_resolver as _locres, prescreen_service
+        from app.services.sourcing import location_resolver as _locres, prescreen_service
 
         requirements: Dict[str, Any] = {}
         try:
             from app.database import get_database
-            from app.services import role_spec_service
+            from app.services.sourcing import role_spec_service
             spec = await role_spec_service.get_or_create_for_job(
                 await get_database(), job_id)
             requirements = (spec or {}).get("requirements") or {}
@@ -931,7 +932,7 @@ async def _enrich_for_job(
     The returned summary always carries the ``apollo_enriched`` /
     ``apify_enriched`` / ``not_found`` keys the UI reads.
     """
-    from app.services.candidate_enrichment import (
+    from app.services.sourcing.candidate_enrichment import (
         apollo_enrich_only, bulk_enrich, enrich_candidates,
     )
 
@@ -992,7 +993,7 @@ async def _regate_locations_after_enrich(
     for Apollo (and mops up any Apify residue). Only CONFIRMED-foreign rows are
     rejected; anything unresolved is left kept. Fail-open."""
     from app.config import settings as _settings
-    from app.services import location_resolver as _locres
+    from app.services.sourcing import location_resolver as _locres
     if (_settings.SOURCING_LOCATION_GATE or "off").lower() != "country":
         return 0
     pipelines_col = await get_collection("candidatePipelines")
@@ -1043,7 +1044,7 @@ async def _run_job_enrich(
     mode: str = "both",
 ) -> None:
     """Background worker: enrich the selected candidates (or all in the job)."""
-    from app.services import cost_service
+    from app.services.operations import cost_service
     try:
         await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
         async with cost_service.cost_context(
@@ -1067,6 +1068,10 @@ async def _run_job_enrich(
             await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(exc)[:300])
         except Exception:
             pass
+        await apify_health.alert_if_actionable(
+            exc, where=f"candidate enrichment (pipeline {pipeline_id}, job {job_id})",
+            extra={"pipelineId": pipeline_id, "jobId": job_id},
+        )
 
 
 # ── Apify discovery: search questionnaire → candidates → auto-enrich ────────
@@ -1218,8 +1223,8 @@ async def _run_search(
     pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
 ) -> List[Dict[str, Any]]:
     """One PAID Apify search → parsed short profiles. Metered by the caller's stage."""
-    from app.services.apify_search_service import get_apify_search_service, parse_short_profile
-    from app.services import cost_service
+    from app.services.sourcing.apify_search_service import get_apify_search_service, parse_short_profile
+    from app.services.operations import cost_service
 
     async with cost_service.cost_context(
         cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
@@ -1318,7 +1323,7 @@ def _channel_screen_policy(
         # an owner/founder/Geschäftsführer is running a business, not doing the
         # hands-on specialty. A genuine title match never reaches here (it was
         # already kept), so this only ever drops a non-matching executive.
-        from app.services import prescreen_service as _ps
+        from app.services.sourcing import prescreen_service as _ps
         if _ps.is_executive_title(title):
             return False, {
                 **verdict, "decision": "drop",
@@ -1366,7 +1371,7 @@ async def _store_profiles(
       2. Title pre-screen (the existing role-relevance heuristic).
     """
     from app.config import settings
-    from app.services import location_resolver, prescreen_service
+    from app.services.sourcing import location_resolver, prescreen_service
 
     candidates_col = await get_collection("candidates")
     cand_ids: List[str] = []
@@ -1481,7 +1486,7 @@ async def _audit_sourcing_results(
     channels) so it audits exactly what the recruiter will see. The auditor now
     HIDES high-confidence off-specialty results, so a recount follows any
     rejection. Returns the QA summary (``{}`` if there was nothing to audit)."""
-    from app.services import sourcing_qa_service
+    from app.services.sourcing import sourcing_qa_service
 
     candidates_col = await get_collection("candidates")
     kept: List[Dict[str, Any]] = []
@@ -1566,7 +1571,7 @@ async def _audit_combined_results(
     requirements: Dict[str, Any] = {}
     try:
         from app.database import get_database
-        from app.services import role_spec_service
+        from app.services.sourcing import role_spec_service
         spec = await role_spec_service.get_or_create_for_job(
             await get_database(), job_id)
         requirements = (spec or {}).get("requirements") or {}
@@ -1662,7 +1667,7 @@ async def _search_with_broadening(
     an honest short/empty result the recruiter can consciously widen.
     """
     from app.config import settings
-    from app.services.apify_profile_service import ApifyRunFailed
+    from app.services.sourcing.apify_profile_service import ApifyRunFailed
     from app.services.sourcing import SearchAttempt, build_brief, next_attempt
     from app.services.sourcing.models import BroadeningStep
 
@@ -1785,7 +1790,7 @@ async def _discover_candidates_for_job(
         requirements: Dict[str, Any] = {}
         try:
             from app.database import get_database
-            from app.services import role_spec_service
+            from app.services.sourcing import role_spec_service
 
             spec = await role_spec_service.get_or_create_for_job(await get_database(), job_id)
             requirements = (spec or {}).get("requirements") or {}
@@ -1796,7 +1801,7 @@ async def _discover_candidates_for_job(
         # The location the recruiter ASKED for — the original filters, not the
         # broadened ones (the Broadener may relax location as a last resort; the
         # gate must judge against the recruiter's actual instruction).
-        from app.services import location_resolver as _locres
+        from app.services.sourcing import location_resolver as _locres
         req_location = _locres.requested_location(filters, requirements)
 
         now = datetime.utcnow()
@@ -1916,6 +1921,13 @@ async def _discover_candidates_for_job(
                           status_field=sfield, **{efield: str(exc)[:300]})
         except Exception:
             pass
+        # Tell the operator only if this is a wall they must clear (dead token,
+        # exhausted plan). Deduped by cause, so one bad token does not send one
+        # email per job.
+        await apify_health.alert_if_actionable(
+            exc, where=f"candidate discovery (pipeline {pipeline_id}, job {job_id})",
+            extra={"pipelineId": pipeline_id, "jobId": job_id},
+        )
         return None
 
 
@@ -2001,21 +2013,15 @@ async def _dedupe_cross_engine(pipeline_id: str, job_id: str) -> int:
     return merged
 
 
-# Markers that mean "the vendor refused on a billing/plan/quota limit", NOT
-# "no candidates matched". Surfacing the difference is the whole point of the
-# rollup fix — a plan limit must never read as an empty talent pool.
-_QUOTA_MARKERS = (
-    "free user run limit", "run limit reached", "monthly limit", "plan limit",
-    "quota", "credit", "out of credits", "payment required", "upgrade your plan",
-    "usage limit", "rate limit exceeded",
-)
-
-
+# "The vendor refused on a billing/plan limit", NOT "no candidates matched" —
+# surfacing that difference is the whole point of the rollup fix, since a plan
+# limit must never read as an empty talent pool. The marker list moved to
+# apify_health: this was the third of three copies that disagreed with each
+# other, so the verdict depended on which layer saw the error first.
 def _is_quota_error(msg: Optional[str]) -> bool:
     if not msg:
         return False
-    m = msg.lower()
-    return any(marker in m for marker in _QUOTA_MARKERS)
+    return apify_health.is_spend_error(msg)
 
 
 async def _engine_errors(pipeline_id: str, job_id: str) -> Dict[str, Optional[str]]:
@@ -2116,7 +2122,7 @@ async def _combined_discover_for_job(
     """Run the enabled engines concurrently, dedup, and roll their sub-statuses
     up into the shared ``searchStatus``. Owns the single claim/recount/enrich so
     the two managed workers never race on the rollup."""
-    from app.services import cost_service
+    from app.services.operations import cost_service
 
     from app.config import settings as _settings
     run_apify = bool(engines.get("apify", True)) and bool(apify_filters)
@@ -2136,6 +2142,17 @@ async def _combined_discover_for_job(
         return
 
     try:
+        # Preflight before spending anything: a dead token or an exhausted plan
+        # is far cheaper to learn about here than after the run reports "no
+        # candidates". Once per run, not per job, and never fatal — a preflight
+        # that could block sourcing would be a worse bug than the one it warns
+        # about.
+        if run_apify:
+            try:
+                await apify_health.preflight(source="discovery run")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Combined] Apify preflight skipped: %s", exc)
+
         names: List[str] = []
         coros = []
         if run_apify:
@@ -2210,6 +2227,17 @@ async def _combined_discover_for_job(
         await _finish(pipeline_id, job_id, status=rollup,
                       lastSearchedAt=datetime.utcnow(), searchError=err,
                       searchNotice=err, searchQuotaHit=bool(quota_hit))
+
+        # The rollup already classified the Apify failure to write searchQuotaHit;
+        # until now that verdict only reached the database. Route it to the person
+        # who can actually clear the wall.
+        apify_error = engine_errors.get("apify")
+        if apify_error and "apify" in failed:
+            await apify_health.alert_if_actionable(
+                apify_error,
+                where=f"combined discovery rollup (pipeline {pipeline_id}, job {job_id})",
+                extra={"pipelineId": pipeline_id, "jobId": job_id, "rollup": rollup},
+            )
 
         # Enrich readiness follows the Apify (deep-scrape) side; Apollo is
         # search-only (contact revealed on demand).

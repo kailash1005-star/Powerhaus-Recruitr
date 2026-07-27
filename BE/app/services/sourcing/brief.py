@@ -36,7 +36,7 @@ async def _role_spec(job_id: str, job_doc: dict) -> Dict[str, Any]:
     with no LLM key configured) — it just falls back to a thinner brief.
     """
     try:
-        from app.services import role_spec_service
+        from app.services.sourcing import role_spec_service
 
         db = await get_database()
         spec = await role_spec_service.get_or_create_for_job(db, job_id)

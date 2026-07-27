@@ -385,6 +385,26 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = Field(default="Recruitr", description="From display name")
     OUTREACH_SENDER_NAME: str = Field(default="The Talent Team", description="Signature name used in drafted emails")
 
+    # ── Operator alerts (Apify token / plan-limit early warning) ───────────
+    # Emails the OPERATOR (not a candidate) when a background job hits a vendor
+    # wall it cannot recover from — a dead APIFY_TOKEN or an exhausted plan —
+    # so the key gets rotated before runs start silently returning nothing.
+    # Reuses the SMTP settings above; off unless BOTH the flag is on and SMTP is
+    # configured, so merging this cannot change a running deployment.
+    ALERTS_ENABLED: bool = Field(default=False, description="Send operator alert emails on vendor failures")
+    ALERT_RECIPIENTS: str = Field(
+        default="",
+        description="Comma-separated alert recipients; falls back to ADMIN_EMAILS when blank",
+    )
+    # A dead token fails on EVERY job of a run. Without a cooldown that is ~50
+    # identical emails in two minutes, which just teaches the operator to filter
+    # the channel. Occurrences inside the window are counted, not sent.
+    ALERT_COOLDOWN_MINUTES: int = Field(default=60, description="Minimum minutes between identical alerts")
+    # Warn while there is still headroom to act. Measured against the account's
+    # real ceiling (see docs/engineering/APIFY_LIMITS.md — $5/cycle on the free
+    # plan, cycle running 22nd->21st, both read live from the API). 0 disables.
+    APIFY_USAGE_WARN_PCT: int = Field(default=80, description="Warn when Apify spend reaches this %% of the plan cap (0=off)")
+
     # ── Outreach tracking (Smartlead sending + Cal.com meetings) ───────────
     # The CRM (Outreach → Leads/Candidates) renders off a read model fed by
     # provider WEBHOOKS. None of these are required for the UI to load — when

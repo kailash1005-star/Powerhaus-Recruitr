@@ -29,8 +29,8 @@ from bson import ObjectId
 
 from app.config import settings
 from app.database import get_collection
-from app.services import candidate_merge
-from app.services.apify_profile_service import (
+from app.services.sourcing import candidate_merge
+from app.services.sourcing.apify_profile_service import (
     ApifyCostGuard,
     ApifyEnrichmentError,
     get_apify_profile_service,
@@ -242,7 +242,7 @@ async def bulk_enrich(
     apollo_failed, skipped}``.
     """
     from app.database import get_database
-    from app.services.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
+    from app.services.sourcing.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
 
     db = await get_database()
     candidates_col = db["candidates"]
@@ -308,7 +308,7 @@ async def apollo_enrich_only(
     Apify counters left at zero.
     """
     from app.database import get_database
-    from app.services.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
+    from app.services.sourcing.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
 
     db = await get_database()
     candidates_col = db["candidates"]

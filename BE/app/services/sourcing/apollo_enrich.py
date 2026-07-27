@@ -49,7 +49,7 @@ def _people_match(apollo_id: str) -> Optional[Dict[str, Any]]:
     # subscription, so cost is $0 at the event — the credit is recorded for the
     # dashboard to allocate the plan across searches by usage.
     try:
-        from app.services import cost_service
+        from app.services.operations import cost_service
         cost_service.record_event(
             service="apollo", operation="people_match",
             unit="credit", quantity=1, vendor_ref=str(apollo_id),

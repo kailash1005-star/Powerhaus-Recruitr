@@ -17,11 +17,11 @@ from pymongo.errors import DuplicateKeyError
 
 from app.database import get_collection
 from app.config import settings
-from app.services.jobspy_service import scrape_and_store_jobs
-from app.services.naukri_service import scrape_and_store_naukri_jobs
-from app.services.openai_company_service import OpenAICompanyService
+from app.services.campaigns.jobspy_service import scrape_and_store_jobs
+from app.services.campaigns.naukri_service import scrape_and_store_naukri_jobs
+from app.services.campaigns.openai_company_service import OpenAICompanyService
 from app.services.agent.prospect_sourcing_agent import source_prospects_for_company
-from app.services.apify_company_service import ApifyCompanyService, get_apify_company_service
+from app.services.campaigns.apify_company_service import ApifyCompanyService, get_apify_company_service
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,12 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any], tenant
         site_names = run_config.get("siteName", [])
         run_jobspy = "linkedin" in site_names
         run_naukri = "naukri" in site_names
-        if not run_jobspy and not run_naukri:
+        # Mittelstand is a source like any other here: it produces `jobs` rows in
+        # the same shape, so Phase 2/3 and the whole results UI work on it
+        # unchanged. It is opt-in only — never inferred from `source`, so no
+        # existing run can start doing this by accident.
+        run_mittelstand = "mittelstand" in site_names
+        if not run_jobspy and not run_naukri and not run_mittelstand:
             if source in ["naukri", "mixed"]:
                 run_naukri = True
             if source in ["jobspy", "mixed"]:
@@ -94,7 +99,7 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any], tenant
 
         if run_naukri:
             print("[Orchestrator] Running Naukri scraper")
-            from app.services import cost_service
+            from app.services.operations import cost_service
             async with cost_service.cost_context(cost_service.STAGE_JOB, runId=run_id):
                 nk_stats = await scrape_and_store_naukri_jobs(run_oid, run_config, jobs_col)
             total_scraped += nk_stats.get("total_scraped", 0)
@@ -102,6 +107,24 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any], tenant
             total_duplicates += nk_stats.get("duplicates", 0)
             total_accepted += nk_stats.get("accepted", 0)
             total_rejected += nk_stats.get("rejected", 0)
+
+        if run_mittelstand:
+            print("[Orchestrator] Running Mittelstand careers-page discovery")
+            from app.services.operations import cost_service
+            from app.services.campaigns.mittelstand_service import scrape_and_store_mittelstand_jobs
+
+            async with cost_service.cost_context(cost_service.STAGE_JOB, runId=run_id):
+                # This one writes its own company rows: the domain is already
+                # proven from the Impressum, so there is nothing for Phase 2's
+                # LinkedIn lookup to add.
+                ms_stats = await scrape_and_store_mittelstand_jobs(
+                    run_oid, run_config, jobs_col, companies_col
+                )
+            total_scraped += ms_stats.get("total_scraped", 0)
+            total_inserted += ms_stats.get("inserted", 0)
+            total_duplicates += ms_stats.get("duplicates", 0)
+            total_accepted += ms_stats.get("accepted", 0)
+            total_rejected += ms_stats.get("rejected", 0)
 
         await runs_col.update_one(
             {"_id": run_oid},
@@ -129,7 +152,7 @@ async def process_run_background(run_id: str, run_config: Dict[str, Any], tenant
         # Merge user-added industries (treat both lists as the same target pool)
         all_target_industries = list({*(target_industries), *(custom_industries)})
 
-        from app.services import cost_service
+        from app.services.operations import cost_service
         async with cost_service.cost_context(cost_service.STAGE_COMPANY, runId=run_id):
             phase2_stats = await _run_phase2(
                 run_oid=run_oid,
@@ -222,9 +245,14 @@ async def _run_phase2(
     # gracefully (companies are skipped, their jobs left untouched).
     company_svc = get_apify_company_service()
 
-    # Group accepted jobs by their LinkedIn companyUrl
+    # Group accepted jobs by their LinkedIn companyUrl.
+    #
+    # Mittelstand jobs are excluded: their `companyUrl` is the company's own site,
+    # not a LinkedIn page, so the Apify lookup could only fail on them — and their
+    # company row is already written and linked, from a register-verified domain.
+    # Sending them through would waste an actor call to learn nothing.
     cursor = jobs_col.find(
-        {"runId": run_oid, "qualityStatus": "good"},
+        {"runId": run_oid, "qualityStatus": "good", "boardName": {"$ne": "mittelstand"}},
         {"_id": 1, "jobDetails.companyUrl": 1, "company": 1},
     )
     url_to_job_ids: Dict[str, list] = {}
@@ -248,6 +276,16 @@ async def _run_phase2(
         )
     except Exception as e:
         logger.error("[Phase2] Apify company lookup failed (%s) — skipping company resolution", e)
+        # This failure is otherwise INVISIBLE: company_info stays empty, every
+        # company is "skipped", and the run still reports completed with zero
+        # companies resolved. Nothing distinguishes that from "no companies
+        # matched", so without this the operator has no way to know Phase 2 was a
+        # no-op.
+        from app.services.sourcing import apify_health
+        await apify_health.alert_if_actionable(
+            e, where="campaign run, Phase 2 company resolution",
+            extra={"runId": str(run_oid), "companiesQueued": len(url_to_job_ids)},
+        )
 
     for url, job_ids in url_to_job_ids.items():
         slug = ApifyCompanyService.get_slug(url)

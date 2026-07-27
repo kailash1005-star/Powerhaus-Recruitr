@@ -40,3 +40,10 @@ yarn-error.log*
 # ── Build / test caches ─────────────────────────────────────────
 .pytest_cache/
 UI/tsconfig.tsbuildinfo
+
+# ── Mittelstand engine — still in development, must never ship ──
+# The BE integration (app/services/campaigns/mittelstand_service.py,
+# app/api/v1/mittelstand.py) imports this package optionally and no-ops
+# without it, so ignoring it here is enough to keep the feature out of any
+# build/deploy by construction, not just by discipline.
+/mittelstand/

@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from app.config import settings
-from app.services.apify_profile_service import (
+from app.services.sourcing.apify_profile_service import (
     ApifyEnrichmentError, ApifyNotConfigured, ApifyQuotaExceeded, ApifyRunFailed,
     _is_quota_error, _run_to_dict,
 )
@@ -226,7 +226,7 @@ class ApifyCompanyService:
 
         added = len(by_slug) - n_before
         try:
-            from app.services import cost_service
+            from app.services.operations import cost_service
             if added > 0:
                 vendor = info.get("usageTotalUsd") or info.get("usage_total_usd")
                 cost_service.record_event(
@@ -234,8 +234,12 @@ class ApifyCompanyService:
                     quantity=added, cost_override=(float(vendor) if vendor else None),
                     vendor_ref=str(info.get("id") or dataset_id),
                 )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Logged, not swallowed: the cost ledger doubles as the per-actor spend
+            # record the Apify alerts read, so a silent drop here under-reports
+            # usage — the one direction that matters, since it makes the account
+            # look further from its cap than it is.
+            logger.warning("[ApifyCompany] cost metering failed (lookup succeeded): %s", exc)
 
     def fetch_company_info(self, url: str) -> Optional[Dict[str, Any]]:
         """Single-company convenience wrapper (mirrors the old interface)."""

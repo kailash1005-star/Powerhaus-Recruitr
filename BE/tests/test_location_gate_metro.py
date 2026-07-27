@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services import location_resolver as lr
+from app.services.sourcing import location_resolver as lr
 
 
 # The five candidates the production run dropped on location — all in Germany.

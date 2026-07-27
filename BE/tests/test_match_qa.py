@@ -19,8 +19,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from app.services import match_qa_service as qa
-from app.services.llm_extraction_service import ExtractionError
+from app.services.matching import match_qa_service as qa
+from app.services.matching.llm_extraction_service import ExtractionError
 
 from tests.test_match_evidence import JD, MARINA
 
@@ -71,7 +71,7 @@ class _FakeDb(dict):
 
 
 def _entry_for_marina(sim: float = 0.45) -> Dict[str, Any]:
-    from app.services.matching_service import _score_candidate
+    from app.services.matching.matching_service import _score_candidate
     score, subscores, gaps, breakdown = _score_candidate(JD, MARINA, sim)
     return {
         "candidateId": "cid-marina", "fullName": "Marina W.",

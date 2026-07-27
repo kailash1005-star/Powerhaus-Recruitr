@@ -155,7 +155,7 @@ class TestEnforceDomain:
 
 class TestSearchChannels:
     async def test_merge_dedupe_and_corroboration(self, monkeypatch):
-        from app.services import candidate_pipeline as cp
+        from app.services.sourcing import candidate_pipeline as cp
 
         calls = []
 
@@ -185,7 +185,7 @@ class TestSearchChannels:
                    for c in calls[1:])
 
     async def test_keyword_channel_failure_is_not_fatal(self, monkeypatch):
-        from app.services import candidate_pipeline as cp
+        from app.services.sourcing import candidate_pipeline as cp
 
         async def fake_run_search(pid, jid, filters, max_items):
             if filters.get("currentJobTitles"):
@@ -202,7 +202,7 @@ class TestSearchChannels:
         assert counts["keyword"] == 0
 
     async def test_retries_skip_keyword_channel(self, monkeypatch):
-        from app.services import candidate_pipeline as cp
+        from app.services.sourcing import candidate_pipeline as cp
         n = {"calls": 0}
 
         async def fake_run_search(pid, jid, filters, max_items):
@@ -311,7 +311,7 @@ class TestStrategistSanitize:
 
 class TestChannelScreenPolicy:
     def test_keyword_hit_survives_title_only_gate(self):
-        from app.services.candidate_pipeline import _channel_screen_policy
+        from app.services.sourcing.candidate_pipeline import _channel_screen_policy
         keep, verdict = _channel_screen_policy(
             False, {"score": 0.0, "decision": "drop", "reasons": ["no overlap"]},
             ["keyword"],
@@ -321,7 +321,7 @@ class TestChannelScreenPolicy:
         assert verdict["score"] >= 30.0
 
     def test_title_only_drop_stays_dropped(self):
-        from app.services.candidate_pipeline import _channel_screen_policy
+        from app.services.sourcing.candidate_pipeline import _channel_screen_policy
         keep, verdict = _channel_screen_policy(
             False, {"score": 0.0, "decision": "drop", "reasons": ["no overlap"]},
             ["title"],
@@ -329,7 +329,7 @@ class TestChannelScreenPolicy:
         assert keep is False
 
     def test_corroborated_hit_gets_rank_bonus(self):
-        from app.services.candidate_pipeline import _channel_screen_policy
+        from app.services.sourcing.candidate_pipeline import _channel_screen_policy
         keep, verdict = _channel_screen_policy(
             True, {"score": 80.0, "decision": "keep", "reasons": []},
             ["title", "keyword"],
@@ -337,7 +337,7 @@ class TestChannelScreenPolicy:
         assert keep and verdict["score"] == 85.0
 
     def test_bonus_capped(self):
-        from app.services.candidate_pipeline import _channel_screen_policy
+        from app.services.sourcing.candidate_pipeline import _channel_screen_policy
         _, verdict = _channel_screen_policy(
             True, {"score": 93.0, "decision": "keep", "reasons": []},
             ["title", "keyword"],

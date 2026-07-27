@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from app.database import get_database
 from app.security.tenant import TenantContext, tenant_scope
 from app.schemas.runs import RunCreateSchema, RunResponseSchema
-from app.services.orchestrator import process_run_background
+from app.services.campaigns.orchestrator import process_run_background
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 

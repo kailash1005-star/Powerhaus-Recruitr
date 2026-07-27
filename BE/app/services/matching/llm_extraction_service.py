@@ -94,7 +94,7 @@ def _chat_json(
     Raises ExtractionError after ``retries`` failed attempts. A refusal or a
     length-truncated response is a FAILURE, not something to json.loads anyway.
     """
-    from app.services import cost_service
+    from app.services.operations import cost_service
 
     client = _get_client()
     last_err: Optional[str] = None

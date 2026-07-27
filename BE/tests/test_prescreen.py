@@ -10,7 +10,7 @@ import importlib
 
 import pytest
 
-ps = importlib.import_module("app.services.prescreen_service")
+ps = importlib.import_module("app.services.sourcing.prescreen_service")
 
 SAP_TARGETS = ["SAP S/4HANA Consultant", "SAP Consultant", "SAP Berater"]
 SAP_REQS = {"title": "SAP Consultant", "mustHaveSkills": ["SAP", "S/4HANA-Migrationen"]}

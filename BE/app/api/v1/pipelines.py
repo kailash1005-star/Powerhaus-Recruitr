@@ -31,7 +31,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.database import get_database
 from app.security.tenant import TenantContext, tenant_scope
-from app.services.candidate_pipeline import (
+from app.services.sourcing.candidate_pipeline import (
     add_job_to_pipeline,
     enqueue_apollo_discover,
     enqueue_combined_discover,
@@ -282,7 +282,7 @@ def _serialize_candidate(doc: dict) -> dict:
     doc["_id"] = str(doc["_id"])
     # The avatar-sized variant. `photoUrl` stays as stored (the 800px crop) so the
     # existing contract is unchanged; this is the one a 40px circle should load.
-    from app.services import profile_photo
+    from app.services.operations import profile_photo
 
     doc["photoThumbUrl"] = profile_photo.pick(doc, min_px=200)
     return doc
@@ -775,7 +775,7 @@ async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSche
     """Start a background match run: score the job's JD against the selected
     candidates' enriched profiles (auto-enriching any that aren't yet). Returns
     a ``matchRunId`` to poll at ``GET /matching/run/{id}``."""
-    from app.services.pipeline_match_service import start_pipeline_match
+    from app.services.matching.pipeline_match_service import start_pipeline_match
     try:
         # Only forward requirement fields the recruiter actually sent — None
         # means "keep the parsed value", an empty list is a deliberate edit.
@@ -815,8 +815,8 @@ async def get_job_requirements(pipeline_id: str, job_id: str,
     parse.
     """
     from app.database import get_database
-    from app.services import role_spec_service
-    from app.services.llm_extraction_service import ExtractionError
+    from app.services.sourcing import role_spec_service
+    from app.services.matching.llm_extraction_service import ExtractionError
 
     try:
         db = await get_database()
@@ -1078,8 +1078,8 @@ async def _bg_apify_enrich(candidate_id: str) -> None:
                                        normalize here so the UI doesn't hang.
       • ``failed``                  — the Apify actor call itself errored.
     """
-    from app.services.candidate_enrichment import enrich_candidates
-    from app.services import cost_service
+    from app.services.sourcing.candidate_enrichment import enrich_candidates
+    from app.services.operations import cost_service
     db = await get_database()
     col = db["candidates"]
     oid = ObjectId(candidate_id)
@@ -1125,7 +1125,7 @@ async def enrich_candidate(candidate_id: str, db=Depends(get_db),
     background. The client polls ``GET /candidates/{id}`` until the status
     settles (``enriched`` / ``not_found`` / ``failed``). Idempotent.
     """
-    from app.services.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
+    from app.services.sourcing.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
     try:
         col = db["candidates"]
         try:
@@ -1136,7 +1136,7 @@ async def enrich_candidate(candidate_id: str, db=Depends(get_db),
         if not cand:
             raise HTTPException(404, "Candidate not found")
 
-        from app.services import cost_service
+        from app.services.operations import cost_service
         async with cost_service.cost_context(
             cost_service.STAGE_CANDIDATE, label=cand.get("displayName"),
             candidateId=candidate_id, pipelineId=cand.get("pipelineId"),

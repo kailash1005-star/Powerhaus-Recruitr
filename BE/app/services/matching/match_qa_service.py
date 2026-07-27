@@ -55,8 +55,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
-from app.services import llm_extraction_service as llm
-from app.services.matching_service import (
+from app.services.matching import llm_extraction_service as llm
+from app.services.matching.matching_service import (
     _free_text_entries,
     _score_candidate,
     _skill_evidence_pool,

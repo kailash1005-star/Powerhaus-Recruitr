@@ -1762,3 +1762,171 @@ export function fetchQaReports(limit = 50): Promise<{
 export function fetchQaReport(id: string): Promise<QaReportDetail> {
   return get(`/api/v1/qa/reports/${id}`);
 }
+
+// ── Mittelstand sourcing ─────────────────────────────────────────────────────
+// Finds German Mittelstand companies hiring for a role on their own careers
+// page, and reports which of those openings are absent from the public board.
+
+export interface MittelstandOpening {
+  externalId: string;
+  title: string;
+  normalizedTitle: string;
+  location: string | null;
+  detailUrl: string;
+  extractionTier: string;
+  confidence: number;
+  parserVersion: string;
+  sourceUrl: string;
+  contentHash: string;
+  fetchedAt: string;
+  /** 'not_listed' | 'listed' | 'unknown' — never collapse 'unknown' into either. */
+  exclusivity: string;
+  isExclusive: boolean;
+  checkedBoards: string[];
+  exclusivityDetail: string | null;
+  /** False for openings the company has that are not what was searched for. */
+  matchesRole?: boolean;
+}
+
+export interface MittelstandCompany {
+  seedName: string;
+  legalName: string;
+  domain: string;
+  hrbNumber: string | null;
+  registerCourt: string | null;
+  verification: string;
+  verificationConfidence: number;
+  verificationRationale: string;
+  impressumUrl: string;
+  domainOrigin: string;
+  nameSimilarity: number;
+  careersUrl: string;
+  careersFoundBy: string;
+  atsVendor: string | null;
+  feedUrl: string | null;
+  extractionHow: string;
+  droppedUngrounded: number;
+  boardLocation: string | null;
+  openings: MittelstandOpening[];
+  exclusiveCount: number;
+  roleMatchCount?: number;
+  totalOpeningsOnPage?: number;
+  foundAt: string;
+}
+
+export interface MittelstandRun {
+  id: string;
+  role: string;
+  region: string;
+  maxCompanies: number;
+  useModel: boolean;
+  status: string;
+  currentPhase: string;
+  roleVariants?: string[];
+  companies?: MittelstandCompany[];
+  stats: Record<string, number>;
+  note?: string;
+  error?: string;
+  durationSeconds?: number;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export function fetchMittelstandStatus(): Promise<{
+  available: boolean;
+  modelEnabled: boolean;
+  boards: string[];
+  phases: string[];
+}> {
+  return get('/api/v1/mittelstand/status');
+}
+
+export function startMittelstandRun(body: {
+  role: string;
+  region: string;
+  maxCompanies?: number;
+  useModel?: boolean;
+}): Promise<{ id: string }> {
+  return post('/api/v1/mittelstand', body);
+}
+
+export function fetchMittelstandRun(id: string): Promise<MittelstandRun> {
+  return get(`/api/v1/mittelstand/${id}`);
+}
+
+export function listMittelstandRuns(limit = 20): Promise<MittelstandRun[]> {
+  return get(`/api/v1/mittelstand?limit=${limit}`);
+}
+
+export function deleteMittelstandRun(id: string): Promise<{ deleted: boolean }> {
+  return del(`/api/v1/mittelstand/${id}`);
+}
+
+/** Live progress for a Mittelstand run.
+ *
+ *  Deliberately a separate function from `streamRunProgress` rather than a
+ *  generalisation of it: that one is on the critical path for Campaigns, and the
+ *  cost of duplicating forty lines is much lower than the cost of a regression
+ *  in the launch progress bar. The semantics are identical, and identical for
+ *  the same hard-won reasons:
+ *
+ *    * a payload-free 'error' is a transport hiccup, NOT a failed run — closing
+ *      on it kills EventSource's own reconnect and freezes the progress bar;
+ *    * the run document, not the socket, is authoritative, so a poll backstops
+ *      the stream;
+ *    * exactly one terminal callback fires, guarded by `settled`.
+ */
+export function streamMittelstandProgress(
+  runId: string,
+  onPhase: (data: { phase: string; stats: Record<string, number>; companies: number }) => void,
+  onDone: () => void,
+  onError: (data: { message: string }) => void,
+): RunProgressStream {
+  const POLL_MS = 8000;
+
+  let settled = false;
+  let es: EventSource | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const cleanup = () => {
+    if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+    if (es) { es.close(); es = null; }
+  };
+
+  const settle = (deliver: () => void) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    deliver();
+  };
+
+  es = new EventSource(`${API_BASE}/api/v1/mittelstand/${runId}/stream`);
+
+  es.addEventListener('phase', (e) => {
+    if (settled) return;
+    try { onPhase(JSON.parse((e as MessageEvent).data)); } catch {}
+  });
+
+  es.addEventListener('done', () => settle(onDone));
+
+  es.addEventListener('error', (e) => {
+    const data = (e as MessageEvent).data;
+    if (!data) return;   // transport hiccup — let EventSource reconnect
+    let msg = { message: 'Run failed' };
+    try { msg = JSON.parse(data); } catch {}
+    settle(() => onError(msg));
+  });
+
+  pollTimer = setInterval(async () => {
+    if (settled) return;
+    try {
+      const run = await fetchMittelstandRun(runId);
+      if (run.status === 'completed') settle(onDone);
+      else if (run.status === 'failed') settle(() => onError({ message: run.error || 'Run failed' }));
+    } catch {
+      // Transient — retry on the next tick.
+    }
+  }, POLL_MS);
+
+  return { close: () => { settled = true; cleanup(); } };
+}

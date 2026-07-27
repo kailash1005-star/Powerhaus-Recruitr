@@ -75,7 +75,7 @@ def derive_anchor_terms(sources: list[str]) -> tuple[list[str], list[str]]:
     "Workday Consultant"-style single-token domain), that brand IS the core —
     the ecosystem rule only demotes a brand when a more specific word exists.
     """
-    from app.services import prescreen_service as prescreen
+    from app.services.sourcing import prescreen_service as prescreen
 
     core: set[str] = set()
     eco: set[str] = set()
@@ -93,7 +93,7 @@ def derive_anchor_terms(sources: list[str]) -> tuple[list[str], list[str]]:
 def title_in_domain(title: str, core_terms: list[str]) -> bool:
     """True when the title carries at least one CORE term (fuzzy, inflection-
     tolerant). Ecosystem terms deliberately don't count — see DomainAnchor."""
-    from app.services import prescreen_service as prescreen
+    from app.services.sourcing import prescreen_service as prescreen
 
     if not core_terms:
         return True  # nothing to anchor to — don't invent a constraint

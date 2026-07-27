@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 import pytest
 
 from app.config import settings
-from app.services import vector_store as vs
+from app.services.matching import vector_store as vs
 
 
 class _FakeCursor:

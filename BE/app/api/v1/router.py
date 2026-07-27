@@ -59,6 +59,16 @@ api_router.include_router(qa.router, prefix="/qa", tags=["QA"])
 public_router.include_router(jobs.webhook_router, prefix="/jobs", tags=["Webhooks"])
 public_router.include_router(outreach.webhook_router, prefix="/outreach", tags=["Webhooks"])
 
+# Mittelstand sourcing — OPTIONAL, same reasoning as the agent router below.
+# The engine lives in the sibling `mittelstand/` subproject; where that is not
+# present (or its deps are not installed) the feature is simply absent rather
+# than taking the API down at import time.
+try:
+    from app.api.v1 import mittelstand
+    api_router.include_router(mittelstand.router, prefix="/mittelstand", tags=["Mittelstand"])
+except Exception as e:  # noqa: BLE001
+    logger.warning("Mittelstand sourcing disabled — import failed: %s", e)
+
 # AI Engineer agent — OPTIONAL. Its third-party stack (pydantic-ai / MCP) can
 # fail to import on a version mismatch; that must never take down the whole API.
 # If it imports cleanly it's mounted at /agent; otherwise it's skipped (logged).

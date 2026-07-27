@@ -49,7 +49,7 @@ async def connect_to_mongo():
     # under concurrency: two simultaneous first-calls race to upsert and the index
     # guarantees one row rather than two.
     try:
-        from app.services.user_service import ensure_indexes as ensure_user_indexes
+        from app.services.operations.user_service import ensure_indexes as ensure_user_indexes
         await ensure_user_indexes(database)
         print("[OK] users indexes ensured")
     except Exception as e:
@@ -172,7 +172,7 @@ async def connect_to_mongo():
     # ANN backend is selected (VECTOR_BACKEND=atlas). No-op otherwise. Requires
     # an Atlas M10+ tier; builds asynchronously on the Atlas side.
     try:
-        from app.services.vector_store import ensure_atlas_indexes
+        from app.services.matching.vector_store import ensure_atlas_indexes
         await ensure_atlas_indexes(database)
         if (settings.VECTOR_BACKEND or "mongo").lower() == "atlas":
             print("[OK] Atlas search indexes ensured")

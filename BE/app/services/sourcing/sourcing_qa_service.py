@@ -39,7 +39,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config import settings
-from app.services import llm_extraction_service as llm
+from app.services.matching import llm_extraction_service as llm
 
 logger = logging.getLogger(__name__)
 

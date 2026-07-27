@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from app.services import prescreen_service as prescreen
+from app.services.sourcing import prescreen_service as prescreen
 from app.services.sourcing.common import (
     ECOSYSTEM_TOKENS, GENERIC_ROLE_WORDS, get_model, llm_available,
     title_in_domain,
@@ -135,7 +135,7 @@ def lock_target(
     """
     if not attempts:
         return decision
-    from app.services import location_catalog
+    from app.services.sourcing import location_catalog
 
     initial = attempts[0].filters
     decision.filters.currentJobTitles = list(initial.get("currentJobTitles") or [])

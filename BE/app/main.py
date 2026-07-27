@@ -7,6 +7,7 @@ from app.api.v1.router import api_router, public_router
 from app.database import connect_to_mongo, close_mongo_connection
 from app.config import settings
 from app.startup_checks import (
+    alerts_readiness,
     auth_readiness,
     log_auth_readiness,
     log_matching_readiness,
@@ -50,6 +51,7 @@ async def health_check():
         "matching": matching_readiness(),
         "outreach": outreach_readiness(),
         "auth": auth_readiness(),
+        "alerts": alerts_readiness(),
     }
 
 @app.on_event("startup")
@@ -64,26 +66,35 @@ async def startup_db_client():
     await connect_to_mongo()
     # Seed + cache the cost price book for the Cost Analyser (never blocks startup).
     try:
-        from app.services import cost_service
+        from app.services.operations import cost_service
         await cost_service.init_price_book()
     except Exception as e:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning("[Cost] price book init skipped: %s", e)
     # Fail-forward any run orphaned by the previous process dying mid-flight —
     # otherwise the UI polls a "running" status no worker is executing, forever.
-    from app.services.run_reaper import reap_stale_runs
+    from app.services.operations.run_reaper import reap_stale_runs
     await reap_stale_runs()
     # GDPR: ensure the processing-audit indexes exist, then run the retention
     # sweep (no-op unless PII_RETENTION_DAYS > 0). Both are best-effort.
     try:
         from app.database import get_database
-        from app.services import gdpr_service
+        from app.services.operations import gdpr_service
         _db = await get_database()
         await gdpr_service.ensure_indexes(_db)
         await gdpr_service.apply_retention(_db, settings.PII_RETENTION_DAYS)
     except Exception as e:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning("[GDPR] startup step skipped: %s", e)
+    # Apify preflight: catch a dead token or a nearly-exhausted plan at boot,
+    # rather than when a recruiter's run silently returns nothing. Best-effort and
+    # last, so a slow vendor call can never delay or block startup.
+    try:
+        from app.services.sourcing import apify_health
+        await apify_health.preflight(source="startup")
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("[ApifyHealth] startup preflight skipped: %s", e)
  
  
 @app.on_event("shutdown")

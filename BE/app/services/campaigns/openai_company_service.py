@@ -87,7 +87,7 @@ class OpenAICompanyService:
                     ],
                 )
                 try:
-                    from app.services import cost_service
+                    from app.services.operations import cost_service
                     cost_service.record_chat(completion, model=self._model,
                                              service="openai", operation="company_classify")
                 except Exception:  # noqa: BLE001
@@ -185,7 +185,7 @@ class OpenAICompanyService:
                     ],
                 )
                 try:
-                    from app.services import cost_service
+                    from app.services.operations import cost_service
                     cost_service.record_chat(completion, model=self._model,
                                              service="openai", operation="company_classify")
                 except Exception:  # noqa: BLE001

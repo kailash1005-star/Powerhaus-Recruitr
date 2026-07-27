@@ -30,11 +30,11 @@ from bson import ObjectId
 
 from app.config import settings
 from app.database import get_database
-from app.services import embedding_service as embeddings
-from app.services import llm_extraction_service as llm
-from app.services import profile_photo
-from app.services import role_spec_service
-from app.services.matching_service import (
+from app.services.matching import embedding_service as embeddings
+from app.services.matching import llm_extraction_service as llm
+from app.services.operations import profile_photo
+from app.services.sourcing import role_spec_service
+from app.services.matching.matching_service import (
     BASE_WEIGHTS,
     SCORING_VERSION,
     _embed_text_from_profile,
@@ -240,20 +240,20 @@ async def _run_pipeline_match(
 
     # Meter every billable call this run makes (embeddings, extraction,
     # reasoning, Apollo enrichment, Apify) under the "matching" stage.
-    from app.services import cost_service
+    from app.services.operations import cost_service
     _cost_cm = cost_service.cost_context(
         cost_service.STAGE_MATCHING, label=job_title,
         matchRunId=match_run_id, pipelineId=pipeline_id, jobId=job_id)
     await _cost_cm.__aenter__()
     try:
-        from app.services.candidate_enrichment import bulk_enrich
+        from app.services.sourcing.candidate_enrichment import bulk_enrich
 
         await log(f"Starting match · {total} candidate(s) queued")
 
         # Resolve the job's role spec — the same requirement object that drives
         # sourcing. Re-uses the existing parse/embedding when the discovery form
         # already built one for this job, instead of paying for a second opinion.
-        from app.services import role_spec_service
+        from app.services.sourcing import role_spec_service
 
         await log("Reading the job requirements…")
         spec = await role_spec_service.get_or_create_for_text(
@@ -460,7 +460,7 @@ async def _run_pipeline_match(
         # auditor is unavailable the run completes with qa.status="skipped".
         qa_summary: Optional[Dict[str, Any]] = None
         if settings.MATCH_QA_ENABLED and all_entries:
-            from app.services import match_qa_service
+            from app.services.matching import match_qa_service
 
             await log(f"Double-checking the evidence behind each score ({considered})…")
             qa_summary = await match_qa_service.audit_run(

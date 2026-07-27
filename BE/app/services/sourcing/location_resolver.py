@@ -201,7 +201,7 @@ def _resolve_country(location: Optional[str]) -> Optional[str]:
     # NOT fuzzy, so it can never manufacture a wrong-country reject). Recognises
     # the long tail of DACH cities (Koblenz, Trier, Kaiserslautern…) the inline
     # gazetteer above omits, so a bare-city requested location still gates.
-    from app.services import location_catalog
+    from app.services.sourcing import location_catalog
     cat = location_catalog.country_of(location, fuzzy=False)
     if cat and cat.lower() in _KNOWN_COUNTRIES:
         return cat.lower()
