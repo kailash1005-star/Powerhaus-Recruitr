@@ -109,3 +109,21 @@ class TestApolloDerivation:
         out = _sanitize(_hallucinated(), _brief())
         # Apify seniorityLevel 120 (Senior) → Apollo 'senior'.
         assert out.apolloPlan.seniorities == ["senior"]
+
+
+class TestBooleanAndExperienceClamps:
+    def test_boolean_query_is_preserved(self):
+        s = _hallucinated()
+        bool_query = '("SAP Retail" OR "S/4HANA Retail") AND ("Account Executive" OR "Sales Manager") AND (Germany OR Austria)'
+        s.filters.searchQuery = bool_query
+        out = _sanitize(s, _brief())
+        assert out.filters.searchQuery == bool_query
+
+    def test_min_years_maps_to_experience_enum(self):
+        s = _hallucinated()
+        s.filters.yearsOfExperience = None
+        brief = _brief()
+        brief.minYears = 5.0
+        out = _sanitize(s, brief)
+        assert out.filters.yearsOfExperience == "3"  # 3 to 5 years
+

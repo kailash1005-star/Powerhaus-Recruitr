@@ -1017,7 +1017,9 @@ async def list_job_candidates(
         total = await col.count_documents(query)
         skip = (page - 1) * limit
         direction = 1 if sort_order == "asc" else -1
-        cursor = col.find(query).sort(sort_by, direction).skip(skip).limit(limit)
+        # Always put accepted candidates (isAccepted=True) first, rejected (isAccepted=False) at the bottom.
+        sort_spec = [("isAccepted", -1), (sort_by, direction)]
+        cursor = col.find(query).sort(sort_spec).skip(skip).limit(limit)
         items: List[dict] = []
         async for doc in cursor:
             items.append(_serialize_candidate(doc))

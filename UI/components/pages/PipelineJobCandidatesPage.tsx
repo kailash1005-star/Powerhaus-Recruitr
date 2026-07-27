@@ -9,6 +9,7 @@ import { bandFor } from '../matching/shared';
 import { CandidateSlideOut } from '../CandidateSlideOut';
 import { CandidateDiscoveryForm } from '../CandidateDiscoveryForm';
 import { CandidateColumnFilter } from '../CandidateColumnFilter';
+import { SearchQueryDetailsTable } from '../SearchQueryDetailsTable';
 import {
   fetchPipelineCandidates, fetchPipeline, patchCandidate,
   fetchCandidate, bulkEnrichJobCandidates, runJobMatch, fetchCandidateFacets,
@@ -56,6 +57,26 @@ const SORT_FIELDS: Record<string, 'matchScore' | 'createdAt'> = {
   match: 'matchScore',
   added: 'createdAt',
 };
+
+/** Sort candidates so rejected candidates (isAccepted === false) sink to the bottom. */
+function sortCandidatesList(list: Candidate[], field: string | null, order: 'asc' | 'desc'): Candidate[] {
+  return [...list].sort((a, b) => {
+    const aRejected = a.isAccepted === false;
+    const bRejected = b.isAccepted === false;
+    if (aRejected !== bRejected) {
+      return aRejected ? 1 : -1;
+    }
+    if (field === 'match') {
+      const diff = (a.matchScore || 0) - (b.matchScore || 0);
+      return order === 'asc' ? diff : -diff;
+    } else if (field === 'added') {
+      const da = new Date(a.createdAt || 0).getTime();
+      const db = new Date(b.createdAt || 0).getTime();
+      return order === 'asc' ? da - db : db - da;
+    }
+    return 0;
+  });
+}
 
 function formatDate(dateStr?: string | null) {
   if (!dateStr) return '—';
@@ -235,7 +256,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       const c = await fetchPipelineCandidates(
         pipelineId, jobId, page, rowsPerPage, filters, sortBy, sortOrder,
       );
-      setCandidates(c.candidates);
+      setCandidates(sortCandidatesList(c.candidates, sortField, sortOrder));
       setPages(c.pages);
       setTotal(c.total);
     } catch (e: any) {
@@ -424,15 +445,27 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     setPage(1);
   };
 
+  const selectableCandidates = useMemo(
+    () => candidates.filter((c) => c.isAccepted !== false),
+    [candidates],
+  );
+
   const handleSelectAll = () => {
-    if (selected.size === candidates.length && candidates.length > 0) {
+    const allSelectableSelected =
+      selectableCandidates.length > 0 &&
+      selectableCandidates.every((c) => selected.has(c._id));
+
+    if (allSelectableSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(candidates.map((c) => c._id)));
+      setSelected(new Set(selectableCandidates.map((c) => c._id)));
     }
   };
 
   const toggleSelect = (id: string) => {
+    const target = candidates.find((c) => c._id === id);
+    if (target && target.isAccepted === false) return; // Unselectable when in rejected status
+
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -444,7 +477,20 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     setActionError(null);
     try {
       const updated = await patchCandidate(id, body);
-      setCandidates((prev) => prev.map((c) => (c._id === id ? updated : c)));
+      if (updated.isAccepted === false) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+      setCandidates((prev) =>
+        sortCandidatesList(
+          prev.map((c) => (c._id === id ? updated : c)),
+          sortField,
+          sortOrder,
+        ),
+      );
     } catch (e: any) {
       setActionError(e.message || 'Failed to update candidate');
     } finally {
@@ -681,7 +727,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   }
 
   return (
-    <>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <TopBar
         titleNode={
           <Link
@@ -705,7 +751,9 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         }
       />
 
-      {/* Job title strip */}
+      {/* Main scrollable body */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', minHeight: 0 }}>
+        {/* Job title strip */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '12px 24px',
         borderBottom: '1px solid var(--border-default)', background: 'var(--bg-app)',
@@ -829,10 +877,8 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         </div>
       )}
 
-      {/* The per-attempt "how this search ran" engine log (broadener actions,
-          channel counts, filter dumps) was removed — it's engineering internals
-          with no recruiter value. A thin result set is explained by the
-          shortfall note above; the list itself is what the recruiter acts on. */}
+      {/* Open, collapsible input queries table */}
+      <SearchQueryDetailsTable jobEntry={jobEntry} />
 
       {/* Filter strip */}
       <div style={{
@@ -1034,9 +1080,13 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                 <th style={{ ...thStyle, width: 44 }}>
                   <input
                     type="checkbox"
-                    checked={selected.size === candidates.length && candidates.length > 0}
+                    checked={
+                      selectableCandidates.length > 0 &&
+                      selectableCandidates.every((c) => selected.has(c._id))
+                    }
                     onChange={handleSelectAll}
-                    style={{ cursor: 'pointer' }}
+                    disabled={selectableCandidates.length === 0}
+                    style={{ cursor: selectableCandidates.length > 0 ? 'pointer' : 'not-allowed' }}
                   />
                 </th>
                 <th style={{ ...thStyle, width: 240 }}>
@@ -1121,22 +1171,26 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                   ? '#F0FDF4'
                   : '#FFF5F5';
 
-                return (
-                  <tr
-                    key={c._id}
-                    style={{ background: rowBg, transition: 'background 100ms', cursor: 'pointer' }}
-                    onClick={() => openSlideOut(c._id)}
-                    onMouseEnter={() => setHover(c._id)}
-                    onMouseLeave={() => setHover(null)}
-                  >
-                    <td style={{ ...tdStyle, width: 44 }} onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleSelect(c._id)}
-                        style={{ cursor: 'pointer' }}
-                      />
-                    </td>
+                  const isRejected = c.isAccepted === false;
+
+                  return (
+                    <tr
+                      key={c._id}
+                      style={{ background: rowBg, transition: 'background 100ms', cursor: 'pointer' }}
+                      onClick={() => openSlideOut(c._id)}
+                      onMouseEnter={() => setHover(c._id)}
+                      onMouseLeave={() => setHover(null)}
+                    >
+                      <td style={{ ...tdStyle, width: 44 }} onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          disabled={isRejected}
+                          onChange={() => toggleSelect(c._id)}
+                          style={{ cursor: isRejected ? 'not-allowed' : 'pointer', opacity: isRejected ? 0.35 : 1 }}
+                          title={isRejected ? 'Rejected candidates cannot be selected' : undefined}
+                        />
+                      </td>
                     <td style={{ ...tdStyle, fontWeight: 600, width: 240, maxWidth: 240 }}>
                       {c.externalLinkedinUrl ? (
                         <a
@@ -1367,6 +1421,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
           </div>
         </div>
       )}
+      </div>
 
       {/* Review-before-match: what the run will score against, editable. */}
       {reviewOpen && (
@@ -1497,6 +1552,6 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
           boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
         }}>{actionError}</div>
       )}
-    </>
+    </div>
   );
 }

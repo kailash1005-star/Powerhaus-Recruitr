@@ -37,88 +37,56 @@ from app.services.sourcing.models import (
 
 logger = logging.getLogger(__name__)
 
-INSTRUCTIONS = f"""You are a technical sourcing strategist. You turn a job opening
-into a LinkedIn people-search that returns REAL candidates.
+INSTRUCTIONS = f"""You are a master technical sourcing strategist. You analyze job openings and construct high-converting LinkedIn search queries and filter sets that return REAL, qualified candidates.
 
-The single most important thing you understand: a job POSTING title is written in
-employer/HR language, but you are searching PROFILE titles, which are written in
-the member's own words. They are frequently different, and searching the posting
-title verbatim is the #1 cause of a zero-result search.
+The core problem you solve:
+Job POSTINGS are written in employer/HR language ("SAP Consultant FI"), whereas LinkedIn PROFILES are self-described headlines ("SAP FICO Consultant", "Senior SAP Finance Consultant"). Searching posting titles verbatim causes zero-result searches. You translate employer requirements into profile reality.
 
-Examples of the translation you must perform:
-  • "SAP Consultant FI" → nobody's headline says that. Real titles: "SAP FICO
-    Consultant", "SAP FI Consultant", "SAP Finance Consultant", "SAP FI/CO
-    Consultant", "Senior SAP Consultant". FI is almost always paired with CO in
-    practice — include the FICO variants.
-  • "Java Developer II" → the "II" is an internal grade, never a headline. Use
-    "Java Developer", "Software Engineer", "Backend Developer".
-  • "Growth Marketing Ninja" → a real title is "Growth Marketing Manager",
-    "Performance Marketing Manager", "Digital Marketing Manager".
-  • "Cloud Architect (AWS)" → "Cloud Architect", "AWS Architect", "Solutions
-    Architect", "Cloud Solutions Architect".
+Examples of translation:
+  • "SAP Consultant FI" → "SAP FICO Consultant", "SAP FI Consultant", "SAP Finance Consultant", "SAP FI/CO Consultant", "Senior SAP Consultant".
+  • "Java Developer II" → "Java Developer", "Software Engineer", "Backend Developer".
+  • "Cloud Architect (AWS)" → "Cloud Architect", "AWS Architect", "Solutions Architect", "Cloud Solutions Architect".
 
 Rules for the filters you produce:
-1. `currentJobTitles` — 4 to 10 titles people ACTUALLY carry on LinkedIn, and
-   ALL of them inside the SAME specialization. This is the full within-specialty
-   synonym family: the common abbreviation AND the expanded form (SAP FICO / SAP
-   Finance), the local-language and English variants, the vendor's product names
-   for the same job (SAP HCM → SAP SuccessFactors, SAP HR, SAP Payroll/PY).
-   Order strongest-match first. Never include internal grades (II, L3, Band 4),
-   employment types (Contract, Permanent), or req codes. Never invent a title
-   nobody uses just to look thorough — and NEVER pad the list with a
-   neighbouring specialization (an SAP HCM search must not contain SAP FICO:
-   same platform, different profession; that goes in `adjacentTitles`).
-2. `searchQuery` — a SHORT fuzzy keyword phrase (2-4 words), NOT the full title
-   string. It is a broad keyword match, so put the domain in it ("SAP FICO"),
-   not the whole posting title.
-3. `locations` — a LinkedIn-recognisable place. Prefer the metro/city the job is
-   in; use the country when the role is remote or the city is tiny. Never emit a
-   full street address, a postcode, or an office name.
-4. `seniorityLevel` / `function` / `yearsOfExperience` / `companyHeadcount` —
-   these four are LinkedIn's OWN INFERRED fields, and they are missing or wrong
-   on a large share of real profiles (a "Senior SAP EWM Consultant" with 8 years
-   is routinely tagged Entry or left blank). Each one you set is AND-ed and
-   silently DROPS good candidates whose inferred value doesn't match. So your
-   DEFAULT for all four is NULL (Any). Only set one when the JD gives
-   UNAMBIGUOUS support for it AND you are highly confident — and even then prefer
-   to encode seniority in the TITLE WORDS ("Senior SAP EWM Consultant") rather
-   than in `seniorityLevel`. A wrong filter here is far worse than a missing one;
-   when in doubt, leave it null and add a `rationale` note saying you kept it Any
-   to protect recall.
-5. Skills are NOT a filter on this actor, but `mustHaveSkills` in the brief is
-   the EXACT list the candidate will later be scored against — a candidate who
-   carries none of them cannot pass, however good the title looks. So the
-   must-haves are your primary aiming input, not a footnote: encode them in the
-   titles and the query (must-have "S/4HANA" → add "SAP S/4HANA Consultant" as a
-   title; must-have "Entgeltabrechnung" → "Entgeltabrechner", "Payroll
-   Specialist", "Personalsachbearbeiter Entgeltabrechnung"). Never silently drop
-   the signal, and never propose titles whose holders would plainly have none of
-   the must-haves.
-6. If the recruiter named target companies, put them in `currentCompanies` — that
-   is a deliberate poach and should be respected exactly.
-7. LANGUAGE — for DACH and other non-English markets, GO BILINGUAL BY DEFAULT.
-   People describe themselves in the language they work in, and in German-speaking
-   tech, IT, engineering, finance and SAP roles that is BOTH German AND English:
-   a Bamberg sysadmin is as likely to headline "System Administrator" as
-   "Systemadministrator", and plenty write "Linux Administrator" or "IT
-   Infrastructure Engineer" outright. So whenever the JD, its must-have skills, or
-   the location is German/Austrian/Swiss (or any non-English market), emit the
-   local-language AND the common English form of EACH title — pair them, do not
-   choose one. Emitting only one language is a top cause of the empty or thin
-   result you exist to prevent. Examples of the pairing required:
-     • "IT-Systemadministrator" → also "System Administrator", "IT Administrator"
-     • "Netzwerkadministrator" → also "Network Administrator", "Network Engineer"
-     • "Softwareentwickler" → also "Software Engineer", "Software Developer"
-     • "Entgeltabrechner" → also "Payroll Specialist"
-   The ONLY exception is a term with no real English currency in that market (a
-   German labour-law clerk headlines "Personalsachbearbeiter", never "Labour Law
-   Clerk") — drop the English form ONLY when it genuinely isn't used locally,
-   never as the default. Because these professionals keep German, English, OR
-   mixed profiles, leave `profileLanguages` = null (Any) for such roles unless the
-   work truly cannot be done in English — setting a single language here silently
-   drops the very bilingual candidates these paired titles are meant to catch.
-   Domain vocabulary is the strongest language signal — trust it over the posting
-   title.
+
+1. `searchQuery` — LINKEDIN BOOLEAN SEARCH QUERY (STRICTLY CONCISE & STRAIGHT TO THE POINT):
+   Build a clean, high-converting LinkedIn Boolean search query string using standard LinkedIn syntax.
+   CRITICAL QUERY CONSTRAINTS:
+   - KEEP IT STRAIGHT TO THE POINT: Limit the query to 3 TO 6 KEYWORDS TOTAL (never exceed 6 to 8 terms).
+   - FOCUS ON TARGET JOB TITLES: The query should primarily OR-combine 3 to 5 core target title variations or 1 primary domain keyword + core titles.
+   - NO LOCATIONS IN SEARCH QUERY: NEVER include country, state, or city names (e.g., "Germany", "Bavaria", "Munich", "Deutschland") in `searchQuery`. Locations MUST be passed exclusively via the dedicated `locations` filter parameter.
+   - NO LONG SKILL OR TOOL LISTS: Do NOT append long AND-blocks of secondary skills, tools, or server technologies (e.g. do NOT add AND ("Windows Server" OR "Linux Server" OR "Virtualization" OR "Backup")). Over-constraining with AND-blocks causes zero-result searches on LinkedIn.
+   - Operators MUST be in UPPERCASE (`OR`, `AND`, `NOT`). Use double quotes `" "` for multi-word exact title phrases.
+
+   Good Examples of `searchQuery`:
+     • For IT System Administrator:
+       `("IT-Systemadministrator" OR "IT System Administrator" OR "Systemadministrator" OR "System Administrator" OR "Network Administrator")`
+     • For SAP Retail Sales Executive:
+       `("SAP Retail" OR "SAP CAR") AND ("Account Executive" OR "Sales Manager")`
+     • For Cloud Architect:
+       `("Cloud Architect" OR "AWS Architect" OR "Solutions Architect")`
+
+2. `currentJobTitles` — 4 to 8 titles real people carry on LinkedIn in the SAME specialization.
+   - Include expanded forms, common abbreviations, local-language and English terms.
+   - Never include internal grades (II, L3, Band 4), employment types (Contract, Freelance), or req codes.
+   - For bilingual markets (DACH, Europe, LatAm, Asia), include BOTH local and English titles (e.g., "IT-Systemadministrator" and "System Administrator").
+
+3. `yearsOfExperience` — DERIVED FROM JOB DESCRIPTION:
+   - Read the job description and brief to determine required experience:
+     • "1": Less than 1 year (entry level / junior)
+     • "2": 1 to 2 years
+     • "3": 3 to 5 years (mid level)
+     • "4": 6 to 10 years (senior / lead)
+     • "5": More than 10 years (principal / executive / director)
+   - If not explicitly required or implied in the JD, leave as NULL / empty (Any) to preserve candidate recall.
+
+4. `locations` — Clean LinkedIn location strings (e.g., "Bavaria, Germany", "Germany", "Munich, Germany"). Prefer city/metro area or federal state; use country for remote roles.
+
+5. Inferred LinkedIn Filters (`seniorityLevel`, `function`, `companyHeadcount`, `yearsAtCurrentCompany`):
+   - Only set when explicitly supported by the JD; default to NULL (Any) when uncertain.
+
+6. Exclusions (`excludeCurrentJobTitles`, `excludeCurrentCompanies`, `excludeLocations`, etc.):
+   - Use to exclude unwanted roles (e.g., exclude "Freelancer", "Working Student" if searching for permanent employees).
 
 Enum filters MUST use one of these codes (emit the CODE, not the label):
 {enum_vocabulary_prompt()}
@@ -126,7 +94,7 @@ Enum filters MUST use one of these codes (emit the CODE, not the label):
 Both search engines (LinkedIn and Apollo) run off this ONE proposal — the Apollo
 inputs are derived from your titles/locations/skills in code, so you do NOT need
 to restate them. Put ALL of your effort into one high-quality, in-specialty title
-family and a short query. Getting the SAME titles right serves both engines.
+family and a crisp Boolean searchQuery. Getting the SAME titles right serves both engines.
 
 Also produce:
   • `focusTitle` — the SINGLE best LinkedIn-real title for this role, the one you
@@ -300,13 +268,20 @@ def _short_query_from(title: str) -> str:
     return " ".join(parts[:3]).strip()
 
 
+def _is_boolean_query(query: str) -> bool:
+    """True if query contains Boolean search operators or grouping symbols."""
+    q = (query or "").upper()
+    return " OR " in q or " AND " in q or " NOT " in q or "(" in q or '"' in q
+
+
 def _looks_like_full_title(search_query: str, job_title: str) -> bool:
-    """True when searchQuery is really the posting title (the #1 zero-result
-    cause) — verbatim, contains it, or just too long to be a keyword phrase."""
+    """True when searchQuery is really the verbatim posting title (the #1 zero-result cause)."""
+    if _is_boolean_query(search_query):
+        return False
     sq = _toks(search_query)
     if not sq:
         return False
-    if len(sq) > 4:
+    if len(sq) > 5:
         return True
     s = " ".join(sq)
     jt = " ".join(_toks(job_title))
@@ -370,6 +345,20 @@ def _derive_apollo_plan(
     return ApolloPlan(titles=titles, qKeywords=qkw, locations=locs, seniorities=seniorities)
 
 
+def _map_min_years_to_enum(min_years: float) -> str:
+    """Convert a numeric years requirement to HarvestAPI enum code ('1'..'5')."""
+    if min_years < 1:
+        return "1"
+    elif min_years < 3:
+        return "2"
+    elif min_years < 6:
+        return "3"
+    elif min_years < 10:
+        return "4"
+    else:
+        return "5"
+
+
 def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     """Defensive clamps on model output (same spirit as account_intel's planner).
 
@@ -382,6 +371,10 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     if f.is_empty():
         logger.warning("[Strategist] returned an empty filter set — literal prefill")
         return _fallback(brief)
+
+    # Auto-map brief.minYears if experience filter wasn't explicitly set by the model
+    if not f.yearsOfExperience and brief.minYears is not None:
+        f.yearsOfExperience = _map_min_years_to_enum(brief.minYears)
 
     # ── Title family: drop brand+module fragments ("SAP CO", "SAP PS") that no
     # one carries as a headline, then dedupe and cap at 10 (past that the actor's

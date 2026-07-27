@@ -546,6 +546,13 @@ export interface SearchShortfall {
   at?: string;
 }
 
+export interface BroadeningStepEntry {
+  step?: number;
+  action?: string;
+  reasoning?: string;
+  filters?: Record<string, unknown>;
+}
+
 export interface PipelineJob {
   jobId: string;
   jobTitle: string;
@@ -576,6 +583,10 @@ export interface PipelineJob {
   searchShortfall?: SearchShortfall | null;
   /** The filters the last discovery ran with (rerun/widen replays these). */
   lastDiscoverFilters?: Record<string, unknown> | null;
+  /** Planned fallbacks/ladder from the Strategist. */
+  lastDiscoverLadder?: BroadeningStepEntry[] | null;
+  /** Apollo filters if Apollo search ran. */
+  lastApolloFilters?: Record<string, unknown> | null;
   /** Adjacent-specialty titles the Strategist proposed — opt-in widen chips. */
   adjacentTitles?: string[] | null;
 }
