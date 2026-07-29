@@ -29,9 +29,10 @@ from app.services.sourcing.common import (
     ECOSYSTEM_TOKENS, GENERIC_ROLE_WORDS, derive_anchor_terms, get_model,
     llm_available, title_in_domain,
 )
+from app.services.sourcing.judge import judge_query
 from app.services.sourcing.models import (
     ApolloPlan, BroadeningStep, DomainAnchor,
-    FilterRationale, SearchBrief, SearchFilters, SearchStrategy,
+    FilterRationale, QueryJudgment, SearchBrief, SearchFilters, SearchStrategy,
     enum_vocabulary_prompt,
 )
 
@@ -71,19 +72,29 @@ Rules for the filters you produce:
    - Never include internal grades (II, L3, Band 4), employment types (Contract, Freelance), or req codes.
    - For bilingual markets (DACH, Europe, LatAm, Asia), include BOTH local and English titles (e.g., "IT-Systemadministrator" and "System Administrator").
 
-3. `yearsOfExperience` — DERIVED FROM JOB DESCRIPTION:
-   - Read the job description and brief to determine required experience:
+3. `yearsOfExperience` — ONLY WHEN THE JD EXPLICITLY STATES A YEARS REQUIREMENT:
+   - Set this filter ONLY if the job description names an explicit number of
+     years of experience (e.g. "5+ years", "at least 3 years", "3–5 Jahre
+     Berufserfahrung", "mindestens 2 Jahre"). Map the stated minimum:
      • "1": Less than 1 year (entry level / junior)
      • "2": 1 to 2 years
      • "3": 3 to 5 years (mid level)
      • "4": 6 to 10 years (senior / lead)
      • "5": More than 10 years (principal / executive / director)
-   - If not explicitly required or implied in the JD, leave as NULL / empty (Any) to preserve candidate recall.
+   - DO NOT infer years from the seniority of the title, the word "senior", or
+     the general tone of the JD. If no explicit number of years appears in the
+     text, leave this NULL / empty (Any). Guessing silently drops qualified
+     people whose profiles don't spell out their tenure. (This is also enforced
+     in code: a years value with no explicit basis is discarded.)
 
 4. `locations` — Clean LinkedIn location strings (e.g., "Bavaria, Germany", "Germany", "Munich, Germany"). Prefer city/metro area or federal state; use country for remote roles.
 
 5. Inferred LinkedIn Filters (`seniorityLevel`, `function`, `companyHeadcount`, `yearsAtCurrentCompany`):
-   - Only set when explicitly supported by the JD; default to NULL (Any) when uncertain.
+   - ALWAYS leave these NULL (Any). NEVER emit a value for them. They are
+     LinkedIn-INFERRED fields that are routinely blank or wrong on real profiles,
+     so any value you set silently drops matching people. The title family and
+     the searchQuery already carry the seniority/function signal. (Enforced in
+     code: any value you emit for these four is discarded.)
 
 6. Exclusions (`excludeCurrentJobTitles`, `excludeCurrentCompanies`, `excludeLocations`, etc.):
    - Use to exclude unwanted roles (e.g., exclude "Freelancer", "Working Student" if searching for permanent employees).
@@ -155,28 +166,49 @@ def _build_agent() -> Agent:
 
 
 def _fallback(brief: SearchBrief) -> SearchStrategy:
-    """The old literal-title prefill, as a graceful degrade.
+    """A SEARCHABLE degrade used when the LLM is unavailable or errors.
 
-    Used when no LLM key is configured or the agent call fails. The recruiter
-    still gets a usable form — just without the translation — and `confidence: 0`
-    plus a warning tells the UI (and them) that the AI did not run.
+    The old fallback prefilled the verbatim posting title as both the query and
+    the sole title — which is the single documented #1 cause of zero-result
+    searches. This one does the safe, deterministic parts of the Strategist's job
+    WITHOUT a model: it strips internal grades / req codes / employment-type
+    noise off the posting title, derives a SHORT keyword query (never the full
+    title), builds a small real-title family, canonicalises the location, and
+    lays down a heuristic broadening ladder. `confidence: 0` and a warning still
+    tell the UI the AI did not run and the filters want a human review.
     """
-    core, eco = derive_anchor_terms([brief.jobTitle])
+    base = _clean_posting_title(brief.jobTitle)
+    titles = _heuristic_title_family(brief)
+    query = _short_query_from(base) or base
+    locations = _normalize_locations(
+        [brief.jobLocation] if brief.jobLocation else [])
+    core, eco = derive_anchor_terms([base, *titles])
+
+    f = SearchFilters(
+        searchQuery=query,
+        currentJobTitles=titles,
+        locations=locations,
+    )
+    # Only the recruiter's EXPLICIT minYears may set the experience filter — never
+    # an assumption. Everything else (seniority/function/headcount) stays Any.
+    if brief.minYears is not None:
+        f.yearsOfExperience = _map_min_years_to_enum(brief.minYears)
+
     return SearchStrategy(
-        interpretedRole=brief.jobTitle,
-        focusTitle=brief.jobTitle,
-        titleReasoning="AI suggestions unavailable — prefilled from the job title as-is.",
-        filters=SearchFilters(
-            searchQuery=brief.jobTitle,
-            currentJobTitles=[brief.jobTitle] if brief.jobTitle else [],
-            locations=[brief.jobLocation] if brief.jobLocation else [],
+        interpretedRole=base or brief.jobTitle,
+        focusTitle=titles[0] if titles else (base or brief.jobTitle),
+        titleReasoning=(
+            "AI suggestions unavailable — prefilled a cleaned title and a short "
+            "keyword query from the posting. Review before searching."
         ),
+        filters=f,
         apolloPlan=ApolloPlan(
-            titles=[brief.jobTitle] if brief.jobTitle else [],
-            qKeywords=list(brief.mustHaveSkills[:3]),
-            locations=[brief.jobLocation] if brief.jobLocation else [],
+            titles=titles or ([base] if base else []),
+            qKeywords=_dedupe(list(brief.mustHaveSkills or []) or list(core), 3),
+            locations=locations,
         ),
         domainAnchor=DomainAnchor(coreTerms=core, ecosystemTerms=eco),
+        broadeningLadder=_heuristic_ladder(f),
         confidence=0.0,
         warnings=["AI suggestions unavailable — review these filters before searching."],
     )
@@ -220,7 +252,68 @@ async def propose_strategy(brief: SearchBrief) -> SearchStrategy:
         logger.error("[Strategist] failed (%s) — literal prefill", exc, exc_info=True)
         return _fallback(brief)
 
-    return _sanitize(strategy, brief)
+    strategy = _sanitize(strategy, brief)
+    # LLM-as-judge: verify the titles + Boolean query would actually return real
+    # people BEFORE any vendor spend, and auto-correct them when they wouldn't.
+    return await _apply_judgment(strategy, brief)
+
+
+async def _apply_judgment(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
+    """Run the query Judge and fold its verdict into the strategy.
+
+    Auto-correct + flag (the chosen policy): a repaired query/title family the
+    Judge hands back is swapped in and re-sanitised through the same clamps, so a
+    correction can never bypass the domain/location guarantees. Title repairs are
+    additionally held to the ORIGINAL domain anchor — the Judge fixes phrasing,
+    never the target profession. The verdict never blocks the run; it only lowers
+    confidence and adds warnings the recruiter sees before clicking Run search.
+    """
+    try:
+        judgment = await judge_query(strategy, brief.jobDescription)
+    except Exception as exc:  # noqa: BLE001 — the vet is best-effort
+        logger.error("[Judge] apply failed (%s) — leaving strategy as-is", exc, exc_info=True)
+        return strategy
+    if judgment is None:
+        return strategy
+
+    changed = False
+    f = strategy.filters
+
+    # Query repair: goes back through _sanitize's short-query / full-title clamps.
+    new_query = (judgment.suggestedSearchQuery or "").strip()
+    if new_query and new_query.lower() != (f.searchQuery or "").strip().lower():
+        f.searchQuery = new_query
+        changed = True
+
+    # Title repair: only titles that stay in the ORIGINAL specialization.
+    core = strategy.domainAnchor.coreTerms if strategy.domainAnchor else []
+    suggested = [t.strip() for t in (judgment.suggestedTitles or []) if t and t.strip()]
+    if suggested:
+        in_domain = [t for t in suggested if title_in_domain(t, core)]
+        if in_domain:
+            f.currentJobTitles = in_domain
+            changed = True
+        else:
+            logger.info("[Judge] ignored off-domain title repair %s (anchor %s)",
+                        suggested, core)
+
+    if changed:
+        strategy = _sanitize(strategy, brief)
+
+    # Flag: surface the Judge's concerns and temper confidence by verdict.
+    for issue in judgment.issues:
+        if issue and issue not in strategy.warnings:
+            strategy.warnings.append(issue)
+    if judgment.verdict == "unsearchable":
+        strategy.warnings.append(
+            "The query may return no results on LinkedIn — "
+            + (judgment.reasoning or "review the titles and search query before running.")
+        )
+        strategy.confidence = min(strategy.confidence, 0.2)
+    elif judgment.verdict == "risky":
+        strategy.confidence = min(strategy.confidence, 0.6)
+
+    return strategy
 
 
 # ── Title / query / location quality clamps ─────────────────────────────────
@@ -359,6 +452,130 @@ def _map_min_years_to_enum(min_years: float) -> str:
         return "5"
 
 
+# LinkedIn-inferred enum filters that must NEVER carry an AI-assumed value: they
+# are blank/wrong on most real profiles, so any value silently drops matches.
+# Always forced to Any (None) — the recruiter can set them by hand if they truly
+# need to narrow. `yearsOfExperience` is handled separately (allowed ONLY on an
+# explicit basis), so it is deliberately NOT in this set.
+_ENUM_INFERRED_FIELDS = (
+    "seniorityLevel", "excludeSeniorityLevel",
+    "function", "excludeFunction",
+    "companyHeadcount", "yearsAtCurrentCompany",
+)
+
+# An explicit years-of-experience requirement in a JD, EN + DE. Matches a NUMBER
+# bound to a years/Jahre unit: "5+ years", "3-5 years", "at least 2 years",
+# "min. 3 Jahre", "3 Jahre Berufserfahrung". Deliberately strict: a number with
+# no years unit (headcounts, dates), or the seniority of a title / the word
+# "senior" / a bare "experience with X", is NOT a match — that is an assumption,
+# and the whole point of the gate is to refuse assumptions.
+_YEARS_EXPLICIT_RE = re.compile(
+    r"\b\d{1,2}\s*(?:\+|to|-|–|bis)?\s*\d{0,2}\s*"
+    r"(?:years?|yrs?|jahre?n?)\b"
+    r"|\b\d{1,2}\s*(?:\+|plus)?\s*(?:years?|yrs?|jahre?n?)\b",
+    re.IGNORECASE,
+)
+
+# Internal grades / bands / levels employers append that no one headlines:
+# "II", "III", "L3", "Level 2", "Band 4", "Grade 3", "(m/w/d)", "(f/m/x)".
+_GRADE_RE = re.compile(
+    r"\(?\b(?:m\s*/\s*w\s*/\s*[dx]|f\s*/\s*m\s*/\s*[dx]|w\s*/\s*m\s*/\s*[dx])\b\)?"
+    r"|\b(?:level|lvl|band|grade|stufe|tier)\s*[-]?\s*\d+\b"
+    r"|\bl\d\b"
+    r"|\b[IVX]{1,4}\b(?=\s*$|\s*[-–|(])"
+    r"|\breq(?:uisition)?\s*#?\s*\d+\b",
+    re.IGNORECASE,
+)
+# Employment-type noise that belongs in filters, not a title.
+_EMPLOYMENT_WORDS = frozenset({
+    "contract", "contractor", "freelance", "freelancer", "permanent",
+    "fulltime", "full-time", "parttime", "part-time", "temporary", "temp",
+    "intern", "internship", "werkstudent", "festanstellung", "vollzeit",
+    "teilzeit", "remote", "onsite", "hybrid",
+})
+
+
+def _clean_posting_title(title: str) -> str:
+    """Strip grades / req codes / employment-type / gender tags off a posting
+    title, leaving the real role words. 'Senior Java Developer II (m/w/d)' →
+    'Senior Java Developer'; 'SAP FICO Consultant - Contract' → 'SAP FICO
+    Consultant'. Never returns empty when given a non-empty title (falls back to
+    the original if cleaning would erase everything)."""
+    raw = (title or "").strip()
+    if not raw:
+        return ""
+    # Drop bracketed asides and trailing separators first.
+    cut = re.sub(r"\([^)]*\)", " ", raw)
+    cut = _GRADE_RE.sub(" ", cut)
+    words = [w for w in re.split(r"\s+", cut) if w]
+    words = [w for w in words if w.strip("-/,").lower() not in _EMPLOYMENT_WORDS]
+    cleaned = " ".join(words).strip(" -/,")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned or raw
+
+
+def _heuristic_title_family(brief: SearchBrief) -> list[str]:
+    """A small, real-title family WITHOUT a model: the cleaned posting title,
+    a seniority-stripped base, and the recruiter's seniority hint applied — the
+    deterministic slice of what the Strategist would produce. Deduped, capped."""
+    base = _clean_posting_title(brief.jobTitle)
+    fam: list[str] = []
+    if base:
+        fam.append(base)
+        # A seniority-stripped variant widens recall ("Senior SAP FI Consultant"
+        # → "SAP FI Consultant") — many members drop the seniority word.
+        stripped = " ".join(
+            w for w in base.split()
+            if w.lower() not in {"senior", "junior", "lead", "principal", "staff"}
+        ).strip()
+        if stripped and stripped.lower() != base.lower():
+            fam.append(stripped)
+    return _dedupe(fam, 8)
+
+
+def _heuristic_ladder(f: SearchFilters) -> list[BroadeningStep]:
+    """A deterministic broadening ladder for the fallback: drop the inferred
+    enums, then widen the city to its OWN federal state. Titles/query stay locked
+    (same rule the Broadener enforces). Empty when there's nothing to relax."""
+    steps: list[BroadeningStep] = []
+
+    # Step 1: drop any experience filter (the only enum the fallback may set).
+    if f.yearsOfExperience:
+        relaxed = f.model_copy(deep=True)
+        relaxed.yearsOfExperience = None
+        steps.append(BroadeningStep(
+            step=len(steps) + 1, action="widen_years",
+            detail="Dropped the years-of-experience filter — profiles rarely state tenure.",
+            filters=relaxed,
+        ))
+
+    # Final step: widen a city to its own federal state, if it widens.
+    widened = location_catalog.clamp_locations(
+        list(f.locations or []),
+        [location_catalog.state_widening(l) or l for l in (f.locations or [])],
+    )
+    if widened and widened != list(f.locations or []):
+        relaxed = f.model_copy(deep=True)
+        relaxed.yearsOfExperience = None
+        relaxed.locations = widened
+        steps.append(BroadeningStep(
+            step=len(steps) + 1, action="widen_location",
+            detail=f"Widened the city to its federal state ({', '.join(widened)}).",
+            filters=relaxed,
+        ))
+    return steps
+
+
+def _jd_states_years(text: str) -> bool:
+    """True when the JD explicitly names a years-of-experience requirement.
+
+    The gate behind "only use the experience filter when explicitly mentioned":
+    a match here is the ONLY thing (besides the recruiter's own minYears) that
+    lets an AI-proposed yearsOfExperience survive. Title seniority and the word
+    'senior' deliberately do NOT match."""
+    return bool(_YEARS_EXPLICIT_RE.search(text or ""))
+
+
 def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     """Defensive clamps on model output (same spirit as account_intel's planner).
 
@@ -372,9 +589,28 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
         logger.warning("[Strategist] returned an empty filter set — literal prefill")
         return _fallback(brief)
 
-    # Auto-map brief.minYears if experience filter wasn't explicitly set by the model
-    if not f.yearsOfExperience and brief.minYears is not None:
+    # ── Inferred enum filters are FORCED to Any ─────────────────────────────
+    # seniorityLevel / function / companyHeadcount / yearsAtCurrentCompany (and
+    # their excludes) are blank or wrong on most real profiles, so an AI-assumed
+    # value silently drops qualifying people. We never let the model set them —
+    # the recruiter can narrow by hand in the Advanced panel if they must.
+    for field in _ENUM_INFERRED_FIELDS:
+        if getattr(f, field, None) is not None:
+            setattr(f, field, None)
+
+    # ── yearsOfExperience: allowed ONLY on an EXPLICIT basis ─────────────────
+    # Two things count as explicit: the recruiter's own minYears (they typed a
+    # number), or an explicit years requirement in the JD text. The recruiter's
+    # number wins. An AI-proposed value with no explicit basis is an assumption,
+    # so it is dropped — the discovery loop can still narrow later if needed.
+    if brief.minYears is not None:
         f.yearsOfExperience = _map_min_years_to_enum(brief.minYears)
+    elif f.yearsOfExperience and not _jd_states_years(brief.jobDescription):
+        logger.info(
+            "[Strategist] dropped AI-assumed yearsOfExperience=%s — JD states no "
+            "explicit years requirement", f.yearsOfExperience,
+        )
+        f.yearsOfExperience = None
 
     # ── Title family: drop brand+module fragments ("SAP CO", "SAP PS") that no
     # one carries as a headline, then dedupe and cap at 10 (past that the actor's
@@ -475,6 +711,13 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
         step.filters.searchQuery = f.searchQuery
         step.filters.locations = location_catalog.clamp_locations(
             list(f.locations or []), list(step.filters.locations or []))
+        # A ladder step may only ever RELAX. Force the inferred enums to Any (they
+        # were never set on the main filters) and never let a step carry a years
+        # value the main search didn't — a fallback can drop years, not add one.
+        for field in _ENUM_INFERRED_FIELDS:
+            setattr(step.filters, field, None)
+        if step.filters.yearsOfExperience not in (None, f.yearsOfExperience):
+            step.filters.yearsOfExperience = f.yearsOfExperience
         if not step.filters.is_empty():
             ladder.append(step)
     strategy.broadeningLadder = ladder

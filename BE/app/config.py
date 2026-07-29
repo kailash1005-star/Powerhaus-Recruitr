@@ -149,6 +149,14 @@ class Settings(BaseSettings):
         default="openai:gpt-4o-mini",
         description="Pydantic AI model for the Broadener (one call per zero-result retry)",
     )
+    #   • Judge (fast) — an LLM-as-judge that verifies the Strategist's titles +
+    #     Boolean searchQuery would actually return real people on LinkedIn/Apify
+    #     BEFORE any vendor spend, and rewrites them when they wouldn't. One cheap
+    #     call per prefill; degrades to a no-op when unavailable.
+    SOURCING_JUDGE_MODEL: str = Field(
+        default="openai:gpt-4o-mini",
+        description="Pydantic AI model for the query Judge (one call per prefill)",
+    )
     # Hard cost guard: a zero-result search triggers at most this many broadened
     # retries. Each retry is a fresh Apify search page (~$0.10) plus enrichment of
     # whatever it finds, so this bounds the worst-case spend per discovery run.

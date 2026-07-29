@@ -20,11 +20,15 @@ def get_model(tier: str = "smart") -> str:
 
     tier='smart' → the Strategist's one-shot reasoning call per prefill.
     tier='fast'  → the Broadener, called once per zero-result retry.
+    tier='judge' → the query Judge, called once per prefill to vet the query.
     """
-    model = (
-        settings.SOURCING_STRATEGY_MODEL if tier == "smart"
-        else settings.SOURCING_BROADEN_MODEL
-    ).strip()
+    if tier == "smart":
+        model = settings.SOURCING_STRATEGY_MODEL
+    elif tier == "judge":
+        model = settings.SOURCING_JUDGE_MODEL
+    else:
+        model = settings.SOURCING_BROADEN_MODEL
+    model = model.strip()
     _ensure_provider_env(model)
     return model
 

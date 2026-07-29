@@ -251,6 +251,39 @@ class SearchStrategy(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class QueryJudgment(BaseModel):
+    """The Judge's verdict on whether a proposed search will find real people.
+
+    A cheap LLM-as-judge that runs AFTER the Strategist and BEFORE any vendor
+    spend. It answers one question: will these titles and this Boolean
+    ``searchQuery`` technically return real LinkedIn/Apify profiles, or is it the
+    kind of over-constrained / employer-jargon / malformed query that comes back
+    empty? When it won't work, the Judge supplies a repaired query and/or title
+    family the pipeline swaps in (auto-correct), never a different profession.
+    """
+    verdict: Literal["searchable", "risky", "unsearchable"] = Field(
+        default="searchable",
+        description=(
+            "'searchable' = will return real profiles as-is. "
+            "'risky' = will probably work but has a weakness worth flagging. "
+            "'unsearchable' = will almost certainly return zero (verbatim posting "
+            "title, over-constrained AND-blocks, malformed Boolean, or non-title "
+            "jargon)."
+        ),
+    )
+    # Plain-language reasons, shown to the recruiter as warnings.
+    issues: List[str] = Field(default_factory=list)
+    # A repaired Boolean query. Empty when the original is already fine. MUST stay
+    # in the SAME specialization — the Judge fixes phrasing, never the target.
+    suggestedSearchQuery: str = ""
+    # A repaired title family, same rule. Empty when the originals are fine.
+    suggestedTitles: List[str] = Field(default_factory=list)
+    reasoning: str = Field(
+        default="",
+        description="One plain sentence on the verdict, referencing the actual query.",
+    )
+
+
 class BroadenDecision(BaseModel):
     """The Broadener's answer after a zero-result attempt.
 
