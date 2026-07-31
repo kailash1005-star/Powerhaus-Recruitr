@@ -55,6 +55,21 @@ export function bandFor(score: number): Band {
   return BANDS.find((b) => score >= b.min)!;
 }
 
+// ── Letter grade ──────────────────────────────────────────────────────────────
+// A separate, coarser cut than BANDS above (product decision, distinct
+// thresholds): 80-100 A, 50-79 B, 20-49 C, below 20 D. Shown in place of the
+// raw number so the primary read is a grade, not a score to two decimal places;
+// the number is still available on hover (never discarded, just demoted).
+const LETTER_GRADES: Array<{ min: number; grade: 'A' | 'B' | 'C' | 'D' }> = [
+  { min: 80, grade: 'A' },
+  { min: 50, grade: 'B' },
+  { min: 20, grade: 'C' },
+  { min: -Infinity, grade: 'D' },
+];
+export function letterGrade(score: number): 'A' | 'B' | 'C' | 'D' {
+  return LETTER_GRADES.find((g) => score >= g.min)!.grade;
+}
+
 /** Plain-language verdict for the whole-profile read. The underlying number is a
  *  similarity score; nobody outside engineering needs to know that.
  *  Cut points match BANDS — the same number must never read as "Strong" in one
@@ -531,15 +546,30 @@ export function CandidateCard({ c, rank, onReachOut, onOpen }: {
         borderLeft: '1px solid var(--border-card)', padding: '18px 16px',
         display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, textAlign: 'right',
       }}>
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 32, fontWeight: 600, lineHeight: 1,
-          letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', color: band.fg,
-        }}>{c.score.toFixed(1)}</div>
+        <div
+          title={`Score: ${c.score.toFixed(1)}`}
+          style={{
+            fontFamily: 'var(--font-mono)', fontSize: 32, fontWeight: 600, lineHeight: 1,
+            letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', color: band.fg,
+          }}
+        >{letterGrade(c.score)}</div>
         <span style={{
           fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
           padding: '3px 8px', borderRadius: 5, whiteSpace: 'nowrap',
           background: band.bg, color: band.fg, border: `1px solid ${band.line}`,
         }}>{band.label}</span>
+        {c.longTenureFlag && (
+          <span
+            title={`Ranked last — ${c.currentTenureYears ?? '20+'} years at their current employer`}
+            style={{
+              fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 9999,
+              background: '#FEF3C7', color: '#92400E', border: '1px solid #FDE68A',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {c.currentTenureYears ?? '20+'} yrs tenure
+          </span>
+        )}
         {c.breakdown?.cappedBy && missing.length > 0 && (
           <div style={{ fontSize: 11, color: '#9A3412', lineHeight: 1.4 }}>
             Held back by {missing.length} missing must-have{missing.length === 1 ? '' : 's'}

@@ -42,6 +42,12 @@ from app.services.matching.matching_service import (
     _score_candidate,
     apply_judge,
 )
+from app.services.sourcing.candidate_merge import current_role_tenure_years
+
+# A candidate at 20+ years with their CURRENT employer, opt-in per run — a
+# ranking demotion, never an elimination (missing/short tenure data is neutral,
+# never treated as a reason to keep OR demote).
+LONG_TENURE_YEARS_THRESHOLD = 20
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +80,7 @@ async def start_pipeline_match(
     candidate_ids: Optional[List[str]] = None,
     return_top: Optional[int] = None,
     requirements_override: Optional[Dict[str, Any]] = None,
+    deprioritize_long_tenure: bool = False,
 ) -> str:
     """Create a running match_run for this job's JD + selected candidates and
     kick off the background compute. Returns the match_run id.
@@ -142,7 +149,7 @@ async def start_pipeline_match(
 
     asyncio.create_task(
         _run_pipeline_match(match_run_id, pipeline_id, job_id, ids, jd_text, job_title,
-                            return_top, requirements_override)
+                            return_top, requirements_override, deprioritize_long_tenure)
     )
     return match_run_id
 
@@ -169,6 +176,7 @@ async def _run_pipeline_match(
     job_title: str,
     return_top: Optional[int],
     requirements_override: Optional[Dict[str, Any]] = None,
+    deprioritize_long_tenure: bool = False,
 ) -> None:
     """Background worker — STREAMING.
 
@@ -232,8 +240,15 @@ async def _run_pipeline_match(
         to throw away every analysis outside the top 5, which is why a finished run
         could not show why it rejected anyone.
         """
+        # Long-tenure-flagged candidates rank LAST regardless of score (the
+        # ranking demotion this run was asked for) — everyone else sorts by
+        # score as before. `not flagged` first in the tuple (True > False under
+        # reverse=True) is what pushes flagged rows below every unflagged one.
         all_entries.sort(
-            key=lambda r: (r["score"], (r.get("breakdown") or {}).get("base", 0.0)),
+            key=lambda r: (
+                not r.get("longTenureFlag"), r["score"],
+                (r.get("breakdown") or {}).get("base", 0.0),
+            ),
             reverse=True,
         )
         results[:] = all_entries[:return_top]
@@ -344,6 +359,17 @@ async def _run_pipeline_match(
             if not already:
                 await log(f"✓ {name} enriched")
 
+            # Long-tenure ranking demotion — opt-in, computed from the SAME
+            # enriched profile, never from the score. `None` (no current role,
+            # or no start date to measure from) is neutral: it never demotes.
+            tenure_years = (
+                current_role_tenure_years(profile) if deprioritize_long_tenure else None
+            )
+            long_tenure_flag = bool(
+                deprioritize_long_tenure and tenure_years is not None
+                and tenure_years >= LONG_TENURE_YEARS_THRESHOLD
+            )
+
             # Embed → score → judge for this one candidate. Isolated: a transient
             # embedding error or a scorer bug on one profile is recorded and
             # skipped — it used to fail the WHOLE run.
@@ -426,6 +452,8 @@ async def _run_pipeline_match(
                     "phone": contact.get("phone"),
                     "linkedin": contact.get("linkedin") or doc.get("externalLinkedinUrl"),
                 },
+                "longTenureFlag": long_tenure_flag,
+                "currentTenureYears": tenure_years,
             })
 
             # Write the REAL score back onto the candidate row. The candidates
@@ -441,6 +469,11 @@ async def _run_pipeline_match(
                         "matchScoringVersion": SCORING_VERSION,
                         "lastMatchRunId": match_run_id,
                         "matchScoredAt": _now(),
+                        # Written explicitly every run (True AND False) so a
+                        # re-run with the checkbox off clears a stale flag from
+                        # an earlier run rather than leaving it stuck.
+                        "longTenureFlag": long_tenure_flag,
+                        "currentTenureYears": tenure_years,
                         "updatedAt": _now(),
                     }},
                 )

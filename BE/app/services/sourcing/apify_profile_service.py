@@ -208,6 +208,26 @@ def normalize_identifier(url_or_slug: str) -> Optional[str]:
     return raw if _URN_RE.match(raw) else raw.lower()
 
 
+def echoed_query_identifier(item: Dict[str, Any]) -> Optional[str]:
+    """The identifier we originally requested, recovered from the actor's own
+    echo of it — the ONE field that reliably bridges the member-URN
+    (search actor) / profile-URN (scraper) gap, because we built the query URL
+    ourselves from that exact identifier (``_run_chunk``: ``.../in/{ident}``),
+    so normalizing the echo always reproduces it exactly. Not a guess.
+
+    HarvestAPI nests it as ``originalQuery.query`` (a dict), e.g.
+    ``{"query": "https://www.linkedin.com/in/ACwAAGAJg5YB…"}`` — NOT a
+    top-level ``query`` string. Getting this field wrong is what silently
+    disabled identity-based matching entirely and left every result to be
+    correlated by response ORDER alone, which is what let a reordered or
+    dropped row swap candidates' photos/profiles (2026-07-31 postmortem).
+    """
+    oq = item.get("originalQuery")
+    if not isinstance(oq, dict):
+        return None
+    return normalize_identifier(oq.get("query") or "")
+
+
 def _result_keys(item: Dict[str, Any]) -> List[str]:
     """All identifier keys an actor item might be looked up by.
 
@@ -216,11 +236,13 @@ def _result_keys(item: Dict[str, Any]) -> List[str]:
     the original ``id``/``profileId``; index by all of them so either kind of
     input matches.
 
-    The HarvestAPI actor also echoes the original input URL in ``query`` and
-    stores the member URN in ``objectUrn`` / ``profileUrn`` / ``memberUrn``.
-    We must index by those too, otherwise URN-based lookups from the search
-    actor silently fail (the actor scrapes the profile but the result can't be
-    matched back to the requested URN identifier).
+    It also echoes the original query URL (``echoed_query_identifier``, added
+    separately below since it's the AUTHORITATIVE match `_run_chunk` relies
+    on, not just one weak key among many) and stores the member URN in
+    ``objectUrn`` / ``profileUrn`` / ``memberUrn``. We must index by those
+    too, otherwise URN-based lookups from the search actor silently fail (the
+    actor scrapes the profile but the result can't be matched back to the
+    requested URN identifier).
     """
     keys: List[str] = []
 
@@ -236,11 +258,7 @@ def _result_keys(item: Dict[str, Any]) -> List[str]:
         if raw and _URN_RE.match(str(raw)):
             _add(str(raw))
     _add(normalize_identifier(item.get("linkedinUrl") or ""))
-
-    # The HarvestAPI actor echoes the original query URL (e.g.
-    # "https://www.linkedin.com/in/ACwAAGAJg5YB…") — extract its identifier
-    # so URN-based lookups match the result back to the requested candidate.
-    _add(normalize_identifier(item.get("query") or ""))
+    _add(echoed_query_identifier(item))
 
     # URN fields returned by the actor (e.g. "urn:li:fsd_profile:ACwAA…" or
     # "urn:li:member:12345"). Extract the AC… token if present.
@@ -386,15 +404,26 @@ class ApifyProfileService:
             raise ApifyRunFailed("Apify run returned no defaultDatasetId.")
 
         n_found_before = len(results)
-        # The HarvestAPI actor processes queries SEQUENTIALLY — item#1
-        # corresponds to chunk[0], item#2 to chunk[1], etc. We MUST use this
-        # positional correlation because:
-        #   • The search actor returns MEMBER URNs (ACw…)
-        #   • The profile scraper returns PROFILE URNs (ACo…) in ``id``
-        #   • These are DIFFERENT identifiers for the same person
-        #   • The actor does NOT echo back the original query URL
-        # So field-based matching (publicIdentifier, linkedinUrl, id) alone
-        # will never bridge the member-URN → profile-URN gap.
+        # Correlating each returned item back to the identifier we requested
+        # for it is the entire integrity boundary of this function — get it
+        # wrong and one candidate silently gets a DIFFERENT person's profile,
+        # photo included (exactly what happened in production: 2026-07-31,
+        # "Sales Manager SAP Retail" run).
+        #
+        # PRIMARY signal: `echoed_query_identifier` recovers the identifier
+        # from the actor's own echo of the query URL we sent — since we built
+        # that URL ourselves from the exact identifier we're trying to match
+        # back to (`.../in/{ident}` below), this is a guaranteed-correct
+        # match, not an inference. This bridges the member-URN (search actor)
+        # / profile-URN (scraper) gap that field-based matching alone cannot:
+        # it doesn't need the two URN kinds to agree, only the echo to survive.
+        #
+        # FALLBACK: positional correlation (item order == query order), used
+        # ONLY when an item has no usable echo. This is inherently a weaker
+        # assumption — the actor's dataset write order is not a contract we
+        # control — so it never overwrites an existing (confirmed) match, and
+        # every use is logged so a silent reorder becomes a visible warning
+        # instead of a silently wrong photo.
         chunk_idx = 0
         for item in client.dataset(dataset_id).iterate_items():
             if not isinstance(item, dict):
@@ -408,12 +437,28 @@ class ApifyProfileService:
                 continue
             # Index by every field-based key the item exposes (vanity slug,
             # profile URN, linkedinUrl, etc.) — works for Apollo/slug lookups.
+            # Weak (first-writer-wins) keys; never the authority for THIS
+            # chunk's own request→result correlation below.
             for key in _result_keys(item):
                 results.setdefault(key, item)
-            # Positional correlation: map the ORIGINAL input identifier
-            # (the member URN the search actor gave us) to this result.
-            if chunk_idx < len(chunk):
-                results.setdefault(chunk[chunk_idx], item)
+
+            echoed = echoed_query_identifier(item)
+            if echoed:
+                # Authoritative — always wins, including over an earlier guess.
+                results[echoed] = item
+            elif chunk_idx < len(chunk) and chunk[chunk_idx] not in results:
+                # No identity signal on this item at all. Positional guess,
+                # but only into a slot nothing has already claimed, so it can
+                # never silently clobber a confirmed match — and it's logged,
+                # so a systematic reorder is caught instead of shipped.
+                logger.warning(
+                    "[Apify] result #%d in this chunk had no identity echo — "
+                    "falling back to positional match for %r. If this profile "
+                    "looks wrong, the actor likely returned results out of "
+                    "order; re-enrich the candidate to retry.",
+                    chunk_idx, chunk[chunk_idx],
+                )
+                results[chunk[chunk_idx]] = item
             chunk_idx += 1
 
         # Meter only the profiles this chunk actually added. Best-effort (metering

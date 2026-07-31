@@ -218,6 +218,30 @@ def _from_key(key: Optional[str]) -> Optional[int]:
     return int(key) * 12 + 6
 
 
+def current_role_tenure_years(profile: Dict[str, Any]) -> Optional[float]:
+    """Years at the candidate's CURRENT employer, from the experience entry
+    ``is_current`` marks (its ``starts_at`` to now).
+
+    Returns ``None`` when there's no current role, or no start date to measure
+    from — a missing date is "unknown", never "zero" or "long enough to flag".
+    Callers doing tenure-based ranking must treat ``None`` as neutral, per the
+    same "a false drop is unrecoverable, missing data is not evidence" rule
+    prescreen already follows elsewhere in sourcing.
+    """
+    experience = profile.get("experience") or []
+    current = next(
+        (e for e in experience if isinstance(e, dict) and e.get("is_current")), None)
+    if not current:
+        return None
+    start_idx = _from_key(current.get("starts_at"))
+    if start_idx is None:
+        return None
+    now = datetime.utcnow()
+    now_idx = now.year * 12 + now.month
+    months = max(0, now_idx - start_idx)
+    return round(months / 12.0, 1)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Public: merge
 # ──────────────────────────────────────────────────────────────────────────────

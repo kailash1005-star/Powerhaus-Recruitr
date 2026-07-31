@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { TopBar } from '../TopBar';
 import { Icon } from '../Icon';
-import { bandFor } from '../matching/shared';
+import { bandFor, letterGrade } from '../matching/shared';
 import { CandidateSlideOut } from '../CandidateSlideOut';
 import { CandidateDiscoveryForm } from '../CandidateDiscoveryForm';
 import { CandidateColumnFilter } from '../CandidateColumnFilter';
@@ -21,11 +21,6 @@ import {
 interface Props { pipelineId: string; jobId: string }
 
 const ROWS_OPTIONS = [25, 50, 100];
-
-// One enrichment click = one Apify actor run (runs, not dollars, are the free
-// tier's scarce resource). Mirrors the backend's JOB_ENRICH_SELECTION_MAX —
-// the server enforces it too; this just keeps the UI honest up front.
-const ENRICH_MAX = 10;
 
 const EMPTY_FACETS: CandidateFacets = { companies: [], locations: [], status: [] };
 
@@ -65,6 +60,13 @@ function sortCandidatesList(list: Candidate[], field: string | null, order: 'asc
     const bRejected = b.isAccepted === false;
     if (aRejected !== bRejected) {
       return aRejected ? 1 : -1;
+    }
+    // Long-tenure-flagged candidates (opt-in, set by a match run) sink below
+    // everyone else but stay above rejected — a ranking demotion, not a drop.
+    const aLongTenure = !!a.longTenureFlag;
+    const bLongTenure = !!b.longTenureFlag;
+    if (aLongTenure !== bLongTenure) {
+      return aLongTenure ? 1 : -1;
     }
     if (field === 'match') {
       const diff = (a.matchScore || 0) - (b.matchScore || 0);
@@ -180,9 +182,9 @@ function MatchBadge({ score, provisional }: { score: number; provisional?: boole
   const band = bandFor(score);
   return (
     <span
-      title={provisional
-        ? 'Provisional — title match only. Run Match for the real score.'
-        : band.label}
+      title={(provisional
+        ? 'Provisional — title match only. Run Match for the real score. '
+        : `${band.label} — `) + `score ${Math.round(score)}`}
       style={{
         background: band.bg, color: band.fg,
         border: `1px ${provisional ? 'dashed' : 'solid'} ${band.line}`,
@@ -190,7 +192,7 @@ function MatchBadge({ score, provisional }: { score: number; provisional?: boole
         opacity: provisional ? 0.75 : 1,
       }}
     >
-      {Math.round(score)}{provisional ? '*' : ''}
+      {letterGrade(score)}{provisional ? '*' : ''}
     </span>
   );
 }
@@ -380,7 +382,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         if (es === 'completed') { setDiscoverMsg(`Found ${found} candidate(s) — profiles enriched ✓`); await loadCandidates(); return; }
         setDiscoverMsg(
           found > 0
-            ? `Found ${found} candidate(s), strongest first. Tick up to ${ENRICH_MAX}, then press Enrich for full work history.`
+            ? `Found ${found} candidate(s), strongest first. Tick the ones you want, then press Enrich for full work history.`
             : 'No candidates matched. Adjust the filters and search again.',
         );
         return;
@@ -576,7 +578,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   }, [pipelineId, jobId, loadCandidates]);
 
   const onBulkEnrich = async (mode: EnrichMode = 'both') => {
-    if (selected.size === 0 || selected.size > ENRICH_MAX) return;
+    if (selected.size === 0) return;
     setEnrichMenuOpen(false);
     setBulkBusy('enrich');
     setActionError(null);
@@ -624,6 +626,9 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   const [reqEdited, setReqEdited] = useState(false);
   const [mustHave, setMustHave] = useState<string[]>([]);
   const [niceToHave, setNiceToHave] = useState<string[]>([]);
+  // Opt-in, off by default — a ranking demotion for 20+ year single-employer
+  // tenure, not everyone wants it applied every run.
+  const [deprioritizeLongTenure, setDeprioritizeLongTenure] = useState(false);
 
   const onRunMatch = async () => {
     if (selected.size === 0) return;
@@ -657,6 +662,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         // Only send an override when the recruiter actually changed something —
         // an untouched list keeps the parsed requirements (and their provenance).
         reqEdited ? { mustHaveSkills: mustHave, niceToHaveSkills: niceToHave } : undefined,
+        deprioritizeLongTenure,
       );
       router.push(`/matching/${matchRunId}`);
     } catch (e: any) {
@@ -935,8 +941,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
               {selected.size > 0 ? `${selected.size} selected` : 'Select candidates to act'}
             </span>
             {(() => {
-              const enrichDisabled = bulkBusy !== null || selected.size === 0 || selected.size > ENRICH_MAX;
-              const overCap = selected.size > ENRICH_MAX;
+              const enrichDisabled = bulkBusy !== null || selected.size === 0;
               const opts: { mode: EnrichMode; label: string; desc: string }[] = [
                 { mode: 'apollo', label: 'Contact details', desc: 'Verified email and contact details only.' },
                 { mode: 'apify', label: 'Full profile', desc: 'Complete LinkedIn work history & skills.' },
@@ -949,20 +954,18 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                     disabled={enrichDisabled}
                     title={selected.size === 0
                       ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
-                      : overCap
-                      ? `Enrichment is capped at ${ENRICH_MAX} per batch — pick your ${ENRICH_MAX} strongest candidates. You can enrich more in a second batch.`
                       : 'Choose what to pull: contact details, the full profile, or both. Runs in the background and skips anyone already enriched.'}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
                       borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
                       cursor: enrichDisabled ? 'not-allowed' : 'pointer',
-                      border: `1px solid ${overCap ? '#DC2626' : 'var(--primary)'}`,
-                      background: '#FFF', color: overCap ? '#DC2626' : 'var(--primary)',
+                      border: '1px solid var(--primary)',
+                      background: '#FFF', color: 'var(--primary)',
                       opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
                     }}
                   >
                     <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
-                    Enrich{selected.size > 0 ? ` (${selected.size}/${ENRICH_MAX})` : ''}
+                    Enrich{selected.size > 0 ? ` (${selected.size})` : ''}
                     <Icon name="chevron-down" size={13} />
                   </button>
                   {enrichMenuOpen && !enrichDisabled && (
@@ -1277,6 +1280,21 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                     </td>
                     <td style={tdStyle}>
                       <MatchBadge score={c.matchScore} provisional={c.matchScoreSource !== 'match_run'} />
+                      {/* Ranking demotion, not a rejection — says why this row sank. */}
+                      {c.longTenureFlag && (
+                        <span
+                          title={`Ranked last — ${c.currentTenureYears ?? '20+'} years at their current employer`}
+                          style={{
+                            display: 'block', marginTop: 3, padding: '1px 7px',
+                            borderRadius: 9999, fontSize: 10, fontWeight: 600,
+                            background: '#FEF3C7', color: '#92400E', border: '1px solid #FDE68A',
+                            maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {c.currentTenureYears ?? '20+'} yrs tenure
+                        </span>
+                      )}
                     </td>
                     <td style={tdStyle}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1476,6 +1494,26 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                     onChange={(next) => { setNiceToHave(next); setReqEdited(true); }}
                     accent="#4F46E5"
                   />
+                  <label style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer',
+                    padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-card)',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={deprioritizeLongTenure}
+                      onChange={(e) => setDeprioritizeLongTenure(e.target.checked)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>
+                      <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--fg-primary)' }}>
+                        Rank 20+ year single-employer tenure last
+                      </span>
+                      <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-muted)', marginTop: 2, lineHeight: 1.4 }}>
+                        Candidates with 20 or more years at their current employer are sorted to
+                        the bottom of the results — never excluded, just deprioritized.
+                      </span>
+                    </span>
+                  </label>
                 </>
               )}
             </div>

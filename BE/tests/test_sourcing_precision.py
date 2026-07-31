@@ -20,8 +20,6 @@ All tests are offline — no Apify, no LLM, no Mongo.
 """
 from __future__ import annotations
 
-import pytest
-
 from app.services.sourcing.broadener import (
     _domain_anchor, _enforce_domain, lock_target, next_attempt,
 )
@@ -345,15 +343,32 @@ class TestChannelScreenPolicy:
         assert verdict["score"] == 95.0
 
 
-# ── Enrichment cap ───────────────────────────────────────────────────────────
+# ── Enrichment selection size ────────────────────────────────────────────────
+# The endpoint used to hard-reject a selection over 10 (JOB_ENRICH_SELECTION_MAX)
+# with a 400 before even queuing. That artificial ceiling is gone — the
+# recruiter enriches however many candidates they manually selected; the
+# vendor-call safety net now lives one layer down, in `enrich_candidates`
+# chunking the fetch into APIFY_ENRICH_MAX-sized groups (see
+# tests/test_candidate_enrichment.py).
 
-class TestEnrichCap:
-    async def test_over_cap_is_rejected_with_400(self):
-        from fastapi import HTTPException
+class TestEnrichSelectionSize:
+    async def test_large_selection_is_not_rejected(self, monkeypatch):
+        import app.api.v1.pipelines as pipelines_mod
         from app.api.v1.pipelines import BulkEnrichSchema, enrich_job_candidates
 
-        body = BulkEnrichSchema(candidateIds=[f"c{i}" for i in range(11)])
-        with pytest.raises(HTTPException) as exc:
-            await enrich_job_candidates("p", "j", body)
-        assert exc.value.status_code == 400
-        assert "capped at 10" in exc.value.detail
+        seen = {}
+
+        async def fake_enqueue(pipeline_id, job_id, candidate_ids, mode):
+            seen["candidate_ids"] = candidate_ids
+            return {"queued": True}
+
+        monkeypatch.setattr(pipelines_mod, "enqueue_job_enrich", fake_enqueue)
+
+        body = BulkEnrichSchema(candidateIds=[f"c{i}" for i in range(37)])
+        result = await enrich_job_candidates("p", "j", body)
+
+        assert result["success"] is True
+        # Every selected id reached the queueing step — nothing was trimmed
+        # or rejected for exceeding the old 10-candidate cap.
+        assert seen["candidate_ids"] == body.candidateIds
+        assert len(seen["candidate_ids"]) == 37

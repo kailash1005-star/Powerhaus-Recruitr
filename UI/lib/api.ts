@@ -749,6 +749,11 @@ export interface Candidate {
   /** Set when the candidate is in the right country but outside the requested
       region (the reason string). Score is capped server-side; UI shows a chip. */
   locationFlag?: string | null;
+  /** Set by a match run with "deprioritize long tenure" on, when this candidate
+   *  has 20+ years at their CURRENT employer — sorted last, never excluded. */
+  longTenureFlag?: boolean;
+  /** Years at the current employer, when computable from the enriched profile. */
+  currentTenureYears?: number | null;
   isAccepted: boolean;
   rejectionReason?: string | null;
   decidedAt?: string | null;
@@ -1197,9 +1202,12 @@ export interface RequirementsEdit {
 export function runJobMatch(
   pipelineId: string, jobId: string, candidateIds: string[], returnTop?: number,
   requirements?: RequirementsEdit,
+  /** Recruiter opt-in: rank candidates with 20+ years at their current
+   *  employer last (never excludes them). Default off. */
+  deprioritizeLongTenure?: boolean,
 ): Promise<{ success: boolean; matchRunId: string }> {
   return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/match`, {
-    candidateIds, returnTop, ...(requirements || {}),
+    candidateIds, returnTop, ...(requirements || {}), deprioritizeLongTenure,
   });
 }
 
@@ -1329,6 +1337,12 @@ export interface MatchedCandidate {
     falsePositives?: Array<{ skill: string; why?: string }>;
   } | null;
   contact: { email?: string | null; phone?: string | null; linkedin?: string | null };
+  /** Set when the run had "deprioritize long tenure" on and this candidate has
+   *  20+ years at their CURRENT employer — ranked last, never excluded. */
+  longTenureFlag?: boolean;
+  /** Years at the current employer, when computable (null = not measurable
+   *  from the enriched profile — never treated as long tenure). */
+  currentTenureYears?: number | null;
 }
 
 /** A candidate that never reached scoring, and why. */

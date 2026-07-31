@@ -172,15 +172,6 @@ class Settings(BaseSettings):
         default=10,
         description="Kept-candidate count below which the UI offers a deliberate widening",
     )
-    # Hard cap on candidates per enrichment request from the job candidates UI.
-    # Chosen to match APIFY_ENRICH_BATCH (one actor run per enrichment click):
-    # HarvestAPI's free tier caps runs, so every click costing exactly ONE run
-    # is the difference between ~20 roles and ~6 on a free Apify account.
-    JOB_ENRICH_SELECTION_MAX: int = Field(
-        default=10,
-        description="Max candidates per enrich request on the pipeline job UI",
-    )
-
     # ── MCP tool servers the agent connects to ──────────────────────────
     # The agent's tools come from MCP server(s). Point it at the LinkedIn MCP
     # server we built. Prefer HTTP (run it as a service) OR stdio (spawn it).

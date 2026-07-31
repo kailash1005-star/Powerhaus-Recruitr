@@ -156,6 +156,10 @@ class JobMatchSchema(BaseModel):
     mustHaveSkills: Optional[List[str]] = None
     niceToHaveSkills: Optional[List[str]] = None
     minYears: Optional[float] = None
+    # Recruiter opt-in, set from the review-before-match checkbox: candidates
+    # with 20+ years at their CURRENT employer are ranked last (never hard
+    # excluded — a false demotion just sorts lower, a false drop is unrecoverable).
+    deprioritizeLongTenure: bool = False
 
 
 class SuggestFiltersSchema(BaseModel):
@@ -709,21 +713,12 @@ async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichS
     stage skips candidates already enriched. Poll the pipeline for the job's
     ``enrichStatus``.
 
-    Selections are capped at ``JOB_ENRICH_SELECTION_MAX`` (default 10): one
-    enrichment click = one Apify actor run, and the free-tier run budget is the
-    scarce resource, not the dollars. The cap is enforced here — not only in the
-    UI — so no client can silently burn the budget.
+    No cap on the selection size — the recruiter enriches however many
+    candidates they manually picked. The underlying Apify calls still protect
+    themselves: ``enrich_candidates`` chunks the fetch into ``APIFY_ENRICH_MAX``-
+    sized groups, so a large selection issues multiple safe vendor calls instead
+    of one oversized one (or being refused outright).
     """
-    from app.config import settings
-
-    cap = max(1, int(settings.JOB_ENRICH_SELECTION_MAX))
-    if body.candidateIds is not None and len(body.candidateIds) > cap:
-        raise HTTPException(
-            400,
-            f"Enrichment is capped at {cap} candidates per request — you sent "
-            f"{len(body.candidateIds)}. Pick your {cap} strongest candidates; "
-            f"you can always enrich more in a second batch.",
-        )
     try:
         result = await enqueue_job_enrich(
             pipeline_id, job_id, body.candidateIds, body.mode)
@@ -799,6 +794,7 @@ async def match_job_candidates(pipeline_id: str, job_id: str, body: JobMatchSche
             candidate_ids=body.candidateIds,
             return_top=body.returnTop,
             requirements_override=override or None,
+            deprioritize_long_tenure=body.deprioritizeLongTenure,
         )
         return {"success": True, "matchRunId": match_run_id}
     except ValueError as ve:
@@ -1017,8 +1013,11 @@ async def list_job_candidates(
         total = await col.count_documents(query)
         skip = (page - 1) * limit
         direction = 1 if sort_order == "asc" else -1
-        # Always put accepted candidates (isAccepted=True) first, rejected (isAccepted=False) at the bottom.
-        sort_spec = [("isAccepted", -1), (sort_by, direction)]
+        # Always put accepted candidates (isAccepted=True) first, rejected
+        # (isAccepted=False) at the bottom; long-tenure-flagged candidates (opt-in,
+        # set by a match run) sink below everyone else but stay above rejected —
+        # a ranking demotion, not a rejection.
+        sort_spec = [("isAccepted", -1), ("longTenureFlag", 1), (sort_by, direction)]
         cursor = col.find(query).sort(sort_spec).skip(skip).limit(limit)
         items: List[dict] = []
         async for doc in cursor:

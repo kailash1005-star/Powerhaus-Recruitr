@@ -172,18 +172,28 @@ async def enrich_candidates(
 
     to_fetch = [i for i in identifiers if i not in profiles]
 
-    # ── Fetch the rest from Apify (blocking → thread) ───────────────────────
+    # ── Fetch the rest from Apify (blocking → thread), chunked ──────────────
+    # The selection size is the recruiter's call, not an API limit — but a
+    # single `enrich_profiles` call still refuses anything over
+    # APIFY_ENRICH_MAX (a real per-call cost/reliability guard, not an
+    # arbitrary UI cap). Splitting into APIFY_ENRICH_MAX-sized chunks here is
+    # what lets a selection of ANY size go through as several safe vendor
+    # calls instead of being blocked by, or blowing past, that guard.
     if to_fetch:
         service = get_apify_profile_service()
-        try:
-            fetched = await asyncio.to_thread(service.enrich_profiles, to_fetch)
-        except ApifyCostGuard:
-            raise  # surface to the endpoint as a 400 (batch too big)
-        except ApifyEnrichmentError as exc:
-            logger.error("[Enrich] Apify enrichment failed: %s", exc)
-            raise
-        await _cache_store(fetched)
-        profiles.update(fetched)
+        chunk_size = max(1, int(settings.APIFY_ENRICH_MAX))
+        for i in range(0, len(to_fetch), chunk_size):
+            chunk = to_fetch[i:i + chunk_size]
+            try:
+                fetched = await asyncio.to_thread(service.enrich_profiles, chunk)
+            except ApifyCostGuard:
+                raise  # a single chunk should never exceed the guard — a bug, not user error
+            except ApifyEnrichmentError as exc:
+                logger.error("[Enrich] Apify enrichment failed for a chunk of %d: %s",
+                             len(chunk), exc)
+                raise
+            await _cache_store(fetched)
+            profiles.update(fetched)
 
     # ── Merge + persist per candidate ───────────────────────────────────────
     now = datetime.utcnow()
