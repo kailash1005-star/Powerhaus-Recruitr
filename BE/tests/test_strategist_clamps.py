@@ -66,12 +66,14 @@ class TestSearchQueryClamp:
 
 class TestTitleClamp:
     def test_brand_module_fragments_dropped(self):
+        # currentJobTitles is always empty now (2026-07-31 redesign) — the
+        # fragment-dropping protection surfaces through focusTitle instead:
+        # a bare brand+module fragment ("SAP CO", "SAP PS") must never win the
+        # slot, only a real, plausible profile title.
         out = _sanitize(_hallucinated(), _brief())
-        titles = out.filters.currentJobTitles
-        assert "SAP CO" not in titles
-        assert "SAP PS" not in titles
-        # Real titles survive.
-        assert "SAP FICO Consultant" in titles
+        assert out.filters.currentJobTitles == []
+        assert out.focusTitle not in ("SAP CO", "SAP PS")
+        assert out.focusTitle != "Senior Inhouse Consultant SAP-CO/PS"
 
     def test_focus_title_is_not_the_posting_title(self):
         out = _sanitize(_hallucinated(), _brief())
@@ -122,6 +124,23 @@ class TestBooleanAndExperienceClamps:
         s.filters.searchQuery = bool_query
         out = _sanitize(s, _brief())
         assert out.filters.searchQuery == bool_query
+
+    def test_malformed_boolean_degrades_instead_of_shipping(self):
+        """An unbalanced query makes the actor reject the whole run, which reads
+        downstream as "no candidates match" — worse than a verbatim title, since
+        `_is_boolean_query` skips the length/full-title clamp for it."""
+        for broken in ['("SAP Retail" OR "SAP CAR"', '"SAP Retail OR "SAP CAR"']:
+            s = _hallucinated()
+            s.filters.searchQuery = broken
+            out = _sanitize(s, _brief())
+            assert out.filters.searchQuery != broken
+            assert out.filters.searchQuery.strip()
+
+    def test_overlong_boolean_degrades(self):
+        s = _hallucinated()
+        s.filters.searchQuery = '("a" OR "b") ' * 40  # > 300 chars, actor limit
+        out = _sanitize(s, _brief())
+        assert len(out.filters.searchQuery) <= 300
 
     def test_min_years_maps_to_experience_enum(self):
         s = _hallucinated()

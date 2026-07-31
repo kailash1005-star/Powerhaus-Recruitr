@@ -15,7 +15,7 @@ import {
   fetchCandidate, bulkEnrichJobCandidates, runJobMatch, fetchCandidateFacets,
   fetchJobRequirements, discoverJobCandidates, deleteJobCandidates, pipelineDisplayName,
   type Candidate, type Pipeline, type PipelineJob, type CandidateFilters, type CandidateFacets,
-  type DiscoverFilters, type EnrichMode,
+  type DiscoverFilters,
 } from '@/lib/api';
 
 interface Props { pipelineId: string; jobId: string }
@@ -206,8 +206,6 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
   // Bulk actions (enrich / run match) on the selected candidates.
   const [bulkBusy, setBulkBusy] = useState<null | 'enrich' | 'match' | 'delete'>(null);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
-  // The Enrich split-button menu (Apollo / Apify / Both).
-  const [enrichMenuOpen, setEnrichMenuOpen] = useState(false);
 
   // Per-column filters (AND across columns). Server-side: the table is paginated,
   // so filtering only the fetched page would report wrong totals and miss rows.
@@ -556,17 +554,13 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
       const st = je?.enrichStatus;
       const c = je?.enrichCounts || {};
       if (st === 'running' || st === 'queued') {
-        setBulkMsg(`Enriching… (${c.apollo_enriched ?? 0} contact(s) · ${c.apify_enriched ?? 0} profile(s))`);
+        setBulkMsg(`Enriching… (${c.apify_enriched ?? 0} profile(s))`);
       }
       if (st === 'completed') {
         const apify = c.apify_enriched ?? 0;
-        const apollo = c.apollo_enriched ?? 0;
-        const apolloFailed = c.apollo_failed ?? 0;
         const nf = c.not_found ?? 0;
         const parts: string[] = [];
-        if (apollo) parts.push(`${apollo} contact(s) revealed`);
         if (apify) parts.push(`${apify} profile(s) enriched`);
-        if (apolloFailed) parts.push(`${apolloFailed} contact lookup(s) failed`);
         if (nf) parts.push(`${nf} no profile found`);
         setBulkMsg(`Enriched ✓ — ${parts.join(' · ') || 'nothing left to enrich'}`);
         await loadCandidates();
@@ -577,15 +571,13 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
     setBulkMsg('Enrichment is taking longer than expected — refresh to check.');
   }, [pipelineId, jobId, loadCandidates]);
 
-  const onBulkEnrich = async (mode: EnrichMode = 'both') => {
+  const onBulkEnrich = async () => {
     if (selected.size === 0) return;
-    setEnrichMenuOpen(false);
     setBulkBusy('enrich');
     setActionError(null);
-    const engine = mode === 'apollo' ? 'contact' : mode === 'apify' ? 'profile' : 'contact + profile';
-    setBulkMsg(`Queuing ${engine} enrichment for ${selected.size} candidate(s)…`);
+    setBulkMsg(`Queuing profile enrichment for ${selected.size} candidate(s)…`);
     try {
-      await bulkEnrichJobCandidates(pipelineId, jobId, Array.from(selected), mode);
+      await bulkEnrichJobCandidates(pipelineId, jobId, Array.from(selected));
       await pollEnrich();
     } catch (e: any) {
       setActionError(e.message || 'Bulk enrichment failed');
@@ -940,65 +932,24 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
             <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 600 }}>
               {selected.size > 0 ? `${selected.size} selected` : 'Select candidates to act'}
             </span>
-            {(() => {
-              const enrichDisabled = bulkBusy !== null || selected.size === 0;
-              const opts: { mode: EnrichMode; label: string; desc: string }[] = [
-                { mode: 'apollo', label: 'Contact details', desc: 'Verified email and contact details only.' },
-                { mode: 'apify', label: 'Full profile', desc: 'Complete LinkedIn work history & skills.' },
-                { mode: 'both', label: 'Contact + full profile', desc: 'Contact details, then the full profile.' },
-              ];
-              return (
-                <div style={{ position: 'relative', display: 'inline-flex' }}>
-                  <button
-                    onClick={() => { if (!enrichDisabled) setEnrichMenuOpen((o) => !o); }}
-                    disabled={enrichDisabled}
-                    title={selected.size === 0
-                      ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
-                      : 'Choose what to pull: contact details, the full profile, or both. Runs in the background and skips anyone already enriched.'}
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
-                      borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
-                      cursor: enrichDisabled ? 'not-allowed' : 'pointer',
-                      border: '1px solid var(--primary)',
-                      background: '#FFF', color: 'var(--primary)',
-                      opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
-                    }}
-                  >
-                    <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
-                    Enrich{selected.size > 0 ? ` (${selected.size})` : ''}
-                    <Icon name="chevron-down" size={13} />
-                  </button>
-                  {enrichMenuOpen && !enrichDisabled && (
-                    <>
-                      {/* click-catcher to close on outside click */}
-                      <div onClick={() => setEnrichMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-                      <div style={{
-                        position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 41,
-                        width: 268, background: '#FFF', border: '1px solid var(--border-card)',
-                        borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.16)', overflow: 'hidden',
-                      }}>
-                        {opts.map((o, i) => (
-                          <button
-                            key={o.mode}
-                            onClick={() => onBulkEnrich(o.mode)}
-                            style={{
-                              display: 'block', width: '100%', textAlign: 'left', padding: '10px 13px',
-                              border: 'none', borderTop: i === 0 ? 'none' : '1px solid var(--border-default)',
-                              background: '#FFF', cursor: 'pointer', fontFamily: 'inherit',
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.background = '#F5F3FF'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.background = '#FFF'; }}
-                          >
-                            <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--fg-primary)' }}>{o.label}</div>
-                            <div style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--fg-muted)', marginTop: 2 }}>{o.desc}</div>
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })()}
+            <button
+              onClick={onBulkEnrich}
+              disabled={bulkBusy !== null || selected.size === 0}
+              title={selected.size === 0
+                ? 'Tick candidates first (header checkbox selects the whole page), then enrich them together.'
+                : 'Pull the complete LinkedIn work history & skills for the selected candidates. Runs in the background and skips anyone already enriched.'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px',
+                borderRadius: 6, fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
+                cursor: bulkBusy || selected.size === 0 ? 'not-allowed' : 'pointer',
+                border: '1px solid var(--primary)',
+                background: '#FFF', color: 'var(--primary)',
+                opacity: bulkBusy || selected.size === 0 ? 0.55 : 1,
+              }}
+            >
+              <Icon name={bulkBusy === 'enrich' ? 'loader' : 'sparkles'} size={13} />
+              Enrich{selected.size > 0 ? ` (${selected.size})` : ''}
+            </button>
             <button
               onClick={onRunMatch}
               disabled={bulkBusy !== null || selected.size === 0}

@@ -947,22 +947,20 @@ export function enrichCandidate(candidateId: string): Promise<Candidate> {
   return post(`/api/v1/pipelines/candidates/${candidateId}/enrich`, {});
 }
 
-/** Which enrichment engine(s) the Enrich action runs. */
-export type EnrichMode = 'apollo' | 'apify' | 'both';
-
 /**
- * Queue a background bulk enrichment for the selected candidates in a job.
- * `mode` picks the engine: `'apollo'` (verified email + contact, no scrape),
- * `'apify'` (deep profile scrape only), or `'both'` (Apollo → Apify, default).
- * Poll the pipeline's job.enrichStatus.
+ * Queue a background bulk enrichment (Apify deep profile scrape — work
+ * history, skills, headline) for the selected candidates in a job. Apollo is
+ * not offered: every candidate is Apify-sourced now, and Apollo's
+ * `/people/match` only matches its OWN internal id (not a LinkedIn URN), so
+ * it would fail for 100% of candidates while also returning a thinner
+ * profile on the rare one it could match. Poll the pipeline's job.enrichStatus.
  */
 export function bulkEnrichJobCandidates(
   pipelineId: string, jobId: string, candidateIds: string[] | null,
-  mode: EnrichMode = 'both',
 ): Promise<{ success: boolean; queued: boolean }> {
   // null → enrich every candidate in the job (the "Enrich all" button); an
   // array → only those selected. The backend treats null/empty the same way.
-  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds, mode });
+  return post(`/api/v1/pipelines/${pipelineId}/jobs/${jobId}/enrich`, { candidateIds });
 }
 
 /**

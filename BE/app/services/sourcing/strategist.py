@@ -95,16 +95,26 @@ Account Director
 Sales Director
 Do not rely only on exact variations of the vacancy title.
 SEARCH ARCHITECTURE
-Always think in two independent logical gates:
+searchQuery is the ONLY field that determines who is matched. It MUST ALWAYS be
+returned as ONE combined Boolean string built from two internal gates:
 DOMAIN / SPECIALIZATION GATE
 AND
 PROFILE TITLE GATE
-The backend applies:
-searchQuery as the domain, product, platform, industry or specialization gate.
-currentJobTitles as the profile-title gate.
-The effective search is:
-searchQuery AND currentJobTitles
-Do not place the full title group inside searchQuery.
+This is a NON-NEGOTIABLE, MANDATORY output shape with no exceptions:
+searchQuery = (DOMAIN GROUP) AND (TITLE GROUP)
+currentJobTitles MUST be returned EMPTY. All title information belongs ONLY
+inside the TITLE GROUP of searchQuery — it is never duplicated into a separate
+field. currentJobTitles is a strict, independent matching field on the backend
+(it filters on a candidate's declared current title alone), and populating it
+alongside a searchQuery that already carries the same titles as a fuzzy
+full-profile match would silently double-restrict the search and drop
+qualified candidates whose current title doesn't literally match — the exact
+failure mode this design exists to prevent.
+Do not populate currentJobTitles "for review" or "for completeness." Leave it
+empty every time, without exception, even though titles were clearly generated
+internally to build the TITLE GROUP.
+Do not return searchQuery containing only the DOMAIN GROUP with no TITLE GROUP.
+Do not return searchQuery containing only the TITLE GROUP with no DOMAIN GROUP.
 Do not place unrelated technical terms inside the domain group merely because
 they belong to the same vendor or general ecosystem.
 Before producing the filters, determine internally:
@@ -201,7 +211,8 @@ stakeholders or presentations.
 Do not classify a position as technical merely because a technology name appears.
 Use the actual responsibilities and expected outcomes.
 DOMAIN / SPECIALIZATION GATE
-searchQuery must identify what makes the candidate specifically relevant.
+The DOMAIN GROUP half of searchQuery must identify what makes the candidate
+specifically relevant.
 It should represent one or more of the following:
 Product
 Platform
@@ -220,14 +231,17 @@ Include every tool listed in the job description.
 Contain loosely related vendor technologies.
 Contain generic terms when stronger specific terms are available.
 ALLOWED SEARCH QUERY FORMATS
-FORMAT A: SINGLE PHRASE
+These formats build the DOMAIN GROUP half of the mandatory combined searchQuery
+(see SEARCH ARCHITECTURE). The DOMAIN GROUP is never returned by itself — it is
+always joined to the TITLE GROUP before being returned.
+FORMAT A: SINGLE PHRASE DOMAIN GROUP
 Use a single phrase when it sufficiently identifies the specialization.
 Examples:
 "SAP EWM"
 "Agentic AI"
 "Cloud Security"
 "Java Backend"
-FORMAT B: BOOLEAN OR-GROUP
+FORMAT B: BOOLEAN OR-GROUP DOMAIN GROUP
 Use an OR-group when candidates may use different:
 Product names
 Module names
@@ -263,6 +277,45 @@ Prefer complete domain phrases over weak standalone words.
 Include current and legacy terminology only when both are genuinely used.
 Do not add neighbouring products or technologies merely to increase recall.
 Do not split meaningful phrases into ambiguous individual words.
+TITLE GROUP — mandatory second half of searchQuery
+Build the TITLE GROUP from the titles selected under PROFILE TITLE GATE below,
+in the same mechanical shape as the domain group:
+(
+"Direct title 1"
+OR "Direct title 2"
+OR "Broader title 1"
+OR "Broader title 2"
+)
+Quotation marks around every multi-word title, uppercase OR, one wrapping
+parenthesis pair, no bare unquoted words — identical mechanics to the domain
+group above.
+COMBINING THE TWO GROUPS — mandatory, always
+Join the DOMAIN GROUP and the TITLE GROUP with exactly one top-level AND:
+(DOMAIN GROUP) AND (TITLE GROUP)
+This combined string, and only this combined string, is the searchQuery value
+you return. Nothing about the domain-group rules above authorizes returning
+the domain group alone — they describe how to build one half of a value that
+is always returned combined with the title half.
+LENGTH BUDGET — mandatory, never skipped
+The platform hard-rejects any searchQuery over 300 characters, and a rejected
+query returns zero candidates — worse than any imprecision. Target 280
+characters or fewer for the ENTIRE combined string:
+Build the DOMAIN GROUP first, using 2 to 4 of the strongest, most specific
+terms — not the full 8-term ceiling described above. The title group needs
+the room, and the domain group is the smaller, non-negotiable half: never
+drop a domain term to fit more titles.
+Build the TITLE GROUP next by adding titles in PRIORITY ORDER — every direct
+title before any broader title — while tracking the running length of the
+full combined string.
+Stop adding titles the instant the combined string would exceed 280
+characters. Drop the entire lowest-priority remaining title instead of
+truncating a phrase or leaving a quote or parenthesis unbalanced.
+A 2-to-4-term domain group normally leaves room for 5 to 8 titles; needing
+to trim below 4 titles should be rare, and direct titles are the last thing
+trimmed, never the first.
+The FINAL TITLE GROUP built this way lives ONLY inside searchQuery.
+currentJobTitles is returned empty regardless — never populated with this or
+any other list.
 GOOD TERMS
 "SAP Retail"
 "S/4HANA Retail"
@@ -327,8 +380,13 @@ Would expertise in this term alone make the candidate relevant to the actual
 position?
 If the answer is no or uncertain, exclude the term.
 PROFILE TITLE GATE
-currentJobTitles must contain real candidate profile titles.
-Generate between 4 and 10 titles according to the existing backend limit.
+This section describes how to build the set of real candidate profile titles
+that becomes the TITLE GROUP inside the combined searchQuery (see SEARCH
+ARCHITECTURE and LENGTH BUDGET above). currentJobTitles itself is returned
+EMPTY — the titles built here go into searchQuery ONLY, never into a separate
+field.
+Generate a candidate family of 4 to 10 titles using the rules below, then apply
+the LENGTH BUDGET rule to decide how many fit inside searchQuery.
 Titles must:
 Represent the same primary professional family.
 Be ordered strongest match first.
@@ -631,7 +689,8 @@ Use detailed tools and secondary requirements during candidate scoring.
 FOCUS TITLE
 focusTitle must be:
 The single strongest real profile title.
-Present in currentJobTitles.
+Present inside the TITLE GROUP of searchQuery (currentJobTitles itself stays
+empty — see SEARCH ARCHITECTURE).
 Specific enough to represent the role.
 Free from employer-internal wording.
 Free from internal grades.
@@ -825,13 +884,13 @@ than evidence of Retail specialization."
 RATIONALE
 Produce short rationale entries for meaningful non-empty filters.
 field must exactly match the existing output field name.
+currentJobTitles is always empty, so it never receives a rationale entry — the
+title reasoning belongs in titleReasoning instead (see below).
 Example:
-currentJobTitles:
-"Titles include direct specialization variants and broader profile titles within
-the same professional family."
 searchQuery:
-"The query contains only the product, platform and domain phrases that distinguish
-the role from neighbouring specializations."
+"The query combines the product/domain phrases with the direct and broader
+profile titles that identify this role, joined as (DOMAIN GROUP) AND (TITLE
+GROUP)."
 locations:
 "The location was explicitly provided by the recruiter or job description."
 CONFIDENCE
@@ -895,54 +954,25 @@ Key Account Manager
 Client Partner
 Account Director
 Sales Director
-A strong title list may resemble:
+Within the length budget, a strong title list — used ONLY to build the TITLE
+GROUP below, never returned as currentJobTitles — may resemble:
 [
 "SAP Retail Sales Manager",
 "SAP Retail Account Executive",
-"SAP Retail Business Development Manager",
 "Retail Solutions Sales Manager",
 "Account Executive",
-"Enterprise Account Executive",
 "Sales Manager",
-"Business Development Manager",
-"Client Partner",
-"Sales Director"
+"Business Development Manager"
 ]
-A strong searchQuery may resemble:
-(
-"SAP Retail"
-OR "S/4HANA Retail"
-OR "SAP CAR"
-OR "SAP Consumer Goods"
-OR "SAP Consumer Products"
-OR "Retail Solutions"
-)
-The effective search logic is:
-(
-"SAP Retail"
-OR "S/4HANA Retail"
-OR "SAP CAR"
-OR "SAP Consumer Goods"
-OR "SAP Consumer Products"
-OR "Retail Solutions"
-)
-AND
-(
-"SAP Retail Sales Manager"
-OR "SAP Retail Account Executive"
-OR "SAP Retail Business Development Manager"
-OR "Retail Solutions Sales Manager"
-OR "Account Executive"
-OR "Enterprise Account Executive"
-OR "Sales Manager"
-OR "Business Development Manager"
-OR "Client Partner"
-OR "Sales Director"
-)
+The REQUIRED searchQuery combines the domain group and this title group with
+one top-level AND, exactly as returned to the backend:
+("SAP Retail" OR "S/4HANA Retail" OR "SAP CAR" OR "SAP Consumer Goods") AND ("SAP Retail Sales Manager" OR "SAP Retail Account Executive" OR "Retail Solutions Sales Manager" OR "Account Executive" OR "Sales Manager" OR "Business Development Manager")
+This example is 250 characters — inside the 280 budget with room to spare.
+currentJobTitles for this example is returned as an empty list: [].
 Remember:
-The backend keeps the domain gate in searchQuery and the title gate in
-currentJobTitles.
-Do not return the full combined Boolean expression inside searchQuery.
+searchQuery ALWAYS carries both the domain group and the title group together.
+currentJobTitles is always empty — the titles live in searchQuery and nowhere
+else.
 EXAMPLE 2: AGENTIC AI ENGINEERING ROLE
 This example shows how to construct a search for a role involving production LLM
 applications, AI agents and customer-facing engineering.
@@ -984,19 +1014,22 @@ Generative AI Solutions Architect
 AI Software Architect
 Generative AI Consultant
 Full-Stack AI Engineer
-A strong title list may resemble:
+Within the length budget (2 to 4 domain terms from the list above, chosen for
+strongest signal), a strong title list — used ONLY to build the TITLE GROUP
+below, never returned as currentJobTitles — may resemble:
 [
 "Agentic AI Engineer",
 "Generative AI Engineer",
 "LLM Engineer",
 "AI Agent Engineer",
 "Applied AI Engineer",
-"AI Solutions Architect",
-"Generative AI Solutions Architect",
-"AI Software Architect",
-"Generative AI Consultant",
-"Full-Stack AI Engineer"
+"AI Solutions Architect"
 ]
+The REQUIRED searchQuery combines the domain group and this title group with
+one top-level AND, exactly as returned to the backend:
+("Agentic AI" OR "Generative AI" OR "Large Language Models" OR "AI Agents") AND ("Agentic AI Engineer" OR "Generative AI Engineer" OR "LLM Engineer" OR "AI Agent Engineer" OR "Applied AI Engineer" OR "AI Solutions Architect")
+This example is 225 characters — inside the 280 budget with room to spare.
+currentJobTitles for this example is returned as an empty list: [].
 Do not add without direct evidence:
 Deep Learning Engineer
 Computer Vision Engineer
@@ -1030,15 +1063,24 @@ The same product domain can produce different title families depending on what
 the candidate is hired to do.
 FINAL VALIDATION
 Before returning the existing backend response, silently verify:
-focusTitle appears in currentJobTitles.
-currentJobTitles contains 4 to 10 titles.
-The title list represents one coherent primary profession.
+focusTitle appears within the TITLE GROUP inside searchQuery.
+currentJobTitles is returned as an empty list — never populated, never a
+subset, never "for review."
+The TITLE GROUP built internally (4 to 10 titles, fewer only when the LENGTH
+BUDGET rule genuinely forced it — never fewer than 3) represents one coherent
+primary profession.
 Direct specialization titles are included when plausible.
 Broader titles remain relevant to the same profession.
 No neighbouring profession is included without explicit evidence.
+searchQuery contains BOTH a DOMAIN GROUP and a TITLE GROUP joined by exactly
+one top-level AND — never one group alone.
+searchQuery is 280 characters or fewer, and never over the 300-character hard
+limit. If it is over budget, remove the lowest-priority broader title(s) —
+never truncate a phrase, never touch a direct title before every broader title
+is gone, never unbalance a quote or parenthesis.
+Every quotation mark is paired and every parenthesis is balanced.
 searchQuery represents the distinguishing product, platform, specialization
-or industry.
-searchQuery does not repeat the complete title gate.
+or industry in its DOMAIN GROUP.
 Locations are not included inside searchQuery.
 Generic terms do not replace stronger specialization terminology.
 No unrelated vendor product is added.
@@ -1555,9 +1597,36 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     """
     f = strategy.filters
     # An empty filter set is unusable — fall back rather than search on nothing.
+    # (Checked BEFORE the currentJobTitles invariant below: is_empty() still
+    # looks at currentJobTitles too, for a model/Judge response that hasn't run
+    # through this function yet.)
     if f.is_empty():
         logger.warning("[Strategist] returned an empty filter set — literal prefill")
         return _fallback(brief)
+
+    # Scavenging pool ONLY — never the output. If the model (against instructions)
+    # still populated currentJobTitles, or an old/legacy caller did, its entries
+    # are still useful for recovering a decent `best_title`/`focusTitle` when
+    # searchQuery ITSELF is also degenerate (e.g. the model echoed the raw
+    # posting title into both). Merged with searchQuery's own TITLE GROUP below;
+    # the fallback chain that used to read `f.currentJobTitles` directly for this
+    # purpose would otherwise go blind the moment the field is forced empty.
+    _model_titles = list(f.currentJobTitles or [])
+
+    # ── HARD INVARIANT: currentJobTitles is ALWAYS empty from here on, no
+    # matter what the model or a later repair step wrote to it. Set FIRST, not
+    # last, so every helper below that touches currentJobTitles (title cleanup,
+    # best_title, the broadening-ladder lock) sees the same empty value the
+    # final output has — otherwise a ladder step can lock in a stale non-empty
+    # list from before this ran, while the main filters end up empty (observed
+    # live, 2026-07-31: `_apply_judgment` — a SEPARATE LLM call with its own,
+    # still title/query-split prompt in judge.py — can repair `f.currentJobTitles`
+    # directly from its own `suggestedTitles`, then re-run this function). All
+    # title information now lives only inside searchQuery's TITLE GROUP; every
+    # place that used to read `f.currentJobTitles` for real title data has been
+    # repointed to `_title_gate_titles_from_query(f.searchQuery)` (or, for
+    # best_title/focusTitle recovery specifically, `_model_titles` above) instead.
+    f.currentJobTitles = []
 
     # ── Inferred enum filters are FORCED to Any ─────────────────────────────
     # seniorityLevel / function / companyHeadcount / yearsAtCurrentCompany (and
@@ -1582,28 +1651,29 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
         )
         f.yearsOfExperience = None
 
-    # ── Recover currentJobTitles when the model folded its whole title family
-    # into searchQuery's Boolean string and never wrote the dedicated field.
-    # Nothing here is invented — these are the model's OWN quoted phrases, just
-    # relocated to the field the "Job titles" chips in the UI actually read.
-    if not f.currentJobTitles and _is_boolean_query(f.searchQuery):
-        recovered = _title_gate_titles_from_query(f.searchQuery)
-        if recovered:
-            logger.info(
-                "[Strategist] currentJobTitles was empty — recovered %d title(s) "
-                "from the Boolean searchQuery", len(recovered),
-            )
-            f.currentJobTitles = recovered
+    # ── currentJobTitles is INTENTIONALLY left empty now (2026-07-31 redesign):
+    # the title family lives only inside searchQuery's TITLE GROUP, so it never
+    # acts as a second, independently-restrictive actor-side filter alongside
+    # the query that already carries the same titles as a fuzzy full-profile
+    # match. An earlier version of this function auto-recovered titles INTO
+    # currentJobTitles from a Boolean-only query — that recovery is deliberately
+    # gone: it would silently refill the field this design requires to stay
+    # empty. `_title_gate_titles_from_query` still exists and is used by
+    # `candidate_pipeline.py`'s QA-anchor fallback, which needs the same
+    # extraction for a different purpose.
 
-    # ── Title family: drop brand+module fragments ("SAP CO", "SAP PS") that no
-    # one carries as a headline, then dedupe and cap at 10 (past that the actor's
-    # OR-match returns noise). The verbatim posting title is LEFT IN — it is often
-    # a real headline too, and even when it isn't it just matches nobody (harmless
-    # noise), whereas the fragments actively mislead. If cleaning would empty the
-    # list we keep the original (is_empty already passed).
+    # ── Title candidate pool for best_title/focusTitle recovery ONLY — never
+    # written back to f.currentJobTitles, which stays empty per the invariant
+    # above. Two sources, merged: searchQuery's own TITLE GROUP (the new
+    # intended source of truth) and `_model_titles` (whatever the model put in
+    # currentJobTitles despite instructions — a scavenging fallback for when
+    # searchQuery ITSELF is also degenerate, e.g. the model echoed the raw
+    # posting title into both). Brand+module fragments ("SAP CO", "SAP PS") that
+    # no one carries as a headline are dropped, then deduped.
+    title_pool = _dedupe([*_title_gate_titles_from_query(f.searchQuery), *_model_titles], 20)
     cleaned: list[str] = []
     seen_t: set[str] = set()
-    for t in f.currentJobTitles:
+    for t in title_pool:
         t = (t or "").strip()
         key = " ".join(_toks(t))
         if not key or key in seen_t:
@@ -1612,18 +1682,13 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
             continue
         cleaned.append(t)
         seen_t.add(key)
-    if cleaned:
-        f.currentJobTitles = cleaned[:10]
-    elif len(f.currentJobTitles) > 10:
-        f.currentJobTitles = f.currentJobTitles[:10]
 
     # The strongest REAL title: the first that is neither the posting title
     # restated (employer language) nor a fragment. Seeds the short query and the
     # focus title so neither inherits the model's junk when it emitted some.
     best_title = next(
-        (t for t in f.currentJobTitles
-         if not _looks_like_full_title(t, brief.jobTitle) and not _is_degenerate_title(t)),
-        (f.currentJobTitles[0] if f.currentJobTitles
+        (t for t in cleaned if not _looks_like_full_title(t, brief.jobTitle)),
+        (cleaned[0] if cleaned
          else (strategy.focusTitle or brief.jobTitle)),
     )
 
@@ -1634,25 +1699,49 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
         f.locations = [brief.jobLocation]
     f.locations = _normalize_locations(f.locations)
 
-    # ── Rebuild the mandatory (DOMAIN GATE) AND (TITLE GATE) structure when the
-    # model shipped a Boolean that is ONLY titles — no separate domain/product
-    # group, no top-level AND. Losing the domain gate loses the one signal that
-    # catches a candidate who doesn't title themselves as expected; domain terms
-    # come ONLY from what the JD's own extraction already vetted
-    # (`mustHaveSkills`), or failing that the same heuristic anchor-derivation
-    # used elsewhere in this file — never invented fresh.
-    if (f.currentJobTitles and _is_boolean_query(f.searchQuery)
-            and " AND " not in f.searchQuery.upper()):
+    # ── Rebuild the mandatory (DOMAIN GATE) AND (TITLE GATE) structure whenever
+    # the query is Boolean but has no top-level AND. Two distinct malformed
+    # shapes reach here and need different repairs:
+    #   (a) MIXED, UNSPLIT — one OR-block contains BOTH domain and title-shaped
+    #       phrases with no AND at all. Observed live, 2026-07-31, "Inhouse
+    #       Consultant SAP CO/PS": the query Judge (a separate LLM call, judge.py,
+    #       still on the OLD split-field prompt) proposed a `suggestedSearchQuery`
+    #       of exactly this shape and it was accepted verbatim as a "repair".
+    #       Fix: split the EXISTING phrases into the two groups and AND them —
+    #       nothing invented, just restructured.
+    #   (b) TITLE-ONLY — every phrase is title-shaped, no domain phrase exists at
+    #       all. Fix: keep the existing behaviour of adding vetted domain terms
+    #       (`mustHaveSkills`, else the heuristic anchor) — never invented fresh.
+    # currentJobTitles is always empty by design now (see SEARCH ARCHITECTURE),
+    # so the title family used to detect/rebuild this comes from the query's OWN
+    # quoted phrases via `_title_gate_titles_from_query`, not from that field.
+    if _is_boolean_query(f.searchQuery) and " AND " not in f.searchQuery.upper():
         phrases = _QUOTED_PHRASE_RE.findall(f.searchQuery)
-        has_domain_phrase = any(not _phrase_is_title_shaped(p) for p in phrases)
-        if not has_domain_phrase:
+        domain_phrases = [p for p in phrases if not _phrase_is_title_shaped(p)]
+        query_titles = _title_gate_titles_from_query(f.searchQuery)
+
+        if domain_phrases and query_titles:
+            # (a) Mixed and unsplit — restructure into (DOMAIN) AND (TITLE)
+            # using the SAME phrases the query already had, just regrouped.
+            domain_block = " OR ".join(f'"{d}"' for d in domain_phrases)
+            title_block = " OR ".join(f'"{t}"' for t in query_titles)
+            rebuilt = f"({domain_block}) AND ({title_block})"
+            if _boolean_query_is_valid(rebuilt):
+                logger.info(
+                    "[Strategist] searchQuery mixed domain+title in one "
+                    "unstructured OR-block — split and joined as "
+                    "(DOMAIN) AND (TITLE)",
+                )
+                f.searchQuery = rebuilt
+        elif not domain_phrases and query_titles:
+            # (b) Title-only — add a domain group from vetted data.
             domain_terms = _dedupe(list(brief.mustHaveSkills or []), 6)
             if not domain_terms:
-                core, _eco = derive_anchor_terms([brief.jobTitle, *f.currentJobTitles])
+                core, _eco = derive_anchor_terms([brief.jobTitle, *query_titles])
                 domain_terms = _dedupe(core, 6)
             if domain_terms:
                 domain_block = " OR ".join(f'"{d}"' for d in domain_terms)
-                title_block = " OR ".join(f'"{t}"' for t in f.currentJobTitles)
+                title_block = " OR ".join(f'"{t}"' for t in query_titles)
                 rebuilt = f"({domain_block}) AND ({title_block})"
                 if _boolean_query_is_valid(rebuilt):
                     logger.info(
@@ -1687,13 +1776,16 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     # A "core" term that is really a generic role word (consultant, manager…)
     # would let every profession through — strip them.
     anchor.coreTerms = [t for t in anchor.coreTerms if t not in GENERIC_ROLE_WORDS]
+    # currentJobTitles is always empty now, so the title family used to seed or
+    # cross-check the anchor comes from searchQuery's own TITLE GROUP instead.
+    query_titles = _title_gate_titles_from_query(f.searchQuery)
     if anchor.is_empty():
-        core, eco = derive_anchor_terms([brief.jobTitle, *f.currentJobTitles])
+        core, eco = derive_anchor_terms([brief.jobTitle, *query_titles])
         anchor.coreTerms, anchor.ecosystemTerms = core, eco
     else:
         # Self-consistency: if the anchor rejects most of the model's OWN titles,
         # the anchor is wrong (too narrow), not the titles — rebuild it from them.
-        titles = f.currentJobTitles or []
+        titles = query_titles
         if titles:
             passing = sum(1 for t in titles if title_in_domain(t, anchor.coreTerms))
             if passing * 2 < len(titles):
@@ -1705,9 +1797,9 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
                 anchor.coreTerms, anchor.ecosystemTerms = core, eco
 
     # Adjacent titles are recruiter-opt-in ONLY. Anything that is actually
-    # IN-specialty belongs in currentJobTitles, so de-dupe across the two lists,
-    # cap, and drop empties.
-    seen = {t.strip().lower() for t in f.currentJobTitles}
+    # IN-specialty already lives in searchQuery's TITLE GROUP, so de-dupe
+    # against that (currentJobTitles is always empty now), cap, and drop empties.
+    seen = {t.strip().lower() for t in query_titles}
     strategy.adjacentTitles = [
         t.strip() for t in strategy.adjacentTitles
         if t and t.strip() and t.strip().lower() not in seen
@@ -1755,6 +1847,8 @@ def _sanitize(strategy: SearchStrategy, brief: SearchBrief) -> SearchStrategy:
     # from the model. One source of truth → the two engines can never diverge
     # (this is the structural fix for the 'Koblenz' vs 'Kolenz' bug), and the
     # model has ~40% less to emit, so it spends its budget on the title family.
+    # NOTE: with currentJobTitles always empty, Apollo's titles list collapses to
+    # just [focusTitle] — currently inert since Apollo search is disabled.
     strategy.apolloPlan = _derive_apollo_plan(
         f, brief, strategy.focusTitle, anchor.coreTerms)
     return strategy

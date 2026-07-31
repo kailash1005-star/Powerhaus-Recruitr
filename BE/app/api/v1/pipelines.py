@@ -22,7 +22,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -131,12 +131,13 @@ class CandidatePatchSchema(BaseModel):
 class BulkEnrichSchema(BaseModel):
     """Selected candidate ids to enrich (None/empty → all candidates in the job).
 
-    ``mode`` picks the enrichment engine(s): ``"apollo"`` (verified email +
-    contact, no scrape), ``"apify"`` (deep profile scrape only), or ``"both"``
-    (Apollo then Apify — the default).
+    Apify-only (deep profile scrape: work history, skills, headline). Apollo
+    is not offered here — every candidate is Apify-sourced now that Apollo
+    search has been dropped, so Apollo's `/people/match` (which only matches
+    its OWN internal id, not a LinkedIn URN) would fail 100% of the time and
+    returns a thinner profile even when it could match.
     """
     candidateIds: Optional[List[str]] = None
-    mode: Literal["apollo", "apify", "both"] = "both"
 
 
 class DeleteCandidatesSchema(BaseModel):
@@ -708,10 +709,11 @@ async def discover_job_candidates_combined(
 @router.post("/{pipeline_id}/jobs/{job_id}/enrich")
 async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichSchema,
                                 _owned: dict = Depends(owned_pipeline)):
-    """Queue a background bulk enrichment (Apollo /people/match → Apify profile)
-    for the selected candidates (or all candidates in the job). Idempotent — each
-    stage skips candidates already enriched. Poll the pipeline for the job's
-    ``enrichStatus``.
+    """Queue a background Apify deep-profile enrichment for the selected
+    candidates (or all candidates in the job). Idempotent — skips candidates
+    already enriched. Poll the pipeline for the job's ``enrichStatus``.
+
+    Apify-only — see `BulkEnrichSchema` for why Apollo isn't offered here.
 
     No cap on the selection size — the recruiter enriches however many
     candidates they manually picked. The underlying Apify calls still protect
@@ -720,8 +722,7 @@ async def enrich_job_candidates(pipeline_id: str, job_id: str, body: BulkEnrichS
     of one oversized one (or being refused outright).
     """
     try:
-        result = await enqueue_job_enrich(
-            pipeline_id, job_id, body.candidateIds, body.mode)
+        result = await enqueue_job_enrich(pipeline_id, job_id, body.candidateIds)
         return {"success": True, **result}
     except ValueError as ve:
         raise HTTPException(404, str(ve))
@@ -1130,16 +1131,21 @@ async def _bg_apify_enrich(candidate_id: str) -> None:
 @router.post("/candidates/{candidate_id}/enrich")
 async def enrich_candidate(candidate_id: str, db=Depends(get_db),
                            _owned: dict = Depends(owned_candidate)):
-    """Manual enrichment — Apollo /people/match (inline) then the deep Apify
-    LinkedIn profile (background).
+    """Manual enrichment — the deep Apify LinkedIn profile (background).
 
-    Apollo runs synchronously (fast) and hydrates the verified email + the
-    authoritative LinkedIn URL Apify needs; the response returns immediately with
-    ``apifyEnrichmentStatus:"pending"`` and the Apify stage continues in the
-    background. The client polls ``GET /candidates/{id}`` until the status
-    settles (``enriched`` / ``not_found`` / ``failed``). Idempotent.
+    Apify-only: this used to run Apollo /people/match inline first, but every
+    candidate is Apify-sourced now that Apollo search has been dropped, so
+    ``apolloId`` holds a LinkedIn URN rather than a real Apollo person id.
+    Apollo's ``/people/match`` only matches its OWN internal id, so that stage
+    was a guaranteed failure (502) that blocked the Apify stage from ever
+    running — confirmed via the same root cause as the bulk enrich fix,
+    2026-07-31.
+
+    The response returns immediately with ``apifyEnrichmentStatus:"pending"``
+    and the Apify stage continues in the background. The client polls
+    ``GET /candidates/{id}`` until the status settles (``enriched`` /
+    ``not_found`` / ``failed``). Idempotent.
     """
-    from app.services.sourcing.apollo_enrich import ApolloEnrichError, apollo_enrich_candidate
     try:
         col = db["candidates"]
         try:
@@ -1150,26 +1156,15 @@ async def enrich_candidate(candidate_id: str, db=Depends(get_db),
         if not cand:
             raise HTTPException(404, "Candidate not found")
 
-        from app.services.operations import cost_service
-        async with cost_service.cost_context(
-            cost_service.STAGE_CANDIDATE, label=cand.get("displayName"),
-            candidateId=candidate_id, pipelineId=cand.get("pipelineId"),
-            jobId=(cand.get("sourceJobIds") or [None])[0],
-        ):
-            fresh = await apollo_enrich_candidate(db, cand)
-
-        # Kick off stage-2 (Apify) unless the deep profile is already present.
-        if not fresh.get("isApifyEnriched"):
+        if not cand.get("isApifyEnriched"):
             await col.update_one(
                 {"_id": oid},
                 {"$set": {"apifyEnrichmentStatus": "pending", "updatedAt": datetime.utcnow()}},
             )
-            fresh["apifyEnrichmentStatus"] = "pending"
+            cand["apifyEnrichmentStatus"] = "pending"
             asyncio.create_task(_bg_apify_enrich(candidate_id))
 
-        return _serialize_candidate(fresh)
-    except ApolloEnrichError as e:
-        raise HTTPException(502, str(e))
+        return _serialize_candidate(cand)
     except HTTPException:
         raise
     except Exception as e:

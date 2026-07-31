@@ -885,15 +885,13 @@ async def _set_enrich(pipeline_id: str, job_id: str, status: str, **extras) -> N
 
 async def enqueue_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]] = None,
-    mode: str = "both",
 ) -> Dict[str, Any]:
     """Queue a background bulk-enrich for a job's (selected) candidates.
 
     ``candidate_ids`` narrows to specific candidates; None enriches every
-    candidate in the job. ``mode`` selects which stage(s) run:
-      * ``"apollo"`` — Apollo /people/match only (verified email + contact).
-      * ``"apify"``  — Apify deep-profile scrape only (work history + skills).
-      * ``"both"``   — Apollo then Apify (source-aware; the default).
+    candidate in the job. Apify-only (deep profile scrape: work history,
+    skills, headline) — see `_enrich_for_job` for why Apollo is not an option
+    here.
 
     Returns ``{"queued": True}``; raises ``ValueError("job_not_found")`` if the
     job isn't in the pipeline.
@@ -906,35 +904,31 @@ async def enqueue_job_enrich(
     )
     if res.matched_count == 0:
         raise ValueError("job_not_found")
-    asyncio.create_task(_run_job_enrich(pipeline_id, job_id, candidate_ids, mode))
+    asyncio.create_task(_run_job_enrich(pipeline_id, job_id, candidate_ids))
     return {"queued": True}
 
 
 async def _enrich_for_job(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
-    mode: str = "both",
 ) -> Dict[str, Any]:
-    """Enrich a job's candidates for the chosen ``mode``.
+    """Enrich a job's candidates via Apify — the only engine used here.
 
-    ``mode`` is the recruiter's explicit pick from the Enrich dropdown:
+    Apify sourcing is the sole discovery engine now (Apollo search was dropped
+    entirely), so every candidate's ``apolloId`` field actually holds a
+    LinkedIn URN, not a real Apollo person id. Apollo's ``/people/match`` only
+    matches on its OWN internal id, so calling it for these candidates is a
+    guaranteed, 100%-of-the-time failure — confirmed live, 2026-07-31 ("Sales
+    Manager SAP Retail": 30/30 Apollo failures, 0 Apify attempts, because the
+    recruiter had picked the Apollo-only enrich option). Apollo also returns a
+    materially thinner profile than Apify's deep scrape (no work history, no
+    skills) even on the rare candidate it could match. So this function no
+    longer offers an engine choice — it always runs the Apify deep-profile
+    scrape, keyed off the candidate's LinkedIn URL.
 
-      * ``"apollo"`` — Apollo /people/match only. Reveals verified email + real
-        name/location; no Apify scrape. Needs a real Apollo id, so this is the
-        contact-reveal step for Apollo-sourced candidates.
-      * ``"apify"``  — Apify deep-profile scrape only (work history / skills),
-        keyed off the candidate's LinkedIn URL. No Apollo credit spent.
-      * ``"both"``   — Apollo then Apify, routed by SOURCE: Apify-discovered
-        candidates carry a LinkedIn URN in ``apolloId`` (not an Apollo person
-        id), so the Apollo stage can only fail for them — one wasted call each.
-        When every target is Apify-sourced we skip straight to the Apify-only
-        path; a set containing Apollo-sourced candidates runs both stages.
-
-    The returned summary always carries the ``apollo_enriched`` /
-    ``apify_enriched`` / ``not_found`` keys the UI reads.
+    The returned summary keeps the ``apollo_enriched``/``apollo_failed`` keys
+    (always 0) so the UI's existing result-shape reader doesn't need to change.
     """
-    from app.services.sourcing.candidate_enrichment import (
-        apollo_enrich_only, bulk_enrich, enrich_candidates,
-    )
+    from app.services.sourcing.candidate_enrichment import enrich_candidates
 
     def _normalize_apify(s: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -946,36 +940,6 @@ async def _enrich_for_job(
             "skipped": s.get("skipped", 0),
         }
 
-    # ── Apollo-only: reveal contact info, no scrape ─────────────────────────
-    if mode == "apollo":
-        if candidate_ids:
-            return await apollo_enrich_only(candidate_ids=candidate_ids)
-        return await apollo_enrich_only(pipeline_id=pipeline_id, job_id=job_id)
-
-    # ── Apify-only: deep profile scrape, no Apollo credit ───────────────────
-    if mode == "apify":
-        if candidate_ids:
-            return _normalize_apify(await enrich_candidates(candidate_ids=candidate_ids))
-        return _normalize_apify(
-            await enrich_candidates(pipeline_id=pipeline_id, job_id=job_id))
-
-    # ── Both (default): source-aware — skip Apollo on a pure-Apify set ──────
-    candidates_col = await get_collection("candidates")
-    scope: Dict[str, Any] = {"pipelineId": pipeline_id}
-    if candidate_ids:
-        scope["_id"] = {"$in": [ObjectId(c) for c in candidate_ids]}
-    else:
-        scope["sourceJobIds"] = job_id
-
-    needs_apollo = await candidates_col.count_documents(
-        {**scope, "source": {"$ne": "apify_search"}}) > 0
-
-    if needs_apollo:
-        if candidate_ids:
-            return await bulk_enrich(candidate_ids=candidate_ids)
-        return await bulk_enrich(pipeline_id=pipeline_id, job_id=job_id)
-
-    # Pure Apify discovery set → Apify-only, normalized to the UI's key shape.
     if candidate_ids:
         return _normalize_apify(await enrich_candidates(candidate_ids=candidate_ids))
     return _normalize_apify(
@@ -1041,7 +1005,6 @@ async def _regate_locations_after_enrich(
 
 async def _run_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
-    mode: str = "both",
 ) -> None:
     """Background worker: enrich the selected candidates (or all in the job)."""
     from app.services.operations import cost_service
@@ -1050,7 +1013,7 @@ async def _run_job_enrich(
         async with cost_service.cost_context(
             cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
         ):
-            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids, mode)
+            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids)
         # Now that real locations are known, reject confirmed wrong-country hits
         # (the Apollo location gate can only run here). Fail-open.
         try:
@@ -1397,7 +1360,6 @@ async def rescreen_freelance_candidates(pipeline_id: Optional[str] = None, job_i
 
 async def _run_job_enrich(
     pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
-    mode: str = "both",
 ) -> None:
     """Background worker: enrich the selected candidates (or all in the job)."""
     from app.services.operations import cost_service
@@ -1406,7 +1368,7 @@ async def _run_job_enrich(
         async with cost_service.cost_context(
             cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
         ):
-            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids, mode)
+            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids)
         # Now that real locations are known, reject confirmed wrong-country hits
         # (the Apollo location gate can only run here). Fail-open.
         try:

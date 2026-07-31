@@ -244,16 +244,29 @@ class TestStrategistSanitize:
         assert "sap" in out.domainAnchor.ecosystemTerms
 
     def test_anchor_rejecting_own_titles_is_rebuilt(self):
-        s = self._strategy(domainAnchor=DomainAnchor(
-            coreTerms=["entgeltabrechnung"], ecosystemTerms=[]))
+        # currentJobTitles is always empty now — the anchor's self-consistency
+        # check reads its title family back out of searchQuery's TITLE GROUP.
+        s = self._strategy(
+            filters=SearchFilters(
+                searchQuery='("Payroll") AND ("SAP HCM Consultant" OR "SAP SuccessFactors Consultant")',
+                currentJobTitles=[],
+            ),
+            domainAnchor=DomainAnchor(coreTerms=["entgeltabrechnung"], ecosystemTerms=[]),
+        )
         out = _sanitize(s, SearchBrief(jobTitle="SAP HCM Consultant"))
         assert "hcm" in out.domainAnchor.coreTerms
 
     def test_adjacent_titles_deduped_and_capped(self):
-        s = self._strategy(adjacentTitles=[
-            "SAP HCM Consultant",   # dupe of a current title → dropped
-            "HRIS Consultant", "Workday HCM Consultant", "  ", "A", "B", "C", "D", "E",
-        ])
+        s = self._strategy(
+            filters=SearchFilters(
+                searchQuery='("SAP HCM") AND ("SAP HCM Consultant" OR "SAP SuccessFactors Consultant")',
+                currentJobTitles=[],
+            ),
+            adjacentTitles=[
+                "SAP HCM Consultant",   # dupe of a query title → dropped
+                "HRIS Consultant", "Workday HCM Consultant", "  ", "A", "B", "C", "D", "E",
+            ],
+        )
         out = _sanitize(s, SearchBrief(jobTitle="SAP HCM Consultant"))
         assert "SAP HCM Consultant" not in out.adjacentTitles
         assert "HRIS Consultant" in out.adjacentTitles
@@ -358,7 +371,7 @@ class TestEnrichSelectionSize:
 
         seen = {}
 
-        async def fake_enqueue(pipeline_id, job_id, candidate_ids, mode):
+        async def fake_enqueue(pipeline_id, job_id, candidate_ids):
             seen["candidate_ids"] = candidate_ids
             return {"queued": True}
 
