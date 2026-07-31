@@ -278,3 +278,249 @@ def test_fallback_reasons_counts_partial_credit_not_gap_length():
     reasons = ms._fallback_reasons(jd, SINA, {"gaps": gaps, "breakdown": bd})
     # 4.25/5 credited — NOT 5/5 just because nothing is wholly missing.
     assert any("4.25/5" in r for r in reasons), reasons
+
+
+# ── Kastell's manual-screening patterns (2026-07-30, "Sales Manager SAP
+# Retail") ──────────────────────────────────────────────────────────────────
+# Six real verdicts from a client's manual LinkedIn review; none of these
+# reasoning patterns existed in the scorer before. Fixtures reproduce his
+# stated reasons as regression tests — see the "Evidence-grounded screening"
+# plan. Historical experience dates (2002-2020) are fixed in the past on
+# purpose: they must always read as historical, today and in the future.
+cm = importlib.import_module("app.services.sourcing.candidate_merge")
+
+SAP_RETAIL_SALES_JD = {
+    "title": "Senior Sales Manager SAP Retail",
+    "mustHaveSkills": ["SAP Retail"],
+}
+
+
+def test_dietmar_stale_domain_evidence_is_discounted_not_credited():
+    """"Correct topic but was a sales manager 2002-2005, then developed
+    himself in the technical presales niche... therefore not relevant."
+    SAP Retail Sales is real in his profile, but only in a role that ended
+    two decades ago — the current role must not inherit that credit."""
+    profile = {
+        "currentTitle": "Technical Presales Consultant",
+        "skills": ["Presales", "Solution Architecture"],
+        "experience": [
+            {"title": "Technical Presales Consultant",
+             "summary": "Solution demos for enterprise clients.",
+             "starts_at": "2006-01", "ends_at": None, "is_current": True},
+            {"title": "Sales Manager SAP Retail",
+             "summary": "Sold SAP Retail solutions to retail chains.",
+             "starts_at": "2002-01", "ends_at": "2005-12", "is_current": False},
+        ],
+    }
+    score, sub, gaps, bd = ms._score_candidate(SAP_RETAIL_SALES_JD, profile, sim=0.5)
+    assert gaps == []  # credited, not missing...
+    stale = bd["staleEvidence"]
+    assert len(stale) == 1 and stale[0]["skill"] == "SAP Retail"
+    # ...but discounted: the coverage math used the discounted credit.
+    skill_row = next(c for c in bd["components"] if c["key"] == "skillCoverage")
+    assert skill_row["skills"][0]["credit"] == pytest.approx(ms._STALE_EVIDENCE_DISCOUNT)
+
+
+def test_diana_junior_historical_role_also_flagged_stale():
+    """"2009 she was some kind of clerk for the sales department but then
+    went on to other topics at sap." Same pattern as Dietmar."""
+    profile = {
+        "currentTitle": "Data Protection Officer",
+        "skills": ["GDPR", "Compliance"],
+        "experience": [
+            {"title": "Data Protection Officer",
+             "summary": "Privacy compliance program.",
+             "starts_at": "2015-01", "ends_at": None, "is_current": True},
+            {"title": "Sales Clerk SAP Retail",
+             "summary": "Administrative support for the SAP Retail sales team.",
+             "starts_at": "2009-01", "ends_at": "2009-12", "is_current": False},
+        ],
+    }
+    _, _, _, bd = ms._score_candidate(SAP_RETAIL_SALES_JD, profile, sim=0.4)
+    assert len(bd["staleEvidence"]) == 1
+
+
+def test_melanie_current_domain_evidence_is_not_flagged_stale():
+    """Positive control — Melanie Hagen, "Top candidate!" — the domain match
+    is in her CURRENT role, so nothing should be discounted."""
+    profile = {
+        "currentTitle": "Senior Sales Manager SAP Retail",
+        "skills": ["SAP Retail", "S/4HANA Retail", "Enterprise Sales"],
+        "experience": [
+            {"title": "Senior Sales Manager SAP Retail",
+             "summary": "Selling SAP Retail transformation deals.",
+             "starts_at": "2020-01", "ends_at": None, "is_current": True},
+        ],
+    }
+    score, sub, gaps, bd = ms._score_candidate(SAP_RETAIL_SALES_JD, profile, sim=0.6)
+    assert bd["staleEvidence"] == []
+    assert gaps == []
+
+
+def test_ralf_executive_title_is_penalized_as_overqualified():
+    """"Product Owner/Manager/Chairman. Is 5 Levels higher than the one we
+    are looking for and no sales person." """
+    profile = {"currentTitle": "Product Owner / Chairman", "skills": ["SAP Retail"]}
+    mult, reason = ms.seniority_band_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult < 1.0 and reason
+    entry = {"score": 80.0, "breakdown": {}}
+    ms.apply_screening_signals(entry, seniority_band=(mult, reason), inactive=None)
+    assert entry["score"] < 40.0
+
+
+def test_seniority_band_fit_does_not_penalize_a_non_executive_title():
+    profile = {"currentTitle": "Senior Sales Manager SAP Retail"}
+    mult, reason = ms.seniority_band_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0 and reason is None
+
+
+def test_seniority_band_fit_allows_executive_titles_for_an_executive_role():
+    """The penalty only fires when the ROLE itself isn't executive-level."""
+    profile = {"currentTitle": "Chief Revenue Officer"}
+    jd = {"title": "Chief Revenue Officer", "mustHaveSkills": []}
+    mult, reason = ms.seniority_band_fit(profile, jd)
+    assert mult == 1.0 and reason is None
+
+
+def test_christian_inactive_since_a_long_gap_is_flagged():
+    """"He is in pension and seems to be out since 2020." No headline marker
+    needed — the date gap alone is the signal here."""
+    profile = {
+        "experience": [
+            {"title": "Sales Manager SAP Retail", "starts_at": "2010-01",
+             "ends_at": "2020-01", "is_current": False},
+        ],
+    }
+    flag = cm.inactive_candidate_flag(profile)
+    assert flag and flag["inactive"] is True
+
+
+def test_retirement_headline_is_flagged_even_with_recent_dates():
+    profile = {
+        "headline": "Im Ruhestand",
+        "experience": [{"title": "Sales Manager", "starts_at": "2023-01",
+                        "ends_at": "2024-01", "is_current": False}],
+    }
+    flag = cm.inactive_candidate_flag(profile)
+    assert flag and flag["inactive"] is True
+
+
+def test_active_current_role_is_not_flagged_inactive():
+    profile = {
+        "experience": [{"title": "Sales Manager", "starts_at": "2022-01",
+                        "ends_at": None, "is_current": True}],
+    }
+    assert cm.inactive_candidate_flag(profile) is None
+
+
+def test_missing_dates_never_flag_inactive():
+    """Absence of evidence is not evidence of retirement."""
+    assert cm.inactive_candidate_flag({"currentTitle": "Sales Manager"}) is None
+
+
+def test_ron_porcello_job_hop_pattern_is_detected():
+    """"Changed quite often in his career... if a candidate has an average
+    moving rate of >2years, he might be a b candidate." Kastell's own
+    proposed detector and threshold, computed from his actual work history."""
+    profile = {
+        "experience": [
+            {"title": "IT Security Consultant", "starts_at": "2019-01",
+             "ends_at": "2020-01", "is_current": False},
+            {"title": "SAP Consultant", "starts_at": "2017-06",
+             "ends_at": "2018-12", "is_current": False},
+            {"title": "SAP MDG / Retail Consultant", "starts_at": "2015-01",
+             "ends_at": "2017-05", "is_current": False},
+        ],
+    }
+    avg = cm.average_tenure_years(profile)
+    assert avg is not None and avg < ms._JOB_HOP_THRESHOLD_YEARS
+
+
+def test_single_dated_role_does_not_evidence_a_hopping_pattern():
+    """One data point can't evidence a pattern — must stay neutral (None),
+    never treated as either stable or hopping."""
+    profile = {"experience": [{"title": "Sales Manager", "starts_at": "2015-01",
+                               "ends_at": "2020-01", "is_current": False}]}
+    assert cm.average_tenure_years(profile) is None
+
+
+def test_dietmar_real_title_flags_function_mismatch_not_stale():
+    """His REAL scraped title — "Product Manager, Business Solution Architect
+    for SAP SCE Applications in Retail" — contains "Retail" and is CURRENT, so
+    staleEvidence correctly stays silent (verified live, 2026-07-31). The
+    actual mismatch Kastell named is the JOB, not the domain or its recency."""
+    profile = {"currentTitle": "Product Manager, Business Solution Architect for SAP SCE Applications in Retail"}
+    mult, reason = ms.function_mismatch_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult < 1.0 and "product manager" in reason.lower()
+
+
+def test_ralf_real_title_flags_function_mismatch():
+    """His real current title has no executive marker at all ("SAP Ecosystem
+    Development in BTP, BDC..."), so seniority_band_fit stays silent — this is
+    what actually catches him."""
+    profile = {"currentTitle": "SAP Ecosystem Development in BTP, BDC and SAP Business AI, SAP Toolchain Growth"}
+    mult, reason = ms.seniority_band_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0
+    mult, reason = ms.function_mismatch_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult < 1.0 and "ecosystem" in reason.lower()
+
+
+def test_diana_real_title_flags_function_mismatch():
+    """Her real current title — "Operations Business Partner for Partner
+    Ecosystem Success" — names a different function via TWO independent
+    markers (business partner, ecosystem)."""
+    profile = {"currentTitle": "Operations Business Partner for Partner Ecosystem Success"}
+    mult, reason = ms.function_mismatch_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult < 1.0
+
+
+@pytest.mark.parametrize("title", [
+    "Client Partner",
+    "Client Director | OpenText Observability & Service Management (OSM)",
+    "Key-Account-Manager",                       # hyphenated German — must normalize
+    "Key-Account-Managerin",
+    "Sales Director",
+    "Leiter Fachvertrieb SAP",                    # "vertrieb" embedded in a German compound
+    "International Sales and business development",
+    "Enterprise Account Executive, Google Cloud, Apigee",
+])
+def test_real_commercial_titles_are_never_flagged(title):
+    """False-positive guard, built from the OTHER 25 candidates in the same
+    real run Kastell did not flag — a hybrid/commercial title must never be
+    penalized just because it also touches an adjacent-function word."""
+    mult, reason = ms.function_mismatch_fit({"currentTitle": title}, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0 and reason is None
+
+
+@pytest.mark.parametrize("title", [None, "", "UPS Healthcare - Europe", "Enabling the Intelligent Enterprise"])
+def test_missing_or_uninformative_titles_are_never_flagged(title):
+    """Absence or vagueness is not evidence of the wrong function — the same
+    "missing data is neutral" rule the other three signals already follow."""
+    mult, reason = ms.function_mismatch_fit({"currentTitle": title}, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0 and reason is None
+
+
+def test_function_mismatch_is_scoped_to_commercial_roles():
+    """A Solution Architect JD must never penalize a Solution Architect
+    candidate — the check only applies when the ROLE itself is commercial."""
+    jd = {"title": "Senior Solution Architect SAP Retail", "mustHaveSkills": ["SAP Retail"]}
+    profile = {"currentTitle": "Solution Architect SAP Retail"}
+    mult, reason = ms.function_mismatch_fit(profile, jd)
+    assert mult == 1.0 and reason is None
+
+
+def test_saurabh_clean_current_match_has_no_flags():
+    """Positive control — "Nearby perfect candidate!" — none of the four new
+    signals should fire for a straightforward current-role match."""
+    profile = {
+        "currentTitle": "Sales Manager SAP Retail",
+        "skills": ["SAP Retail"],
+        "experience": [{"title": "Sales Manager SAP Retail",
+                        "summary": "SAP Retail solution sales.",
+                        "starts_at": "2021-01", "ends_at": None, "is_current": True}],
+    }
+    _, _, gaps, bd = ms._score_candidate(SAP_RETAIL_SALES_JD, profile, sim=0.6)
+    assert gaps == [] and bd["staleEvidence"] == []
+    mult, reason = ms.seniority_band_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0 and reason is None
+    assert cm.inactive_candidate_flag(profile) is None

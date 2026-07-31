@@ -1015,10 +1015,14 @@ async def list_job_candidates(
         skip = (page - 1) * limit
         direction = 1 if sort_order == "asc" else -1
         # Always put accepted candidates (isAccepted=True) first, rejected
-        # (isAccepted=False) at the bottom; long-tenure-flagged candidates (opt-in,
-        # set by a match run) sink below everyone else but stay above rejected —
-        # a ranking demotion, not a rejection.
-        sort_spec = [("isAccepted", -1), ("longTenureFlag", 1), (sort_by, direction)]
+        # (isAccepted=False) at the bottom; screening-flagged candidates sink
+        # below everyone else but stay above rejected — a ranking demotion,
+        # not a rejection. Inactive (likely retired/out of the workforce) sinks
+        # furthest, then long-tenure (opt-in) and job-hop (Kastell, 2026-07-30).
+        sort_spec = [
+            ("isAccepted", -1), ("inactiveCandidateFlag", 1),
+            ("longTenureFlag", 1), ("tenureFlag", 1), (sort_by, direction),
+        ]
         cursor = col.find(query).sort(sort_spec).skip(skip).limit(limit)
         items: List[dict] = []
         async for doc in cursor:

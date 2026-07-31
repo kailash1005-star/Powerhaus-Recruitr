@@ -37,12 +37,20 @@ from app.services.sourcing import role_spec_service
 from app.services.matching.matching_service import (
     BASE_WEIGHTS,
     SCORING_VERSION,
+    _JOB_HOP_THRESHOLD_YEARS,
     _embed_text_from_profile,
     _fallback_reasons,
     _score_candidate,
     apply_judge,
+    apply_screening_signals,
+    function_mismatch_fit,
+    seniority_band_fit,
 )
-from app.services.sourcing.candidate_merge import current_role_tenure_years
+from app.services.sourcing.candidate_merge import (
+    average_tenure_years,
+    current_role_tenure_years,
+    inactive_candidate_flag,
+)
 
 # A candidate at 20+ years with their CURRENT employer, opt-in per run — a
 # ranking demotion, never an elimination (missing/short tenure data is neutral,
@@ -203,6 +211,13 @@ async def _run_pipeline_match(
     # evidence and the rescore needs the same raw similarity.
     profiles_by_cid: Dict[str, Dict[str, Any]] = {}
     sims_by_cid: Dict[str, float] = {}
+    # QA's `_rescore_with_credits` replays `_score_candidate` FRESH with a
+    # verified credit forced to 1.0 and overwrites the entry's score/breakdown
+    # wholesale — which silently erases the seniority-band/inactive penalty
+    # applied below, since that penalty lives outside `_score_candidate`. Kept
+    # here so a corrected entry can have the SAME penalty re-applied once,
+    # after QA, rather than never or twice.
+    screening_by_cid: Dict[str, Any] = {}
     total = len(candidate_ids)
     processed = 0
     considered = 0
@@ -240,13 +255,20 @@ async def _run_pipeline_match(
         to throw away every analysis outside the top 5, which is why a finished run
         could not show why it rejected anyone.
         """
-        # Long-tenure-flagged candidates rank LAST regardless of score (the
-        # ranking demotion this run was asked for) — everyone else sorts by
-        # score as before. `not flagged` first in the tuple (True > False under
-        # reverse=True) is what pushes flagged rows below every unflagged one.
+        # Flagged candidates rank LAST regardless of score — everyone else
+        # sorts by score as before. `not flagged` first in each tuple slot
+        # (True > False under reverse=True) is what pushes flagged rows below
+        # every unflagged one. Inactive (Christian Koch — "in pension... since
+        # 2020") sorts below long-tenure/job-hop: those are still-active
+        # candidates worth seeing lower on the list, an inactive one is likely
+        # unplaceable. Job-hop (Ron Porcello) is Kastell's own "might be a B
+        # candidate" framing — a demotion, not the harder inactive signal.
         all_entries.sort(
             key=lambda r: (
-                not r.get("longTenureFlag"), r["score"],
+                not r.get("inactiveCandidateFlag"),
+                not r.get("longTenureFlag"),
+                not r.get("tenureFlag"),
+                r["score"],
                 (r.get("breakdown") or {}).get("base", 0.0),
             ),
             reverse=True,
@@ -370,6 +392,20 @@ async def _run_pipeline_match(
                 and tenure_years >= LONG_TENURE_YEARS_THRESHOLD
             )
 
+            # Screening signals from Kastell's manual review (2026-07-30) —
+            # always on, unlike long-tenure above, since these correct real
+            # false positives rather than reflecting a recruiter preference:
+            #   * seniority_band_fit  — Ralf Deuster, "Chairman... 5 levels
+            #     above the role" (score penalty, applied after the judge below)
+            #   * inactive_candidate_flag — Christian Koch, "in pension...
+            #     since 2020" (score penalty + ranking demotion)
+            #   * average_tenure_years — Ron Porcello, Kastell's own proposed
+            #     job-hopper detector, avg tenure < 2yr (ranking + evidence
+            #     only — his framing was "might be a B candidate", not reject)
+            avg_tenure_years = average_tenure_years(profile)
+            job_hop_flag = bool(avg_tenure_years is not None and avg_tenure_years < _JOB_HOP_THRESHOLD_YEARS)
+            inactive = inactive_candidate_flag(profile)
+
             # Embed → score → judge for this one candidate. Isolated: a transient
             # embedding error or a scorer bug on one profile is recorded and
             # skipped — it used to fail the WHOLE run.
@@ -386,22 +422,34 @@ async def _run_pipeline_match(
                                  "reason": f"Scoring failed: {str(e)[:160]}"})
                 await log(f"✗ {name} — scoring error: {str(e)[:160]}", level="warn")
                 continue
-            scored = {"gaps": gaps, "breakdown": breakdown}
+            seniority_band = seniority_band_fit(profile, requirements)
+            function_mismatch = function_mismatch_fit(profile, requirements)
+            scored = {
+                "gaps": gaps, "breakdown": breakdown,
+                "tenureFlag": job_hop_flag, "avgTenureYears": avg_tenure_years,
+            }
             profiles_by_cid[cid] = profile
             sims_by_cid[cid] = sim
+            screening_by_cid[cid] = (seniority_band, inactive, function_mismatch)
 
             rid: Dict[str, Any] = {}
             if settings.MATCH_JUDGE_ENABLED:
                 try:
-                    resp = await llm.judge_candidates(requirements, [{
+                    judge_view: Dict[str, Any] = {
                         "id": cid,
                         "currentTitle": profile.get("currentTitle"),
                         "titles": (profile.get("titles") or [])[:8],
                         "totalYears": profile.get("totalYears"),
                         "skills": (profile.get("skills") or [])[:40],
+                        # Dates included so the judge can reason about WHEN
+                        # something happened — without them it cannot tell a
+                        # current role from one that ended 20 years ago.
                         "experience": [
                             {"title": (e or {}).get("title"),
-                             "summary": ((e or {}).get("summary") or "")[:300]}
+                             "summary": ((e or {}).get("summary") or "")[:300],
+                             "startsAt": (e or {}).get("starts_at"),
+                             "endsAt": (e or {}).get("ends_at"),
+                             "isCurrent": bool((e or {}).get("is_current"))}
                             for e in (profile.get("experience") or [])[:6]
                         ],
                         "education": (profile.get("education") or [])[:4],
@@ -411,7 +459,19 @@ async def _run_pipeline_match(
                         # `skills` and calls it missing, even when the scorer
                         # credited it from the title or a variant.
                         "partialMustHave": breakdown["partialMustHave"],
-                    }])
+                        "staleEvidence": breakdown.get("staleEvidence") or [],
+                    }
+                    if seniority_band[0] < 1.0:
+                        judge_view["seniorityBandFlag"] = seniority_band[1]
+                    if inactive:
+                        judge_view["inactiveCandidateFlag"] = inactive.get("reason")
+                    if function_mismatch[0] < 1.0:
+                        judge_view["functionMismatchFlag"] = function_mismatch[1]
+                    if job_hop_flag:
+                        judge_view["tenureFlag"] = (
+                            f"Average tenure across recent roles is {avg_tenure_years} years — "
+                            f"reads as frequent job changes.")
+                    resp = await llm.judge_candidates(requirements, [judge_view])
                     for item in (resp.get("candidates") or []):
                         if str(item.get("id")) == cid:
                             rid = item
@@ -420,9 +480,14 @@ async def _run_pipeline_match(
                     logger.warning("[PipelineMatch] judge failed for %s; deterministic score stands", cid)
 
             # Blend the rubric verdict into the score (never past the must-have
-            # ceiling); the breakdown records the whole blend for the UI.
+            # ceiling); the breakdown records the whole blend for the UI. Then
+            # the screening penalties (seniority-band / inactive) apply on
+            # TOP of the judge blend, so no amount of favorable prose can
+            # out-argue a structural mismatch the judge can't weigh reliably.
             entry_scored = {"score": score, "breakdown": breakdown}
             apply_judge(entry_scored, rid or None)
+            apply_screening_signals(entry_scored, seniority_band=seniority_band, inactive=inactive,
+                                     function_mismatch=function_mismatch)
             score = entry_scored["score"]
 
             reasons = rid.get("reasons") or _fallback_reasons(requirements, profile, scored)
@@ -454,6 +519,9 @@ async def _run_pipeline_match(
                 },
                 "longTenureFlag": long_tenure_flag,
                 "currentTenureYears": tenure_years,
+                "tenureFlag": job_hop_flag,
+                "avgTenureYears": avg_tenure_years,
+                "inactiveCandidateFlag": bool(inactive),
             })
 
             # Write the REAL score back onto the candidate row. The candidates
@@ -474,6 +542,9 @@ async def _run_pipeline_match(
                         # an earlier run rather than leaving it stuck.
                         "longTenureFlag": long_tenure_flag,
                         "currentTenureYears": tenure_years,
+                        "tenureFlag": job_hop_flag,
+                        "avgTenureYears": avg_tenure_years,
+                        "inactiveCandidateFlag": bool(inactive),
                         "updatedAt": _now(),
                     }},
                 )
@@ -508,6 +579,26 @@ async def _run_pipeline_match(
                 sims_by_cid=sims_by_cid,
             )
             if qa_summary["status"] == "completed":
+                # QA's correction replays `_score_candidate` from scratch with
+                # the verified skill forced to full credit, overwriting score
+                # AND breakdown wholesale — which wipes the seniority-band /
+                # inactive-candidate / function-mismatch penalty applied
+                # earlier for exactly the candidates it re-verifies (the
+                # flagged evidence is real text
+                # in the profile, so QA's mechanical quote check will always
+                # find it — that is what triggered the penalty in the first
+                # place). Re-apply once, only to corrected entries, so a
+                # verified quote can raise a score but a structural mismatch
+                # the judge/QA can't see from title text alone still has the
+                # final word — same reasoning as applying it after the judge.
+                for e in all_entries:
+                    if not (e.get("qa") or {}).get("corrected"):
+                        continue
+                    sb, inactive_e, fm = screening_by_cid.get(str(e["candidateId"]), (None, None, None))
+                    if sb or inactive_e or fm:
+                        wrap = {"score": e["score"], "breakdown": e["breakdown"]}
+                        apply_screening_signals(wrap, seniority_band=sb, inactive=inactive_e, function_mismatch=fm)
+                        e["score"] = wrap["score"]
                 _rank_results()
                 # Corrected scores must also reach the candidates table —
                 # otherwise the row keeps advertising the wrong number forever.

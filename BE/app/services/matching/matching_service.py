@@ -297,6 +297,25 @@ COVERAGE_CEILINGS: List[Tuple[float, float]] = [
 ]
 NO_COVERAGE_CEILING = 8.0  # zero must-haves credited → not a fit
 
+# A must-have credited only by experience the candidate has since left is real
+# but dated evidence — discounted, never zeroed (see _historical_only_profile).
+_STALE_EVIDENCE_DISCOUNT = 0.3
+
+# Multiplicative penalty applied post-score for a structural mismatch the
+# weighted blend/judge can't see reliably from title vocabulary alone. Never
+# zero: a wrong read (bad title parse, stale scrape) stays visible and
+# overridable rather than silently vanishing.
+_EXEC_MISMATCH_MULTIPLIER = 0.35
+_INACTIVE_SCORE_MULTIPLIER = 0.4
+_FUNCTION_MISMATCH_MULTIPLIER = 0.3
+
+# Kastell's own proposed job-hopper threshold: "if a candidate has an average
+# moving rate of >2years, he might be a b candidate" — i.e. average tenure
+# BELOW 2 years reads as frequent job changes. This is a ranking/evidence
+# signal only (never a score change) — his own framing was "might be a B
+# candidate", not "reject".
+_JOB_HOP_THRESHOLD_YEARS = 2.0
+
 _FUZZY_MIN_LEN = 4    # below this, fuzzy ratios are noise ("R", "Go", "C#")
 _FUZZY_STRONG = 95    # spelling variant of the same thing
 _FUZZY_OK = 88        # close enough to credit, but not identical
@@ -579,6 +598,30 @@ def _free_text_entries(profile: Dict[str, Any]) -> List[str]:
     return entries
 
 
+def _historical_only_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """A view of `profile` with HISTORICAL experience entries (ended >~2yr ago,
+    not current) removed — used to test whether a must-have's credit survives
+    once stale experience is excluded.
+
+    `skills`/`currentTitle`/`headline`/`certifications` describe the candidate
+    NOW regardless of which role they came from, so they are kept as-is; only
+    `experience` (which carries per-entry dates) is filtered. Profiles with no
+    dated experience at all (uploaded CVs; sourced candidates pending
+    enrichment) are returned unchanged — nothing is classified "historical"
+    without a date to prove it, so this is a no-op for them, not a false flag.
+    """
+    from app.services.sourcing.candidate_merge import recency_tier
+
+    experience = profile.get("experience") or []
+    now = datetime.utcnow()
+    now_idx = now.year * 12 + now.month
+    kept = [e for e in experience
+            if not (isinstance(e, dict) and recency_tier(e, now_idx=now_idx) == "historical")]
+    if len(kept) == len(experience):
+        return profile
+    return {**profile, "experience": kept}
+
+
 def _coverage_ceiling(coverage: float) -> float:
     if coverage <= 0:
         return NO_COVERAGE_CEILING
@@ -625,6 +668,35 @@ def _score_candidate(
 
     # ── must-have coverage ──
     skill_evidence = [_match_skill(s, cand_skills, free_texts) for s in must]
+
+    # A must-have credited ONLY by experience the candidate has since left for
+    # something unrelated is real evidence, but stale. Dietmar Schütze: "was a
+    # sales manager 2002-2005, then developed himself in the technical
+    # presales niche... therefore not relevant" (Kastell, 2026-07-30) — the
+    # domain vocabulary is genuinely in his profile, just not in anything
+    # current. Re-check each credited must-have against a view of the profile
+    # with historical (>~2yr, non-current) experience removed; a must-have
+    # that loses ALL its credit once that's gone is discounted, not zeroed —
+    # some candidates do carry real transferable value from an old role, and a
+    # false hard-DROP here is unrecoverable.
+    stale_evidence: List[Dict[str, Any]] = []
+    if must:
+        recent_view = _historical_only_profile(profile)
+        recent_skills = _skill_evidence_pool(recent_view)
+        recent_free_texts = _free_text_entries(recent_view)
+        for e in skill_evidence:
+            if e["credit"] <= 0:
+                continue
+            if _match_skill(e["skill"], recent_skills, recent_free_texts)["credit"] <= 0:
+                stale_evidence.append({
+                    "skill": e["skill"], "via": e["via"], "creditBeforeDiscount": e["credit"],
+                    "note": (f"“{e['via']}” only appears in experience that has since ended and "
+                             f"is not reflected in the candidate's current or recent role."),
+                })
+                e["credit"] = round(e["credit"] * _STALE_EVIDENCE_DISCOUNT, 3)
+                e["method"] = f"{e['method']}_stale"
+                e["note"] = e["note"] + " Discounted: this evidence is dated, not current."
+
     for i, e in enumerate(skill_evidence):
         forced = (forced_credits or {}).get(e["skill"])
         if forced and e["credit"] < 1.0:
@@ -769,6 +841,10 @@ def _score_candidate(
              "method": e["method"], "note": e["note"]}
             for e in partial
         ],
+        # Must-haves whose only evidence is dated (see _historical_only_profile) —
+        # real, but not what the candidate does today. Distinct from
+        # missing/partial: the skill IS in the profile, just not currently.
+        "staleEvidence": stale_evidence,
         "cappedBy": (
             f"Must-have coverage is {coverage:.0%}, which caps this candidate at {ceiling:g}."
             if score < round(base, 1) else None
@@ -791,6 +867,168 @@ def _score_candidate(
         "location": round(loc_score * 100, 1),
     }
     return score, subscores, gaps, breakdown
+
+
+def seniority_band_fit(profile: Dict[str, Any], jd: Dict[str, Any]) -> Tuple[float, Optional[str]]:
+    """A 0-1 multiplier for OVER-qualification: an owner/executive-level title
+    is a different population from the role's target level, unless the role
+    itself is executive.
+
+    Reuses `prescreen_service.is_executive_title()` — the same marker set the
+    sourcing gate already trusts for this exact signal (an owner/founder/
+    Geschäftsführer running a business, not doing the hands-on job) — so
+    sourcing and matching cannot disagree about what counts as "executive".
+    This is the missing, opposite-direction counterpart to
+    `prescreen_service.seniority_fit()`, which only catches UNDER-qualification
+    (junior/end-user vs. a role that wants a specialist); this scorer never
+    read seniority in either direction until now.
+
+    Ralf Deuster — "Product Owner/Manager/Chairman. Is 5 Levels higher than
+    the one we are looking for and no sales person." (Kastell, 2026-07-30)
+
+    Returns (1.0, None) when there's no mismatch.
+    """
+    from app.services.sourcing.prescreen_service import is_executive_title
+
+    title = (profile.get("currentTitle") or "").strip()
+    if not title or not is_executive_title(title):
+        return 1.0, None
+    target_text = f"{jd.get('title') or ''} {jd.get('seniority') or ''}"
+    if is_executive_title(target_text):
+        return 1.0, None
+    return _EXEC_MISMATCH_MULTIPLIER, (
+        f"Title “{title}” reads as owner/executive-level — well above the seniority "
+        f"this role is hiring for, and not the hands-on function it needs."
+    )
+
+
+# ── Function-mismatch: same domain, different job ────────────────────────────
+# A candidate can carry the right domain vocabulary (SAP Retail) while doing a
+# completely different JOB than the one being hired for — Product Management,
+# Solution Architecture, and Partner/Ecosystem/Alliance roles are all "SAP
+# Retail" adjacent but are not Sales. Neither staleEvidence (their domain
+# match is often perfectly CURRENT) nor seniority_band_fit (no executive
+# title) catches this — it needs to look at what job the title actually
+# names, not just its vocabulary or its level.
+#
+# Validated against the real 32-candidate "Sales Manager SAP Retail" run
+# (Kastell, 2026-07-30): correctly flags Dietmar Schütze ("Product Manager,
+# Business Solution Architect..."), Ralf Deuster ("SAP Ecosystem
+# Development..."), Diana Schroeder ("Operations Business Partner for
+# Partner Ecosystem Success") — and correctly stays silent on every
+# genuinely commercial title in that same run (Client Partner, Key Account
+# Manager, Sales Director, "Fachvertrieb", ...), and on missing/uninformative
+# titles (never penalises absent data).
+#
+# Deliberately an ALLOW-then-BLOCK design, not an exhaustive "every non-sales
+# job title" list (which cannot be complete across two languages): a title
+# carrying its own commercial marker is cleared immediately; only a title
+# that BOTH lacks a commercial marker AND positively names a known adjacent
+# function is flagged. A vague or absent title flags nothing — silence is
+# not evidence of the wrong function, matching this codebase's rule that
+# missing data is neutral, never treated as a reason to demote.
+_COMMERCIAL_TITLE_MARKERS = [
+    "sales", "vertrieb", "account executive", "account manager", "account director",
+    "business development", "key account", "client partner", "client director",
+    "sales manager", "sales director", "sales executive", "new business",
+]
+_NONCOMMERCIAL_FUNCTION_MARKERS = [
+    "presales", "pre-sales", "solution architect", "solution manager",
+    "solution engineer", "product manager", "product owner", "produktmanager",
+    "partner manager", "partner management", "partnermanagement",
+    "business partner", "ecosystem", "allianz", "alliance",
+    "channel manager", "industry marketing", "product marketing",
+    "delivery manager", "implementation consultant", "program manager",
+    "project manager", "lösungsarchitekt",
+]
+
+
+def _normalize_title(t: str) -> str:
+    """Lowercase and turn hyphens/slashes into spaces so "Key-Account-Manager"
+    and "Key Account Manager" match the same marker."""
+    return re.sub(r"[-_/]", " ", (t or "").lower())
+
+
+def _is_commercial_role(jd: Dict[str, Any]) -> bool:
+    """True when the role being hired for is a sales/commercial role — the
+    only context this check applies in (a Solution Architect JD should not
+    penalise a Solution Architect candidate)."""
+    if str(jd.get("roleFamily") or "").strip().lower() == "commercial":
+        return True
+    text = _normalize_title(
+        f"{jd.get('title') or ''} {' '.join(jd.get('candidateTitles') or [])}"
+    )
+    return any(m in text for m in _COMMERCIAL_TITLE_MARKERS)
+
+
+def function_mismatch_fit(profile: Dict[str, Any], jd: Dict[str, Any]) -> Tuple[float, Optional[str]]:
+    """A 0-1 multiplier for a candidate whose CURRENT title names a specific,
+    recognisably different function than Sales, when the role being hired
+    for IS Sales.
+
+    Dietmar Schütze — "Correct topic but... developed himself in the
+    technical presales niche... therefore not relevant" (Kastell, 2026-07-30).
+    His real current title, "Product Manager, Business Solution Architect for
+    SAP SCE Applications in Retail", literally contains "Retail" — so the
+    domain match is genuinely current, not stale. The mismatch is the job
+    itself, which this checks directly.
+
+    Returns (1.0, None) unless the role is commercial AND the candidate's
+    current title names a specific non-commercial function with no
+    commercial marker alongside it (a hybrid title like "Client Partner" or
+    an empty/uninformative title is never flagged).
+    """
+    if not _is_commercial_role(jd):
+        return 1.0, None
+    raw_title = (profile.get("currentTitle") or "").strip()
+    if not raw_title:
+        return 1.0, None
+    title = _normalize_title(raw_title)
+    if any(m in title for m in _COMMERCIAL_TITLE_MARKERS):
+        return 1.0, None  # the title carries its own commercial marker
+    hit = next((m for m in _NONCOMMERCIAL_FUNCTION_MARKERS if m in title), None)
+    if not hit:
+        return 1.0, None
+    return _FUNCTION_MISMATCH_MULTIPLIER, (
+        f"Title “{raw_title}” names a {hit} function, not sales — a different job "
+        f"from what this role needs, even though the profile matches the domain."
+    )
+
+
+def apply_screening_signals(
+    scored: Dict[str, Any],
+    *,
+    seniority_band: Optional[Tuple[float, Optional[str]]] = None,
+    inactive: Optional[Dict[str, Any]] = None,
+    function_mismatch: Optional[Tuple[float, Optional[str]]] = None,
+) -> Dict[str, Any]:
+    """Apply deterministic screening penalties AFTER the judge blend (call this
+    after `apply_judge`), so no amount of LLM prose can out-argue a structural
+    mismatch the judge is not positioned to weigh reliably from title text
+    alone — the same reasoning that already keeps the must-have coverage
+    ceiling authoritative over the judge's fitScore.
+
+    Multiplicative and bounded, never zero — a wrong read (bad title parse,
+    stale scrape) stays visible and overridable, matching this codebase's
+    standing rule that a false DROP is unrecoverable.
+    """
+    bd = scored.setdefault("breakdown", {})
+    mult = 1.0
+    flags: Dict[str, Any] = {}
+    if seniority_band and seniority_band[0] < 1.0:
+        mult *= seniority_band[0]
+        flags["seniorityBandFlag"] = {"multiplier": seniority_band[0], "reason": seniority_band[1]}
+    if inactive and inactive.get("inactive"):
+        mult *= _INACTIVE_SCORE_MULTIPLIER
+        flags["inactiveCandidateFlag"] = {"multiplier": _INACTIVE_SCORE_MULTIPLIER, "reason": inactive.get("reason")}
+    if function_mismatch and function_mismatch[0] < 1.0:
+        mult *= function_mismatch[0]
+        flags["functionMismatchFlag"] = {"multiplier": function_mismatch[0], "reason": function_mismatch[1]}
+    if flags:
+        before = scored["score"]
+        scored["score"] = round(before * mult, 1)
+        bd["screeningSignals"] = {**flags, "scoreBefore": before, "scoreAfter": scored["score"]}
+    return scored
 
 
 def apply_judge(scored: Dict[str, Any], judge_item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1004,8 +1242,19 @@ async def _run_match_impl(
             score, subscores, gaps, breakdown = _score_candidate(
                 requirements, profile, sim_by_id.get(cid, 0.0)
             )
-            scored.append({"doc": doc, "cid": cid, "score": score, "subscores": subscores,
-                           "gaps": gaps, "breakdown": breakdown})
+            from app.services.sourcing.candidate_merge import (
+                average_tenure_years, inactive_candidate_flag,
+            )
+            avg_tenure = average_tenure_years(profile)
+            scored.append({
+                "doc": doc, "cid": cid, "score": score, "subscores": subscores,
+                "gaps": gaps, "breakdown": breakdown,
+                "seniorityBand": seniority_band_fit(profile, requirements),
+                "inactive": inactive_candidate_flag(profile),
+                "functionMismatch": function_mismatch_fit(profile, requirements),
+                "avgTenureYears": avg_tenure,
+                "tenureFlag": avg_tenure is not None and avg_tenure < _JOB_HOP_THRESHOLD_YEARS,
+            })
         except Exception as e:  # noqa: BLE001 — isolate, record, continue
             logger.exception("[Matching] scoring failed for candidate %s", cid)
             scoring_errors.append({"candidateId": cid, "error": str(e)[:200]})
@@ -1029,22 +1278,42 @@ async def _run_match_impl(
 
     def _judge_view(s: Dict[str, Any]) -> Dict[str, Any]:
         p = s["doc"].get("profile") or {}
-        return {
+        bd = s["breakdown"]
+        view: Dict[str, Any] = {
             "id": s["cid"],
             "currentTitle": p.get("currentTitle"),
             "titles": (p.get("titles") or [])[:8],
             "totalYears": p.get("totalYears"),
             "skills": (p.get("skills") or [])[:40],
+            # Dates included (not just title/summary) so the judge can reason
+            # about WHEN something happened — without them it cannot tell a
+            # current role from one that ended 20 years ago, which is exactly
+            # what let a stale domain match read as a live one.
             "experience": [
-                {"title": (e or {}).get("title"), "summary": ((e or {}).get("summary") or "")[:300]}
+                {"title": (e or {}).get("title"), "summary": ((e or {}).get("summary") or "")[:300],
+                 "startsAt": (e or {}).get("starts_at"), "endsAt": (e or {}).get("ends_at"),
+                 "isCurrent": bool((e or {}).get("is_current"))}
                 for e in (p.get("experience") or [])[:6]
             ],
             "education": (p.get("education") or [])[:4],
             "certifications": (p.get("certifications") or [])[:6],
             # The deterministic scorer's findings — authoritative in the rubric.
             "missingMustHave": s["gaps"],
-            "partialMustHave": s["breakdown"]["partialMustHave"],
+            "partialMustHave": bd["partialMustHave"],
+            "staleEvidence": bd.get("staleEvidence") or [],
         }
+        sb = s.get("seniorityBand")
+        if sb and sb[0] < 1.0:
+            view["seniorityBandFlag"] = sb[1]
+        if s.get("inactive"):
+            view["inactiveCandidateFlag"] = s["inactive"].get("reason")
+        fm = s.get("functionMismatch")
+        if fm and fm[0] < 1.0:
+            view["functionMismatchFlag"] = fm[1]
+        if s.get("tenureFlag"):
+            view["tenureFlag"] = (f"Average tenure across recent roles is "
+                                   f"{s.get('avgTenureYears')} years — reads as frequent job changes.")
+        return view
 
     judge_by_id: Dict[str, Dict[str, Any]] = {}
     if top and settings.MATCH_JUDGE_ENABLED:
@@ -1058,6 +1327,14 @@ async def _run_match_impl(
                            exc_info=True)
     for s in top:
         apply_judge(s, judge_by_id.get(s["cid"]))
+    # Screening penalties apply to EVERY scored candidate, not just the
+    # reasoning-eligible top-N — an executive-title or inactive-candidate
+    # mismatch must correct the ranking for the whole list, not only the
+    # slice that happened to clear the reasoning token budget. Runs after
+    # apply_judge for the top-N so the judge blend never masks it.
+    for s in scored:
+        apply_screening_signals(s, seniority_band=s.get("seniorityBand"), inactive=s.get("inactive"),
+                                 function_mismatch=s.get("functionMismatch"))
     scored.sort(key=lambda x: (x["score"], x["breakdown"].get("base", 0.0)), reverse=True)
 
     # 7. assemble a full entry for EVERY scored candidate — not just the top N.
@@ -1090,6 +1367,9 @@ async def _run_match_impl(
             # 92%. The model narrates in `reasons`; it does not get to restate facts.
             "gaps": s["gaps"],
             "partial": s["breakdown"]["partialMustHave"],
+            "staleEvidence": s["breakdown"].get("staleEvidence") or [],
+            "tenureFlag": bool(s.get("tenureFlag")),
+            "avgTenureYears": s.get("avgTenureYears"),
             "contact": {
                 "email": contact.get("email"),
                 "phone": contact.get("phone"),
@@ -1168,6 +1448,23 @@ async def _run_match_impl(
             sims_by_cid={cid: float(sim_by_id.get(cid, 0.0)) for cid in profiles_by_cid},
         )
         if qa_summary["status"] == "completed" and qa_summary["fnCorrected"]:
+            # QA's correction replays _score_candidate from scratch with the
+            # verified skill forced to full credit, which wipes the
+            # seniority-band / inactive-candidate penalty for exactly the
+            # entries it re-verifies. Re-apply once, only to corrected
+            # entries — see the identical note in pipeline_match_service.py.
+            screening_by_cid = {
+                s["cid"]: (s.get("seniorityBand"), s.get("inactive"), s.get("functionMismatch"))
+                for s in scored
+            }
+            for e in all_entries:
+                if not (e.get("qa") or {}).get("corrected"):
+                    continue
+                sb, inactive_e, fm = screening_by_cid.get(str(e["candidateId"]), (None, None, None))
+                if sb or inactive_e or fm:
+                    wrap = {"score": e["score"], "breakdown": e["breakdown"]}
+                    apply_screening_signals(wrap, seniority_band=sb, inactive=inactive_e, function_mismatch=fm)
+                    e["score"] = wrap["score"]
             all_entries.sort(
                 key=lambda r: (r["score"], (r.get("breakdown") or {}).get("base", 0.0)),
                 reverse=True,
@@ -1211,4 +1508,27 @@ def _fallback_reasons(jd: Dict[str, Any], profile: Dict[str, Any], scored: Dict[
         reasons.append(f"~{yrs} years of experience")
     if profile.get("currentTitle"):
         reasons.append(f"Current role: {profile['currentTitle']}")
+
+    # Screening flags must reach the recruiter even when the LLM judge never
+    # ran (below MATCH_REASON_MIN_SCORE, or judge disabled/failed) — these
+    # candidates are exactly the ones Kastell flagged, and his ask was that
+    # the evidence be visible, not contingent on clearing a scoring floor.
+    bd = scored.get("breakdown") or {}
+    for stale in bd.get("staleEvidence") or []:
+        reasons.append(
+            f"“{stale['skill']}” is only evidenced by a role that has since ended — "
+            f"not reflected in the current/recent experience."
+        )
+    signals = bd.get("screeningSignals") or {}
+    if signals.get("seniorityBandFlag"):
+        reasons.append(signals["seniorityBandFlag"]["reason"])
+    if signals.get("inactiveCandidateFlag"):
+        reasons.append(signals["inactiveCandidateFlag"]["reason"])
+    if signals.get("functionMismatchFlag"):
+        reasons.append(signals["functionMismatchFlag"]["reason"])
+    if scored.get("tenureFlag"):
+        reasons.append(
+            f"Average tenure across recent roles is {scored.get('avgTenureYears')} years — "
+            f"reads as frequent job changes; verify stability."
+        )
     return reasons or ["Strong semantic match to the role"]

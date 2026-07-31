@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import html
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -240,6 +240,132 @@ def current_role_tenure_years(profile: Dict[str, Any]) -> Optional[float]:
     now_idx = now.year * 12 + now.month
     months = max(0, now_idx - start_idx)
     return round(months / 12.0, 1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Recency / stability / currency signals
+#
+# Kastell's manual screening of "Sales Manager SAP Retail" candidates
+# (2026-07-30) named three patterns the scorer had no way to see: a domain
+# match that is only true of a role the candidate left 15-20 years ago
+# (Dietmar Schütze, Diana Schroeder); a career that moves jobs/topics fast
+# enough to read as unstable, with his own proposed threshold (Ron Porcello —
+# "average moving rate ... >2 years"); and a candidate who is simply no longer
+# in the workforce (Christian Koch — "in pension ... since 2020"). All three
+# are computable from data already captured per experience entry
+# (`starts_at`/`ends_at`/`is_current`, from `_parse_experience` above) but
+# were never used past sourcing.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RECENT_MONTHS_DEFAULT = 24  # a role that ended within ~2 years still describes who the candidate is today
+
+
+def recency_tier(
+    exp: Dict[str, Any], *, now_idx: Optional[int] = None, recent_months: int = _RECENT_MONTHS_DEFAULT,
+) -> str:
+    """Classify one experience entry's currency.
+
+    ``"current"`` (is_current) / ``"recent"`` (ended within `recent_months`) /
+    ``"historical"`` (older) / ``"unknown"`` (no end date to judge from — kept
+    NEUTRAL, treated as non-historical, since a missing date must never read
+    as staleness it cannot evidence).
+    """
+    if not isinstance(exp, dict):
+        return "unknown"
+    if exp.get("is_current"):
+        return "current"
+    end_idx = _from_key(exp.get("ends_at"))
+    if end_idx is None:
+        return "unknown"
+    if now_idx is None:
+        now = datetime.utcnow()
+        now_idx = now.year * 12 + now.month
+    return "recent" if (now_idx - end_idx) <= recent_months else "historical"
+
+
+_MIN_TENURE_SAMPLES = 2  # one dated role can't evidence a "pattern" of moving jobs
+
+def average_tenure_years(profile: Dict[str, Any], *, last_n: int = 5) -> Optional[float]:
+    """Mean duration (years) across the candidate's last `last_n` DATED
+    positions — Kastell's own proposed job-hopper detector ("if a candidate
+    has an average moving rate of >2years, he might be a B candidate").
+
+    Returns ``None`` with fewer than 2 dated positions: one data point cannot
+    evidence a pattern, and per this codebase's rule a missing signal is
+    neutral, never a downgrade.
+    """
+    experience = profile.get("experience") or []
+    now = datetime.utcnow()
+    now_idx = now.year * 12 + now.month
+    spans: List[Tuple[int, int]] = []
+    for exp in experience:
+        if not isinstance(exp, dict):
+            continue
+        start_idx = _from_key(exp.get("starts_at"))
+        if start_idx is None:
+            continue
+        end_idx = _from_key(exp.get("ends_at"))
+        if end_idx is None:
+            end_idx = now_idx if exp.get("is_current") else None
+        if end_idx is None or end_idx < start_idx:
+            continue
+        spans.append((start_idx, end_idx))
+    if len(spans) < _MIN_TENURE_SAMPLES:
+        return None
+    # Most recent role first — "last N roles" means the N most recent, not
+    # however the actor happened to order them.
+    spans.sort(key=lambda pair: pair[0], reverse=True)
+    sample = spans[:last_n]
+    months = [end - start for start, end in sample]
+    return round((sum(months) / len(months)) / 12.0, 1)
+
+
+_INACTIVE_MONTHS_DEFAULT = 24
+_RETIREMENT_MARKERS = {
+    "retired", "retirement", "im ruhestand", "ruhestand", "pensionär",
+    "pensionärin", "pensioniert", "im rente", "rentner", "rentnerin",
+}
+
+def inactive_candidate_flag(
+    profile: Dict[str, Any], *, inactive_months: int = _INACTIVE_MONTHS_DEFAULT,
+) -> Optional[Dict[str, Any]]:
+    """Detect a candidate who is likely no longer active in the workforce
+    (Christian Koch — "he is in pension and seems to be out since 2020").
+
+    Two independent signals, either sufficient:
+      * self-reported retirement language in headline/summary
+      * no current role AND the most recent role ended more than
+        `inactive_months` ago
+
+    Returns ``None`` (the neutral default) when neither fires — including when
+    there is simply no dated history to check. Absence of evidence is not
+    evidence of retirement; a false "inactive" on missing/bad data is exactly
+    the unrecoverable false-DROP this codebase avoids everywhere else.
+    """
+    blob = f"{profile.get('headline') or ''} {profile.get('summary') or ''}".lower()
+    if any(marker in blob for marker in _RETIREMENT_MARKERS):
+        return {"inactive": True, "reason": "Profile headline/summary reads as retired."}
+
+    experience = profile.get("experience") or []
+    if any(isinstance(e, dict) and e.get("is_current") for e in experience):
+        return None  # has a current role — clearly active
+
+    now = datetime.utcnow()
+    now_idx = now.year * 12 + now.month
+    end_idxs = [
+        idx for idx in (_from_key(e.get("ends_at")) for e in experience if isinstance(e, dict))
+        if idx is not None
+    ]
+    if not end_idxs:
+        return None  # no dated history at all — nothing to judge from
+    months_since = now_idx - max(end_idxs)
+    if months_since > inactive_months:
+        years = round(months_since / 12.0)
+        return {
+            "inactive": True,
+            "reason": f"No current role found; the most recent position ended about {years} year(s) ago.",
+        }
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
