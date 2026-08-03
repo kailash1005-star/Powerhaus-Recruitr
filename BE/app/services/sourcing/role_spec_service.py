@@ -93,6 +93,21 @@ async def get_or_create_for_text(
     digest = _text_hash(jd_text)
 
     existing = await col.find_one({"textHash": digest})
+    # A spec parsed under an older JD schema is NOT reusable: it predates fields
+    # that downstream gates now depend on (roleFamily/domainTerms/candidateTitles),
+    # and silently serving it would keep every one of those gates on the old
+    # title-anchored behaviour for any JD that had already been parsed once.
+    #
+    # The stale doc is UPDATED IN PLACE below rather than left behind — inserting
+    # a second doc with the same textHash would make the next lookup a coin flip
+    # between the two, which can re-parse the same JD forever and pay for it
+    # every time.
+    stale_id = None
+    if existing and existing.get("jdSchemaVersion") != llm.jd_schema_version():
+        stale_id = existing["_id"]
+        logger.info("[RoleSpec] re-parsing %s — JD schema %s -> %s",
+                    stale_id, existing.get("jdSchemaVersion"), llm.jd_schema_version())
+        existing = None
     if existing and existing.get("requirements") and (existing.get("embedding") or {}).get("vector"):
         # Late-binding the job link: a spec first created by a CV run (which has no
         # job) becomes the job's spec the moment that job asks for the same JD.
@@ -124,12 +139,27 @@ async def get_or_create_for_text(
             "vector": vector,
         },
         "extractVersion": llm.extraction_version(),
+        "jdSchemaVersion": llm.jd_schema_version(),
         "createdAt": _now(),
         "updatedAt": _now(),
     }
-    doc["_id"] = str((await col.insert_one(doc)).inserted_id)
-    logger.info("[RoleSpec] created spec %s (job=%s, %d must-have(s))",
-                doc["_id"], job_id, len(requirements.get("mustHaveSkills") or []))
+    if stale_id is not None:
+        # Re-parse of a known JD: overwrite the old spec so exactly one doc per
+        # textHash survives, and keep its identity so anything already pointing
+        # at this spec id still resolves.
+        doc.pop("createdAt", None)
+        await col.update_one({"_id": stale_id}, {"$set": doc})
+        doc["_id"] = str(stale_id)
+        action = "re-parsed"
+    else:
+        doc["_id"] = str((await col.insert_one(doc)).inserted_id)
+        action = "created"
+    logger.info("[RoleSpec] %s spec %s (job=%s, family=%s, %d must-have(s), "
+                "%d domain term(s), %d candidate title(s))",
+                action, doc["_id"], job_id, requirements.get("roleFamily"),
+                len(requirements.get("mustHaveSkills") or []),
+                len(requirements.get("domainTerms") or []),
+                len(requirements.get("candidateTitles") or []))
     return doc
 
 

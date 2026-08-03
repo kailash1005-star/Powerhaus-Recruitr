@@ -1403,6 +1403,84 @@ def _title_gate_titles_from_query(query: str) -> list[str]:
     return _dedupe([p for p in phrases if _phrase_is_title_shaped(p)], 20)
 
 
+def split_domain_and_title_groups(query: str) -> Optional[tuple[str, str]]:
+    """Split a strict ``(GROUP1) AND (GROUP2)`` Boolean into its two top-level
+    parenthesized groups (each returned WITH its own parens, in the order they
+    appear). Returns ``None`` unless the string is EXACTLY this two-group
+    shape — this never guesses at a looser structure, because a caller that
+    strips the wrong half would silently narrow a search instead of widening
+    it.
+
+    Tracks paren depth rather than regex-searching for the literal " AND ",
+    so a quoted phrase that happens to contain the word "and" (e.g. "Retail
+    and Commerce Solutions") can never be mistaken for the connector — the
+    word only counts as the join when it sits between two balanced,
+    depth-zero groups.
+    """
+    s = (query or "").strip()
+    if not s.startswith("("):
+        return None
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+            if depth == 0:
+                group1 = s[:i + 1]
+                rest = s[i + 1:].strip()
+                m = re.match(r"^AND\s*(\(.*)$", rest, re.IGNORECASE | re.DOTALL)
+                if not m:
+                    return None
+                group2_full = m.group(1)
+                d2 = 0
+                end_idx = None
+                for j, c2 in enumerate(group2_full):
+                    if c2 == "(":
+                        d2 += 1
+                    elif c2 == ")":
+                        d2 -= 1
+                        if d2 < 0:
+                            return None
+                        if d2 == 0:
+                            end_idx = j
+                            break
+                if end_idx is None:
+                    return None
+                group2 = group2_full[:end_idx + 1]
+                if group2_full[end_idx + 1:].strip():
+                    return None  # trailing content after the second group closes
+                return group1, group2
+    return None
+
+
+def domain_only_query(query: str) -> Optional[str]:
+    """The DOMAIN GROUP half of a ``(DOMAIN) AND (TITLE)`` searchQuery, with
+    the TITLE GROUP dropped entirely — the free-text search that finds a
+    profile whose text carries the domain without requiring any of the
+    target titles to appear anywhere in it.
+
+    Classifies each half by whether it CONTAINS a title-shaped quoted phrase
+    (`_phrase_is_title_shaped`) rather than trusting group order, so it still
+    works if a caller's query has the two halves swapped. Returns ``None``
+    when the query isn't a clean two-group Boolean, or when the classification
+    is ambiguous (both/neither half reads as titles) — an ambiguous split
+    must never guess, since dropping the wrong half would narrow the search
+    it's meant to widen.
+    """
+    groups = split_domain_and_title_groups(query)
+    if not groups:
+        return None
+    g1, g2 = groups
+    g1_titled = any(_phrase_is_title_shaped(p) for p in _QUOTED_PHRASE_RE.findall(g1))
+    g2_titled = any(_phrase_is_title_shaped(p) for p in _QUOTED_PHRASE_RE.findall(g2))
+    if g1_titled == g2_titled:
+        return None
+    return g2 if g1_titled else g1
+
+
 def _normalize_locations(locs: list[str]) -> list[str]:
     """Canonicalise each location to its catalogue label ('Frankfurt am Main' →
     'Frankfurt, Germany'; 'kolenz, germany' → 'Koblenz, Germany'), deduped. An

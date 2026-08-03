@@ -305,8 +305,20 @@ async def audit_run(
                 for e in auditable
             ]
             # Bounded groups — one oversized call would fail the WHOLE audit open.
+            #
+            # Paced, not just chunked: the provider's ceiling is tokens per
+            # MINUTE across all calls, so splitting the same profiles into more
+            # (or smaller) back-to-back calls sends the identical token volume
+            # inside the same minute and trips the same 429. Only spreading them
+            # over time helps. Confirmed live 2026-08-03: 50 candidates → 5
+            # unpaced batches → 429 → the entire audit degraded to "skipped"
+            # with 50 candidates left un-reviewed. The gap goes BETWEEN batches
+            # only, so a single-batch run (the common small case) is unaffected.
             by_id: Dict[str, Dict[str, Any]] = {}
+            pause = max(0.0, float(settings.MATCH_QA_BATCH_PAUSE_SECS or 0.0))
             for i in range(0, len(batch), _AUDIT_BATCH_SIZE):
+                if i and pause:
+                    await asyncio.sleep(pause)
                 resp = await asyncio.to_thread(
                     _audit_sync, requirements, batch[i:i + _AUDIT_BATCH_SIZE]
                 )

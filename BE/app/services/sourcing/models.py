@@ -50,6 +50,16 @@ class SearchBrief(BaseModel):
     openToRelocation: bool = False
     notes: str = ""
 
+    # The candidate-side role model, extracted from the JD by
+    # llm_extraction_service (JDRequirements) and threaded through by brief.py.
+    # `jobTitle` above is the POSTING title, for display only — these three
+    # carry what the search and screen should actually target, because for a
+    # commercial role (an SAP Retail opening filled by an Account Executive)
+    # the posting title is not what the candidate calls themselves.
+    roleFamily: str = ""
+    domainTerms: List[str] = Field(default_factory=list)
+    candidateTitles: List[str] = Field(default_factory=list)
+
 
 # ─────────────────────────── Agent output ───────────────────────────────
 
@@ -95,6 +105,40 @@ class SearchFilters(BaseModel):
     companyHeadcount: Optional[str] = None
     recentlyChangedJobs: bool = False
     recentlyPostedOnLinkedin: bool = False
+
+    @field_validator(
+        "currentJobTitles", "pastJobTitles", "locations", "currentCompanies",
+        "pastCompanies", "schools", "industryIds", "firstNames", "lastNames",
+        "companyHqLocations", "excludeLocations", "excludeCurrentCompanies",
+        "excludePastCompanies", "excludeSchools", "excludeCurrentJobTitles",
+        "excludePastJobTitles", "excludeIndustryIds", "excludeCompanyHqLocations",
+        "profileLanguages", mode="before")
+    @classmethod
+    def _coerce_list(cls, v: Any) -> List[str]:
+        """Treat an explicit null as "not set", the same as omitting the field.
+
+        The model is asked for arrays and mostly obliges, but it also emits
+        `"currentCompanies": null` for filters it has nothing to say about —
+        semantically identical to leaving them out, yet pydantic rejects one and
+        accepts the other. That asymmetry is expensive: a single null failed the
+        WHOLE SearchStrategy, and after two retries the Strategist gave up and
+        fell back to a title-derived prefill — which is exactly the narrow,
+        title-anchored search this pipeline exists to avoid. The recruiter saw no
+        error, just worse results.
+
+        Observed live 2026-07-28 on an SAP role:
+            broadeningLadder.0.filters.currentCompanies
+              Input should be a valid array [input_value=None]
+        """
+        if v is None:
+            return []
+        if isinstance(v, str):
+            # A lone string where a list was asked for is a near-miss, not junk.
+            s = v.strip()
+            return [s] if s else []
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if x is not None and str(x).strip()]
+        return v
 
     @field_validator(
         "yearsOfExperience", "yearsAtCurrentCompany",

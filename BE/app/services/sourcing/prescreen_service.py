@@ -121,6 +121,125 @@ def token_present(needle: str, hay: List[str]) -> bool:
     return False
 
 
+# ── Domain-evidence classifier (2026-08-02) ──────────────────────────────────
+#
+# Confirmed live: the Apify actor's `searchQuery` is fuzzy relevance search
+# (its own docs: "general search query (fuzzy search)"), not a strict boolean
+# filter. It scores word-by-word, so a domain group like `("SAP Retail" OR
+# "S/4HANA Retail")` gives partial relevance credit for the single shared
+# word "Retail" even with zero "SAP" anywhere on the profile — proven
+# reproducible with real candidates (Mirko Muller, Hendrik Jansen, Dieter
+# Kosancic: title carries the specialization word alone, confirmed via full
+# enrichment to have ZERO ecosystem-word connection anywhere).
+#
+# This exists to make that same word-level split ourselves, in code, instead
+# of trusting the actor's relevance score — reusing the ecosystem/specialty
+# split already built for anchor-drift protection
+# (`common.ECOSYSTEM_TOKENS`/`GENERIC_ROLE_WORDS`), via `token_present`'s
+# fuzzy/substring matching rather than brittle exact-string checks, so
+# "S/4HANA" (tokenizes to "s"+"4hana") still correctly recognizes "4hana" as
+# a substring of the catalogued "s4hana".
+_DOMAIN_QUOTED_PHRASE_RE = re.compile(r'"([^"]+)"')
+
+# Fragments that only ever occur as PART of a tokenized brand name, never as
+# a real standalone word — safe to recognize via substring the way
+# `token_present` normally works. "4hana" exists because "S/4HANA" tokenizes
+# to "s"+"4hana", and only the fragment needs to match the catalogued
+# "s4hana".
+_ECOSYSTEM_FRAGMENTS = {"4hana"}
+
+
+def is_ecosystem_word(word: str) -> bool:
+    """True when `word` IS a catalogued ecosystem brand (SAP, Salesforce...)
+    — exact match only, deliberately NOT `token_present`'s fuzzy/substring
+    matching.
+
+    That fuzzy matching is right for `token_present`'s normal job (title
+    variants, inflections), but wrong here: several brand names contain a
+    complete, common English word as a literal prefix — "sales" is a
+    substring of "salesforce", "service" of "servicenow", "force" of
+    "salesforce" — so a generic JD skill like "sales cycle management" was
+    being misread as SAP/Salesforce ecosystem evidence purely because
+    "sales" sits inside "salesforce". Confirmed live 2026-08-02: this masked
+    the real domain-evidence check for candidates with zero actual ecosystem
+    connection (Mirko Muller's real profile has no ecosystem word at all,
+    but "sales cycle management" in the JD's mustHaveSkills was wrongly
+    classified as ecosystem-branded, giving him false credit). Exact match
+    (plus the explicit fragment allowance above) can't have this failure
+    mode — no common English word IS "sap" or "salesforce" outright.
+    """
+    from app.services.sourcing.common import ECOSYSTEM_TOKENS
+
+    w = _canon(word)
+    if w in _ECOSYSTEM_FRAGMENTS:
+        return True
+    return any(w == _canon(e) for e in ECOSYSTEM_TOKENS)
+
+
+def domain_phrase_word_groups(domain_query: str) -> Tuple[List[str], List[str]]:
+    """Every quoted OR-alternative in a domain group, split into
+    (ecosystem_words, specialization_words) and pooled across the whole
+    group — e.g. ``("SAP Retail" OR "SAP CAR")`` -> (["sap"], ["retail", "car"]).
+    """
+    from app.services.sourcing.common import GENERIC_ROLE_WORDS
+
+    eco: set = set()
+    spec: set = set()
+    for phrase in _DOMAIN_QUOTED_PHRASE_RE.findall(domain_query or ""):
+        for t in tokens(phrase):
+            if t in GENERIC_ROLE_WORDS:
+                continue
+            if is_ecosystem_word(t):
+                eco.add(t)
+            else:
+                spec.add(t)
+    return sorted(eco), sorted(spec)
+
+
+def domain_evidence_signal(text: str, domain_query: str) -> str:
+    """Classify ANY text (a bare title for the free pre-enrichment check, or
+    the full profile blob for the paid post-enrichment check) against a
+    search's domain requirement.
+
+    Returns one of:
+      "both"              — carries BOTH an ecosystem word (SAP/S4HANA/...)
+                             AND a specialization word (Retail/CAR/...) —
+                             the strongest signal available.
+      "specialization_only" — CONFIRMED risky (3 for 3 real cases,
+                             2026-08-02): the specialization word alone, no
+                             ecosystem word anywhere in `text`. A real,
+                             repeatable pattern — not proof it's true of
+                             every case, so callers must demote, never
+                             hard-reject, on this alone.
+      "ecosystem_only"    — ecosystem word present, no specialization word.
+                             Unproven either way — no real case observed yet.
+      "neither"           — no domain signal in `text` at all. This is NOT a
+                             reject signal: every confirmed-genuine match
+                             found 2026-08-02 (Volker Krause, Jeannine
+                             Elsässer, Immanuel Thon, Richard Deuschle,
+                             Andreas Wueck, Elena Held) had their real
+                             evidence in a past role, a skill tag, or the
+                             about section — never their current title. When
+                             `text` is just a title, "neither" is the
+                             expected, majority case and must go to
+                             enrichment to get a real answer, not be treated
+                             as evidence of anything.
+    """
+    eco_words, spec_words = domain_phrase_word_groups(domain_query)
+    if not eco_words and not spec_words:
+        return "neither"
+    text_toks = tokens(text)
+    has_eco = any(token_present(e, text_toks) for e in eco_words)
+    has_spec = any(token_present(s, text_toks) for s in spec_words)
+    if has_eco and has_spec:
+        return "both"
+    if has_spec:
+        return "specialization_only"
+    if has_eco:
+        return "ecosystem_only"
+    return "neither"
+
+
 def _weight(tok: str) -> float:
     return _GENERIC_W if tok in _GENERIC else _SPECIFIC_W
 
@@ -313,8 +432,21 @@ def score_profile(
                 best, via, kind = 1.0, m, "must-have skill in title"
             break
 
-    # 3. The role's own title, when the search aimed at nothing usable.
-    if requirements.get("title"):
+    # 3. Titles people doing this job carry THEMSELVES, from the JD's role model.
+    for t in (requirements.get("candidateTitles") or []):
+        r = _phrase_overlap(title_tokens, str(t))
+        if r > best:
+            best, via, kind = r, t, "candidate title"
+
+    # 4. The POSTING title, only as a last resort and only for roles whose
+    # posting title is genuinely what candidates carry.
+    #
+    # Deliberately excluded for commercial roles: an opening titled "SAP Retail
+    # Consultant" can be a sales job, and scoring an Account Executive against
+    # that string is what dropped exactly the right people (Kastell, 2026-07-28).
+    # `candidateTitles` above is the correct signal; falling back to the posting
+    # title here would silently reinstate the bug.
+    if requirements.get("title") and requirements.get("roleFamily") != "commercial":
         r = _phrase_overlap(title_tokens, str(requirements["title"]))
         if r > best:
             best, via, kind = r, requirements["title"], "job title"

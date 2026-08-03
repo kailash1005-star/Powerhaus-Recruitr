@@ -236,10 +236,22 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
               </span>
             </div>
 
+            {/* The three axes a recruiter actually thinks in. Previously the
+                domain axis was labelled "Search query (fuzzy)", which told
+                nobody that it is the field carrying what the person WORKS ON
+                — the only reliable signal when titles vary (a person selling
+                SAP Retail may be titled Account Executive, Client Partner,
+                or just Principal Consultant). */}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginBottom: 14 }}>
               <div>
-                <label style={label}>Search query (fuzzy)</label>
+                <label style={label}>
+                  Domain <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>— what they work on</span>
+                </label>
                 <input value={f.searchQuery || ''} onChange={(e) => set('searchQuery', e.target.value)} placeholder="e.g. ('IT-Systemadministrator' OR 'System Administrator')" style={field} />
+                <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+                  Matched against the whole profile, not just the title. Supports
+                  AND / OR / NOT and &quot;quoted phrases&quot;.
+                </div>
                 <Why text={why('searchQuery')} />
               </div>
               <div>
@@ -249,14 +261,22 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <label style={label}>Job titles</label>
+              <label style={label}>
+                Job titles <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>— what they do</span>
+              </label>
               <TagInput value={f.currentJobTitles || []} onChange={(v) => set('currentJobTitles', v)} placeholder="Type + Enter" />
+              <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+                Narrows to these titles. Leave empty to search on the domain alone —
+                useful when the right people title themselves inconsistently.
+              </div>
               <Why text={why('currentJobTitles')} />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <div>
-                <label style={label}>Locations</label>
+                <label style={label}>
+                  Locations <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>— where</span>
+                </label>
                 <LocationAutocomplete value={f.locations || []} onChange={(v) => set('locations', v)} placeholder="Type a city, e.g. Koblenz" />
                 <Why text={why('locations')} />
               </div>
@@ -324,9 +344,30 @@ export function CandidateDiscoveryForm({ pipelineId, jobId, jobTitle, jobLocatio
                   <div><label style={label}>Exclude current titles</label><TagInput value={f.excludeCurrentJobTitles || []} onChange={(v) => set('excludeCurrentJobTitles', v)} placeholder="Title" /><Why text={why('excludeCurrentJobTitles')} /></div>
                   <div><label style={label}>Exclude past titles</label><TagInput value={f.excludePastJobTitles || []} onChange={(v) => set('excludePastJobTitles', v)} placeholder="Title" /></div>
                   <div><label style={label}>Exclude schools</label><TagInput value={f.excludeSchools || []} onChange={(v) => set('excludeSchools', v)} placeholder="School" /></div>
-                  <div><label style={label}>Exclude seniority level</label>{sel('excludeSeniorityLevel', SENIORITY)}</div>
                   <div><label style={label}>Exclude function</label>{sel('excludeFunction', FUNCTIONS)}</div>
                   <div><label style={label}>Exclude company HQ locations</label><TagInput value={f.excludeCompanyHqLocations || []} onChange={(v) => set('excludeCompanyHqLocations', v)} placeholder="Location" /></div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={label}>Exclude seniority level <span style={{ fontWeight: 400, color: 'var(--fg-muted)' }}>— pick any number, e.g. hide entry-level AND executives at once</span></label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+                      {SENIORITY.filter((o) => o.v).map((o) => {
+                        const on = (f.excludeSeniorityLevel || []).includes(o.v);
+                        return (
+                          <button
+                            key={o.v} type="button"
+                            onClick={() => set('excludeSeniorityLevel', on
+                              ? (f.excludeSeniorityLevel || []).filter((x) => x !== o.v)
+                              : [...(f.excludeSeniorityLevel || []), o.v])}
+                            style={{ padding: '5px 11px', borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', border: on ? '1px solid var(--primary)' : '1px solid var(--border-card)', background: on ? 'var(--accent-soft, #EEF0FE)' : '#FFF', color: on ? 'var(--primary)' : 'var(--fg-secondary)' }}
+                          >{o.t}</button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 4 }}>
+                      This is the one exclusion the AI never sets on its own — it's manual only, because it's LinkedIn's
+                      classification of the person, not their title, so it's reliable enough to be worth setting by hand
+                      when you want it, unlike the fields above.
+                    </div>
+                  </div>
                   <div style={{ gridColumn: '1 / -1' }}>
                     <label style={label}>Profile languages</label>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>

@@ -444,6 +444,81 @@ def test_single_dated_role_does_not_evidence_a_hopping_pattern():
     assert cm.average_tenure_years(profile) is None
 
 
+def test_internships_and_part_time_roles_are_excluded_from_tenure():
+    """A student stacking short part-time/internship jobs during their degree
+    is not job-hopping evidence — only full-time roles count. Real pattern
+    (Ronn Asante, 2026-08-01): "Praktikant im Controlling" and "Werkstudent im
+    Performance Marketing" both carry a BLANK employment_type, so the title
+    itself has to catch them, not just the employment_type field."""
+    profile = {
+        "experience": [
+            {"title": "Junior Sales Manager", "starts_at": "2023-01",
+             "ends_at": "2024-06", "is_current": False, "employment_type": "Full-time"},
+            {"title": "Praktikant im Controlling", "starts_at": "2022-06",
+             "ends_at": "2022-12", "is_current": False, "employment_type": ""},
+            {"title": "Werkstudent im Performance Marketing", "starts_at": "2021-01",
+             "ends_at": "2022-05", "is_current": False, "employment_type": ""},
+            {"title": "E-Commerce Manager", "starts_at": "2019-01",
+             "ends_at": "2020-06", "is_current": False, "employment_type": "Part-time"},
+        ],
+    }
+    # Only ONE full-time entry exists (Junior Sales Manager) — fewer than the
+    # 2 needed to evidence a pattern, so this must stay neutral, not flagged.
+    assert cm.average_tenure_years(profile) is None
+
+
+def test_fulltime_only_tenure_ignores_the_internship_noise():
+    """With two real full-time roles present, the average is computed from
+    those two alone — the internship in between must not shorten it."""
+    profile = {
+        "experience": [
+            {"title": "Senior Sales Manager", "starts_at": "2023-01",
+             "ends_at": "2025-01", "is_current": False, "employment_type": "Full-time"},
+            {"title": "Working Student Sales", "starts_at": "2022-06",
+             "ends_at": "2022-12", "is_current": False, "employment_type": "Work Study"},
+            {"title": "Sales Manager", "starts_at": "2019-01",
+             "ends_at": "2021-01", "is_current": False, "employment_type": "Full-time"},
+        ],
+    }
+    avg = cm.average_tenure_years(profile)
+    assert avg == 2.0  # exactly the two 2-year full-time spans, internship excluded
+
+
+def test_international_and_internal_titles_are_not_mistaken_for_internships():
+    """Plain substring matching on the "intern" marker false-positived on
+    "International"/"Internal" — real senior titles from the Kastell batch
+    (Roger Ortiz's "International Sales Manager", Dr. Böhnert's "Senior
+    Internal Strategic Consultant...") were being silently dropped from the
+    tenure calculation, corrupting the average. Confirmed live, 2026-08-01."""
+    profile = {
+        "experience": [
+            {"title": "International Sales Manager", "starts_at": "2020-01",
+             "ends_at": "2023-01", "is_current": False, "employment_type": ""},
+            {"title": "Senior Internal Strategic Consultant within the Strategy "
+                      "& Org. Development Department", "starts_at": "2016-01",
+             "ends_at": "2019-01", "is_current": False, "employment_type": ""},
+        ],
+    }
+    avg = cm.average_tenure_years(profile)
+    assert avg == 3.0  # both roles count as full-time; neither is an internship
+
+
+def test_ausbildungsleiter_is_not_mistaken_for_an_apprentice():
+    """"Ausbildungsleiter" (head of the training department) is a full-time
+    LEAD role, not the apprenticeship ("Ausbildung") itself — word-boundary
+    matching must not treat the compound word as a hit."""
+    profile = {
+        "experience": [
+            {"title": "Ausbildungsleiter", "starts_at": "2020-01",
+             "ends_at": "2023-01", "is_current": False, "employment_type": ""},
+            {"title": "Sales Manager", "starts_at": "2016-01",
+             "ends_at": "2019-01", "is_current": False, "employment_type": "Full-time"},
+        ],
+    }
+    avg = cm.average_tenure_years(profile)
+    assert avg == 3.0
+
+
 def test_dietmar_real_title_flags_function_mismatch_not_stale():
     """His REAL scraped title — "Product Manager, Business Solution Architect
     for SAP SCE Applications in Retail" — contains "Retail" and is CURRENT, so
@@ -507,6 +582,133 @@ def test_function_mismatch_is_scoped_to_commercial_roles():
     profile = {"currentTitle": "Solution Architect SAP Retail"}
     mult, reason = ms.function_mismatch_fit(profile, jd)
     assert mult == 1.0 and reason is None
+
+
+# ── domain_evidence_fit (2026-08-02) ─────────────────────────────────────────
+# Calibrated directly against the real cases confirmed live that day: three
+# real sourcing false positives (specialization word alone, zero real SAP
+# connection anywhere in the full profile) and six real genuine matches
+# (evidence present, but never in the current title — a past role, a skill
+# tag, or worded differently than the JD). Getting either bucket wrong means
+# either letting Mirko through the matcher too, or penalizing Volker Krause.
+
+def test_mirko_style_profile_is_flagged():
+    """Full profile, not just title — his real, complete profile (headline,
+    about, 11 experience entries, 39 skills) carries zero SAP/S4HANA
+    connection anywhere, confirmed by live enrichment 2026-08-02."""
+    profile = {
+        "currentTitle": "Business Development Manager Retail",
+        "headline": "Business Development Manager Retail Hikvision DACH",
+        "summary": "20 years in retail sales leadership across store-side and supplier-side roles.",
+        "skills": ["Retail", "Multi-channel Retail", "Sales Management", "B2B"],
+        "experience": [
+            {"title": "Business Development Manager Retail", "summary": "", "is_current": True},
+            {"title": "Vice President DACH", "summary": "E-commerce personalisation platform for online retailers."},
+            {"title": "Sales Division Manager", "summary": ""},
+        ],
+    }
+    mult, reason = ms.domain_evidence_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult < 1.0
+    assert "Retail" in reason or "retail" in reason.lower()
+
+
+def test_volker_krause_style_profile_with_a_past_sap_role_is_not_flagged():
+    """His CURRENT role (CRO at an automation company) has neither word — his
+    real evidence is a "Senior SAP Retail Consultant" role from years ago.
+    Must NOT be flagged: evidence anywhere in the full profile counts."""
+    profile = {
+        "currentTitle": "Chief Revenue Officer",
+        "headline": "CRO | AI Strategy and Intelligent Automation",
+        "summary": "25 years leadership including senior roles at Atos and DXC.",
+        "skills": [],
+        "experience": [
+            {"title": "Chief Revenue Officer", "summary": "AI and automation strategy.", "is_current": True},
+            {"title": "Senior SAP Retail Consultant", "summary": "SAP retail consulting and implementation."},
+        ],
+    }
+    mult, reason = ms.domain_evidence_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0 and reason is None
+
+
+def test_no_ecosystem_branded_must_have_skips_the_check_entirely():
+    """A JD whose mustHaveSkills are all generic sales skills has nothing
+    ecosystem-branded to check against — must never manufacture a false
+    domain claim out of "consultative selling" or similar."""
+    jd = {"title": "Senior Sales Manager", "mustHaveSkills": ["consultative selling", "business development"]}
+    mult, reason = ms.domain_evidence_fit({"currentTitle": "Business Development Manager Retail"}, jd)
+    assert mult == 1.0 and reason is None
+
+
+def test_evidence_worded_differently_than_the_jd_still_counts():
+    """Richard Deuschle's real profile says "SAP for retail implementation",
+    not the JD's exact phrase "SAP Retail" — must still count, since this
+    checks word presence, not phrase adjacency."""
+    profile = {
+        "currentTitle": "Senior Cloud Solution Architect",
+        "experience": [
+            {"title": "Senior Cloud Solution Architect", "summary": "Modern Work and AI solutions."},
+            {"title": "Trainee SAP Applications",
+             "summary": "Participate in various SAP for retail implementation projects."},
+        ],
+    }
+    mult, reason = ms.domain_evidence_fit(profile, SAP_RETAIL_SALES_JD)
+    assert mult == 1.0 and reason is None
+
+
+def test_flag_never_produces_a_zero_multiplier():
+    """A wrong read must stay visible and overridable — never silently zero
+    a candidate out, per this codebase's standing false-DROP rule."""
+    mult, _ = ms.domain_evidence_fit(
+        {"currentTitle": "Retail Account Executive"}, SAP_RETAIL_SALES_JD,
+    )
+    assert 0.0 < mult < 1.0
+
+
+def test_generic_musthave_skills_naming_a_brand_word_dont_manufacture_false_ecosystem_evidence():
+    """Real bug, confirmed live 2026-08-02: with the JD's REAL mustHaveSkills
+    list (which includes generic sales skills alongside the SAP-branded
+    ones), Mirko was NOT flagged despite his profile having zero SAP
+    connection — because "sales cycle management" was being misread as
+    SAP/Salesforce-branded evidence, purely because "sales" is a literal
+    substring of "salesforce". That falsely gave him ecosystem credit and
+    masked the real check. mustHaveSkills that merely CONTAIN a common word
+    overlapping a brand name must never count as ecosystem-branded."""
+    jd = {
+        "title": "Sales Manager SAP Retail",
+        "mustHaveSkills": [
+            "sales cycle management", "account management", "SAP S/4HANA Retail",
+            "SAP CAR", "B2B solution selling", "SAP Retail", "SAP",
+            "IT consulting", "go-to-market strategies",
+        ],
+    }
+    profile = {
+        "currentTitle": "Business Development Manager Retail",
+        "headline": "Business Development Manager Retail Hikvision DACH",
+        "summary": "20 years in retail sales leadership.",
+        "skills": ["Retail", "Sales Management", "B2B", "International Sales"],
+        "experience": [
+            {"title": "Business Development Manager Retail", "summary": "", "is_current": True},
+            {"title": "Vice President DACH", "summary": "E-commerce personalisation for online retailers."},
+        ],
+    }
+    mult, reason = ms.domain_evidence_fit(profile, jd)
+    assert mult < 1.0 and reason is not None
+
+
+def test_service_and_force_dont_falsely_match_servicenow_and_salesforce():
+    """Same substring-collision bug, two more real instances found by probing
+    every ecosystem brand: "service" is a literal substring of "servicenow",
+    "force" of "salesforce". A generic "customer service" or "sales force
+    management" mustHaveSkill must never count as ecosystem-branded."""
+    jd = {
+        "title": "Senior Sales Manager SAP Retail",
+        "mustHaveSkills": ["customer service excellence", "sales force management", "SAP Retail"],
+    }
+    # Zero ecosystem connection anywhere — must still be flagged, not masked
+    # by "service"/"force" false-matching ServiceNow/Salesforce.
+    profile = {"currentTitle": "Business Development Manager Retail"}
+    mult, reason = ms.domain_evidence_fit(profile, jd)
+    assert mult < 1.0 and reason is not None
 
 
 def test_saurabh_clean_current_match_has_no_flags():

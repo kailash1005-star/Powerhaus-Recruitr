@@ -182,8 +182,21 @@ def _raise_if_quota_exhausted(info: Dict[str, Any]) -> None:
     raise ApifyQuotaExceeded(detail)
 
 
-def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
-    """Build the actor run input, dropping empty filters."""
+def _build_input(filters: Dict[str, Any], max_items: int, *, start_page: Optional[int] = None) -> Dict[str, Any]:
+    """Build the actor run input, dropping empty filters.
+
+    ``start_page`` resumes a search past pages already fetched (actor input
+    key confirmed live 2026-08-02 — every result item carries
+    ``_meta.pagination`` with ``totalElements``/``totalPages``, so a caller can
+    tell exactly when to stop instead of guessing). Passing it ALWAYS forces
+    ``autoQuerySegmentation`` off, regardless of the volume heuristic below:
+    segmentation is documented to split a query into independent sub-runs
+    (by title, seniority, country...), each restarting its own page count, so
+    ``startPage=N`` would no longer mean "the N-th page of ONE consistent
+    result set" once segmentation is active — it would silently jump between
+    unrelated segments. Paginating reliably matters more here than the extra
+    recall segmentation can buy, so this is not run-time-tunable.
+    """
     # The questionnaire's singular `profileLanguage` predates the plural actor
     # key; every consumer here reads the plural. Normalize instead of dropping —
     # this field was dead for months because nothing read the singular.
@@ -215,6 +228,24 @@ def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
                 logger.warning("[ApifySearch] dropping unknown %s value %r", our_key, v)
         if codes:
             run_input[actor_key] = codes
+
+    # "At least N years" semantics: `yearsOfExperience` is only ever populated
+    # from a MINIMUM years requirement (`strategist._map_min_years_to_enum`,
+    # gated to an explicit recruiter/JD statement — see
+    # `_ENUM_INFERRED_FIELDS`), never an exact bucket. A single closest-band
+    # code silently excludes everyone MORE experienced too — confirmed live
+    # 2026-08-01: a JD stating "at least 5-8 years" for an explicitly
+    # "Senior"/"Executive" role mapped to band "4" (6-10 years) ALONE,
+    # excluding every candidate with 10+ years — the most senior, most likely
+    # qualified slice of the population, for a senior role. Expand to every
+    # band from the resolved one through the top ("5" / "More than 10 years")
+    # so a floor stays a floor instead of becoming a narrow window.
+    years_ids = run_input.get("yearsOfExperienceIds")
+    years_digits = [c for c in (years_ids or []) if str(c).isdigit()]
+    if years_digits:
+        lowest = min(int(c) for c in years_digits)
+        run_input["yearsOfExperienceIds"] = [str(n) for n in range(lowest, 6)]
+
     if filters.get("recentlyChangedJobs"):
         run_input["recentlyChangedJobs"] = True
     if filters.get("recentlyPostedOnLinkedin"):
@@ -225,8 +256,26 @@ def _build_input(filters: Dict[str, Any], max_items: int) -> Dict[str, Any]:
     # sub-queries to surface a larger number of UNIQUE profiles for the same
     # maxItems budget. Only worth it past one search page (25 profiles) — a tiny
     # search already fits in one query, so leave it off to avoid extra sub-runs.
-    if max_items > 25 and (run_input.get("searchQuery") or run_input.get("currentJobTitles")):
+    #
+    # NEVER for a compound `(domain) AND (title)` query. Confirmed live
+    # (2026-08-01): the identical query returned clean senior-sales candidates
+    # at ≤25 items (segmentation off) and 60/60 clean at 60 items with
+    # segmentation manually forced off, but reproduced a list of 28
+    # students/trainees out of 30 the moment segmentation auto-enabled past
+    # 25 — segmentation appears to search the AND's pieces independently, so a
+    # profile only has to satisfy ONE side (just the domain word, or just the
+    # title word) instead of both. A plain OR-only query isn't at risk this
+    # way — each OR alternative is independently meaningful — so this only
+    # skips segmentation for a query that actually joins two conditions with
+    # a top-level AND.
+    q = str(run_input.get("searchQuery") or "")
+    has_and = " AND " in q.upper()
+    if (start_page is None and max_items > 25 and not has_and
+            and (run_input.get("searchQuery") or run_input.get("currentJobTitles"))):
         run_input["autoQuerySegmentation"] = True
+
+    if start_page and start_page > 1:
+        run_input["startPage"] = start_page
     return run_input
 
 
@@ -255,6 +304,24 @@ def parse_short_profile(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     first = (item.get("firstName") or "").strip()
     last = (item.get("lastName") or "").strip()
+
+    # `_meta.pagination` is real, verified-live data the actor stamps on every
+    # item (totalElements/totalPages/pageNumber/pageSize) — confirmed 2026-08-02
+    # via a direct actor call, not documentation guesswork. We threw this away
+    # before; it's what lets a caller know the true result count and whether
+    # there are more pages left, instead of guessing from how many came back.
+    pagination = None
+    meta = item.get("_meta")
+    if isinstance(meta, dict):
+        p = meta.get("pagination")
+        if isinstance(p, dict):
+            pagination = {
+                "totalElements": p.get("totalElements"),
+                "totalPages": p.get("totalPages"),
+                "pageNumber": p.get("pageNumber"),
+                "pageSize": p.get("pageSize"),
+            }
+
     return {
         "profileId": str(profile_id) if profile_id else url,
         "linkedinUrl": url,
@@ -265,6 +332,7 @@ def parse_short_profile(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "currentCompany": (cur.get("companyName") or "").strip() if isinstance(cur, dict) else "",
         "location": location or "",
         "photoUrl": item.get("pictureUrl") or item.get("photoUrl") or "",
+        "pagination": pagination,
     }
 
 
@@ -286,12 +354,17 @@ class ApifySearchService:
             raise ApifyEnrichmentError("apify-client is not installed — `pip install apify-client`.") from exc
         return ApifyClient(self._token)
 
-    def search(self, filters: Dict[str, Any], *, max_items: int = 25) -> List[Dict[str, Any]]:
-        """Run the search actor and return raw short-profile items."""
+    def search(self, filters: Dict[str, Any], *, max_items: int = 25,
+               start_page: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Run the search actor and return raw short-profile items.
+
+        ``start_page`` resumes past pages already fetched for the SAME
+        filters — see `_build_input` for why this forces segmentation off.
+        """
         max_items = max(1, min(int(max_items or 25), 100))
-        run_input = _build_input(filters, max_items)
-        logger.info("[ApifySearch] %s · maxItems=%d · keys=%s (~$%.2f)",
-                    self._actor, max_items, sorted(run_input.keys()), _COST_PER_PAGE)
+        run_input = _build_input(filters, max_items, start_page=start_page)
+        logger.info("[ApifySearch] %s · maxItems=%d · startPage=%s · keys=%s (~$%.2f)",
+                    self._actor, max_items, start_page, sorted(run_input.keys()), _COST_PER_PAGE)
 
         client = self._client()
         try:

@@ -208,6 +208,91 @@ class TestAuditRun:
         assert db.col.docs[0]["perCandidate"] == []
 
 
+# ── Rate-limit survival (2026-08-03) ─────────────────────────────────────────
+# A 50-candidate run died on a 429 ("Limit 30000, Used 16863") and degraded to
+# status="skipped" — 50 candidates silently un-audited. Two independent
+# mechanisms keep that from recurring: pacing between batches (avoid the
+# ceiling) and a wait that outlasts the provider's window (recover from it).
+
+class _Boom(Exception):
+    """Stand-in for the SDK's rate-limit error (status + headers, no import)."""
+    def __init__(self, message, status_code=None, headers=None):
+        super().__init__(message)
+        self.status_code = status_code
+        if headers is not None:
+            self.response = type("_R", (), {"status_code": status_code, "headers": headers})()
+
+
+class TestRateLimitWait:
+    def test_429_waits_out_the_full_minute_window(self):
+        from app.services.matching import llm_extraction_service as llm
+        wait = llm._rate_limit_wait(_Boom("Error code: 429 - rate limit reached", 429))
+        # Must outlast a per-MINUTE budget — the old ≤6s backoff never could.
+        assert wait is not None and wait >= 60.0
+
+    def test_a_normal_error_keeps_the_short_backoff(self):
+        from app.services.matching import llm_extraction_service as llm
+        assert llm._rate_limit_wait(_Boom("connection reset by peer")) is None
+
+    def test_provider_retry_after_hint_is_honoured(self):
+        from app.services.matching import llm_extraction_service as llm
+        exc = _Boom("429 rate limit", 429, {"retry-after": "12"})
+        assert llm._rate_limit_wait(exc) == 12.0
+
+    def test_absurd_retry_after_is_capped(self):
+        """A bogus header must not park a worker thread for an hour."""
+        from app.services.matching import llm_extraction_service as llm
+        exc = _Boom("429 rate limit", 429, {"retry-after": "99999"})
+        assert llm._rate_limit_wait(exc) == llm._RATE_LIMIT_WAIT_CAP
+
+
+class TestBatchPacing:
+    """Chunking alone never fixed this — the ceiling is tokens per MINUTE, so
+    the same profiles in more back-to-back calls trip the identical 429. Only
+    the delay BETWEEN calls helps."""
+
+    async def _audit_n(self, monkeypatch, n: int, pause: float):
+        monkeypatch.setattr(qa.settings, "MATCH_QA_BATCH_PAUSE_SECS", pause)
+        entries, profiles, sims = [], {}, {}
+        for i in range(n):
+            e = _entry_for_marina()
+            e["candidateId"] = f"cid-{i}"
+            entries.append(e)
+            profiles[f"cid-{i}"] = MARINA
+            sims[f"cid-{i}"] = 0.45
+        monkeypatch.setattr(qa, "_audit_sync", lambda requirements, batch: {"candidates": []})
+
+        slept: List[float] = []
+
+        async def fake_sleep(secs):
+            slept.append(secs)
+        monkeypatch.setattr(qa.asyncio, "sleep", fake_sleep)
+
+        summary = await qa.audit_run(
+            _FakeDb(), match_run_id="run-1", pipeline_id="p", job_id="j",
+            jd_title="SAP-HCM Specialist", requirements=JD,
+            entries=entries, profiles_by_cid=profiles, sims_by_cid=sims,
+        )
+        return summary, slept
+
+    async def test_multi_batch_run_pauses_between_batches(self, monkeypatch):
+        # 25 candidates at batch size 12 → 3 batches → exactly 2 gaps.
+        summary, slept = await self._audit_n(monkeypatch, 25, pause=15.0)
+        assert summary["status"] == "completed"
+        assert slept == [15.0, 15.0]
+
+    async def test_single_batch_run_never_pauses(self, monkeypatch):
+        """The common small run must not get slower for a problem it can't hit."""
+        summary, slept = await self._audit_n(monkeypatch, 5, pause=15.0)
+        assert summary["status"] == "completed"
+        assert slept == []
+
+    async def test_pause_of_zero_disables_pacing(self, monkeypatch):
+        summary, slept = await self._audit_n(monkeypatch, 25, pause=0.0)
+        assert summary["status"] == "completed"
+        assert slept == []
+
+
 # ── Admin gate ───────────────────────────────────────────────────────────────
 
 class TestAdminGate:

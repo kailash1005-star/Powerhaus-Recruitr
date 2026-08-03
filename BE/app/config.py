@@ -172,6 +172,17 @@ class Settings(BaseSettings):
         default=10,
         description="Kept-candidate count below which the UI offers a deliberate widening",
     )
+    # 2026-08-02: page deeper into the SAME query (never a relaxed one) when
+    # the free, pre-enrichment verified count falls short of 80% of the
+    # requested volume — capped at 5 additional pages per run, and stopping
+    # early the moment `_meta.pagination.totalPages` is exhausted. A kill
+    # switch, not a tuning knob: flip off to instantly revert to a single
+    # search page with zero code change if this misbehaves against real
+    # traffic before it's been observed at scale.
+    SOURCING_PAGINATION_ENABLED: bool = Field(
+        default=True,
+        description="Fetch additional result pages of the same search when verified yield is short of target",
+    )
     # ── MCP tool servers the agent connects to ──────────────────────────
     # The agent's tools come from MCP server(s). Point it at the LinkedIn MCP
     # server we built. Prefer HTTP (run it as a service) OR stdio (spawn it).
@@ -261,6 +272,17 @@ class Settings(BaseSettings):
         default=True, description="Run the QA auditor over every match run before completion")
     MATCH_QA_MODEL: str = Field(
         default="", description="Override model for the match auditor (empty → QA_AUDITOR_MODEL)")
+    # The auditor sends one call per batch of candidates, and a full profile per
+    # candidate is token-heavy. Fired back-to-back those calls saturate the
+    # provider's tokens-per-MINUTE budget: confirmed live 2026-08-03, a
+    # 50-candidate run (5 batches) died on a 429 "Limit 30000, Used 16863" and
+    # the whole audit degraded to status="skipped" — 50 candidates silently
+    # un-audited. Smaller batches do NOT help (same total tokens inside the same
+    # minute); only spreading them over time does. Pacing is per-GAP (between
+    # batches, never before the first or after the last).
+    MATCH_QA_BATCH_PAUSE_SECS: float = Field(
+        default=15.0,
+        description="Pause between QA auditor batches to stay under the provider's per-minute token budget (0 disables)")
 
     # Sourcing-results auditor. Audits what the discovery API actually returns
     # against the recruiter's query — is each candidate genuinely in the right

@@ -1003,40 +1003,6 @@ async def _regate_locations_after_enrich(
     return rejected
 
 
-async def _run_job_enrich(
-    pipeline_id: str, job_id: str, candidate_ids: Optional[List[str]],
-) -> None:
-    """Background worker: enrich the selected candidates (or all in the job)."""
-    from app.services.operations import cost_service
-    try:
-        await _set_enrich(pipeline_id, job_id, "running", enrichError=None)
-        async with cost_service.cost_context(
-            cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
-        ):
-            summary = await _enrich_for_job(pipeline_id, job_id, candidate_ids)
-        # Now that real locations are known, reject confirmed wrong-country hits
-        # (the Apollo location gate can only run here). Fail-open.
-        try:
-            await _regate_locations_after_enrich(pipeline_id, job_id, candidate_ids)
-        except Exception as exc:  # noqa: BLE001 — gate must never fail enrichment
-            logger.warning("[Enrich] %s/%s post-enrich location gate error: %s",
-                           pipeline_id, job_id, exc)
-        await _set_enrich(
-            pipeline_id, job_id, "completed", enrichCounts=summary, enrichError=None,
-        )
-        logger.info("[Phase4] enrich %s/%s done: %s", pipeline_id, job_id, summary)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("[Phase4] enrich %s/%s crashed: %s", pipeline_id, job_id, exc, exc_info=True)
-        try:
-            await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(exc)[:300])
-        except Exception:
-            pass
-        await apify_health.alert_if_actionable(
-            exc, where=f"candidate enrichment (pipeline {pipeline_id}, job {job_id})",
-            extra={"pipelineId": pipeline_id, "jobId": job_id},
-        )
-
-
 # ── Apify discovery: search questionnaire → candidates → auto-enrich ────────
 
 
@@ -1184,8 +1150,14 @@ async def enqueue_job_discover(
 
 async def _run_search(
     pipeline_id: str, job_id: str, filters: Dict[str, Any], max_items: int,
+    *, start_page: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """One PAID Apify search → parsed short profiles. Metered by the caller's stage."""
+    """One PAID Apify search → parsed short profiles. Metered by the caller's stage.
+
+    ``start_page`` resumes past pages already fetched for the SAME filters —
+    see `apify_search_service._build_input` for why this always forces
+    segmentation off.
+    """
     from app.services.sourcing.apify_search_service import get_apify_search_service, parse_short_profile
     from app.services.operations import cost_service
 
@@ -1193,7 +1165,8 @@ async def _run_search(
         cost_service.STAGE_CANDIDATE, pipelineId=pipeline_id, jobId=job_id,
     ):
         service = get_apify_search_service()
-        items = await asyncio.to_thread(service.search, filters, max_items=max_items)
+        items = await asyncio.to_thread(
+            service.search, filters, max_items=max_items, start_page=start_page)
     return [p for p in (parse_short_profile(i) for i in items) if p and p.get("profileId")]
 
 
@@ -1206,17 +1179,84 @@ def _keyword_channel_filters(filters: Dict[str, Any]) -> Optional[Dict[str, Any]
     matches profile keywords, not just the title line. This is one of the
     signals LinkedIn's own search uses and a title-only search silently loses.
 
-    The variant drops the title filters and keeps everything else (locations,
-    languages, enum filters, exclusions) so the recruiter's explicit constraints
-    still hold. Returns None when the base search carries no titles (it already
-    IS a keyword search) or no query (nothing to search by).
+    Two ways a search can carry a title requirement to drop, handled
+    separately because the strategist redesign (2026-07-31) retired the first:
+
+    1. The legacy shape — `currentJobTitles`/`pastJobTitles` populated as their
+       own actor filter. The variant drops them and keeps everything else
+       (locations, languages, enum filters, exclusions).
+    2. The current shape — both of those are always empty; the title
+       requirement lives inside searchQuery's own `(DOMAIN) AND (TITLE)`
+       Boolean instead (see `strategist.py`). Until this was added, THIS path
+       always returned None — `_keyword_channel_filters` had no title filter
+       left to drop, so the keyword channel silently stopped running for
+       every AI-built search the day of that redesign (confirmed live,
+       2026-08-01: `searchAttempts[0].channelCounts` carried only `{"title":
+       N}`, no `"keyword"` key, ever). The fix drops the TITLE GROUP from the
+       query itself via `strategist.domain_only_query`, which only returns a
+       value for a clean, unambiguous two-group Boolean — never guesses.
+
+    Returns None when neither path applies (no titles to drop either way) or
+    there's no query to search by.
     """
-    if not (filters.get("currentJobTitles") or filters.get("pastJobTitles")):
+    q = (filters.get("searchQuery") or "").strip()
+    if not q:
         return None
-    if not (filters.get("searchQuery") or "").strip():
+    if filters.get("currentJobTitles") or filters.get("pastJobTitles"):
+        return {k: v for k, v in filters.items()
+                if k not in ("currentJobTitles", "pastJobTitles")}
+    from app.services.sourcing.strategist import domain_only_query
+    domain_only = domain_only_query(q)
+    if not domain_only:
         return None
-    return {k: v for k, v in filters.items()
-            if k not in ("currentJobTitles", "pastJobTitles")}
+    return {**filters, "searchQuery": domain_only}
+
+
+def _primary_channel_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
+    """The ACTUAL filters sent to Apify for the primary (title) channel.
+
+    Confirmed live 2026-08-02 (Mirko Muller, linkedin.com/in/mirkomueller):
+    the actor's `searchQuery` is fuzzy relevance search, not a strict boolean
+    filter — its own docs call it "general search query (fuzzy search)",
+    while `currentJobTitles` is documented as "filter-based ... deterministic
+    results". Packing the title requirement into `searchQuery` (the
+    2026-07-31 redesign's `(DOMAIN) AND (TITLE)` shape) means the title half
+    is never actually enforced — a profile whose title shares ONE word with
+    the domain phrase (Mirko's "Business Development Manager Retail" shares
+    "Retail" with "SAP Retail") can score high enough on relevance alone to
+    surface with zero real domain connection, confirmed reproducible at
+    maxItems=50 on two separate days.
+
+    This derives, WITHOUT touching the strategist's own SearchFilters or its
+    `currentJobTitles=[]` invariant (many other consumers — the Judge payload,
+    the Broadener's locked target, the QA auditor's title fallback — depend on
+    that invariant staying exactly as the strategist produced it): a REAL
+    `currentJobTitles` filter for the actual search call, using the same
+    title-shaped-phrase extraction already used elsewhere
+    (`_title_gate_titles_from_query`), and narrows `searchQuery` to the
+    DOMAIN GROUP alone (`domain_only_query`) so the fuzzy half only ever has
+    to do the one job it's suited for — finding domain evidence anywhere in
+    the profile, not gatekeeping the title.
+
+    Falls back to returning `filters` UNCHANGED — zero behavior change from
+    today — whenever there's nothing safe to derive: `currentJobTitles`/
+    `pastJobTitles` already populated (a manual/legacy search; don't
+    override a recruiter's own explicit filter), or `searchQuery` isn't a
+    clean, unambiguous two-group Boolean. Never guesses.
+    """
+    if filters.get("currentJobTitles") or filters.get("pastJobTitles"):
+        return filters
+    q = (filters.get("searchQuery") or "").strip()
+    if not q:
+        return filters
+    from app.services.sourcing.strategist import domain_only_query, _title_gate_titles_from_query
+    domain_only = domain_only_query(q)
+    if not domain_only:
+        return filters
+    titles = _title_gate_titles_from_query(q)
+    if not titles:
+        return filters
+    return {**filters, "searchQuery": domain_only, "currentJobTitles": titles}
 
 
 async def _run_search_channels(
@@ -1234,8 +1274,22 @@ async def _run_search_channels(
     The keyword channel is a recall add-on: its failure is logged and skipped,
     never fatal to a search that already has results in hand.
     """
-    primary = "title" if filters.get("currentJobTitles") else "keyword"
-    profiles = await _run_search(pipeline_id, job_id, filters, max_items)
+    # A search carries a real title requirement either the old way
+    # (`currentJobTitles` populated) or the current way (the boolean
+    # `searchQuery` itself ANDs a title group onto the domain group — the
+    # strategist redesign always leaves `currentJobTitles` empty and puts
+    # titles here instead). Labeling every AND-anchored search "keyword" once
+    # `currentJobTitles` went permanently empty is what let
+    # `_channel_screen_policy`'s keyword-channel rescue (below) waive the
+    # title/seniority screen for 100% of candidates instead of the minority
+    # it was written for — confirmed live (2026-08-01): a compound query
+    # returned 28 students/trainees out of 30 under the old labeling.
+    has_title_requirement = bool(filters.get("currentJobTitles")) or (
+        " AND " in str(filters.get("searchQuery") or "").upper()
+    )
+    primary = "title" if has_title_requirement else "keyword"
+    primary_filters = _primary_channel_filters(filters)
+    profiles = await _run_search(pipeline_id, job_id, primary_filters, max_items)
     for p in profiles:
         p["channels"] = [primary]
     counts = {primary: len(profiles)}
@@ -1263,23 +1317,97 @@ async def _run_search_channels(
     return profiles, counts
 
 
+def is_domain_anchored(filters: Optional[Dict[str, Any]]) -> bool:
+    """True when the search itself carried the domain, so every hit is evidenced.
+
+    The actor's ``searchQuery`` is matched against the profile's FULL TEXT, not
+    the title line. When we send a real one, LinkedIn has already verified
+    something we cannot see locally — Short mode returns only title, company and
+    location. A single word derived from a title ("Account") is not that, so we
+    require either a boolean expression or a genuine multi-word phrase.
+    """
+    from app.services.sourcing.strategist import _is_boolean_query
+
+    q = str((filters or {}).get("searchQuery") or "").strip()
+    if not q:
+        return False
+    return _is_boolean_query(q) or len(q.split()) >= 2
+
+
+def _provisional_score(
+    base: float, *, title: str, company: str, channels: List[str],
+    candidate_titles: Optional[List[str]] = None,
+    domain_terms: Optional[List[str]] = None,
+) -> Tuple[float, List[str]]:
+    """Rank a hit we cannot yet verify, using only the free fields.
+
+    Rescued hits used to be floored at a flat 30, which is fine while it applies
+    to a handful of them and useless once it applies to most of the list — every
+    candidate lands in one bucket and the recruiter's sort stops meaning
+    anything. These four signals are all derivable from the short profile, so
+    ranking costs nothing and stays deterministic.
+    """
+    from app.services.sourcing import prescreen_service as _ps
+
+    score = base
+    reasons: List[str] = []
+    t_tokens = _ps.tokens(title or "")
+
+    if candidate_titles and t_tokens:
+        for ct in candidate_titles:
+            if _ps._phrase_overlap(t_tokens, str(ct)) >= 0.5:
+                score += 30.0
+                reasons.append(f"Title “{title}” looks like “{ct}”.")
+                break
+
+    if len(channels) > 1:
+        # Found independently by the title AND the keyword search — the strongest
+        # signal available before enrichment.
+        score += 15.0
+        reasons.append("Found by both the title and the keyword search.")
+
+    if company and domain_terms:
+        c = company.lower()
+        hit = next((d for d in domain_terms if d and str(d).lower() in c), None)
+        if hit:
+            score += 10.0
+            reasons.append(f"Employer “{company}” carries the domain term “{hit}”.")
+
+    return min(95.0, score), reasons
+
+
 def _channel_screen_policy(
-    keep: bool, verdict: Dict[str, Any], channels: List[str], *, title: str = "", company: str = "",
+    keep: bool, verdict: Dict[str, Any], channels: List[str], *, title: str = "",
+    company: str = "", domain_anchored: bool = False,
+    candidate_titles: Optional[List[str]] = None,
+    domain_terms: Optional[List[str]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Channel-aware adjustments to the title-only prescreen verdict.
 
-    A keyword-channel hit whose TITLE shares no vocabulary with the role is not
-    a random stranger: the actor matched the query against the profile's own
-    content ("IT-Consultant bei X" whose profile says SAP HCM). The title-only
-    gate can't see that evidence, so it must not be allowed to drop on it —
-    false DROPs are unrecoverable, a false KEEP costs one $0.004 scrape and the
-    matcher catches it a minute later.
+    Freelance/self-employed and owner/executive titles are hard policy
+    rejections — unconditional, regardless of how the hit was found. They are
+    NOT softened by domain evidence: a query that matches profile text can't
+    tell us someone stopped being a freelancer.
+
+    Everyone else: a hit whose TITLE shares no vocabulary with the role is not
+    a random stranger when the search carried the domain — the actor matched
+    the query against the profile's own content ("IT-Consultant bei X" whose
+    profile says SAP HCM). The title-only gate can't see that evidence, so it
+    must not be allowed to drop on it — false DROPs are unrecoverable, a false
+    KEEP costs one $0.004 scrape and the matcher catches it a minute later.
+
+    ``domain_anchored`` widens that reprieve from keyword-channel hits to EVERY
+    hit, because in a domain-anchored search the domain was AND-ed into both
+    channels. This is what lets a "Principal Consultant" who sells SAP Retail
+    survive: his title carries no signal at all, and under the title-only rule
+    he was dropped before anyone could look at him.
 
     Corroboration: a hit found independently by BOTH the title search and the
     keyword search is the strongest pre-enrichment signal there is — it gets a
-    small rank bonus (capped) so it sorts above single-channel hits.
+    rank bonus so it sorts above single-channel hits.
     """
     from app.services.sourcing import prescreen_service as _ps
+
     is_fl, fl_reason = _ps.is_freelance_or_self_employed(title=title, company=company)
     if is_fl or verdict.get("isFreelance"):
         return False, {
@@ -1290,33 +1418,39 @@ def _channel_screen_policy(
             ],
         }
 
-    if not keep and "keyword" in channels:
-        # The keyword channel matches profile TEXT, so it pulls in owners and
-        # executives whose profile merely name-drops the tool (the "cofounder
-        # shows up as an SAP CO consultant" leak). Refuse the rescue for them:
-        # an owner/founder/Geschäftsführer is running a business, not doing the
-        # hands-on specialty. A genuine title match never reaches here (it was
-        # already kept), so this only ever drops a non-matching executive.
+    evidenced = domain_anchored or "keyword" in channels
+
+    if not keep and evidenced:
+        # The keyword/domain channel matches profile TEXT, so it pulls in
+        # owners and executives whose profile merely name-drops the tool (the
+        # "cofounder shows up as an SAP CO consultant" leak). Refuse the rescue
+        # for them: an owner/founder/Geschäftsführer is running a business, not
+        # doing the hands-on specialty. A genuine title match never reaches
+        # here (it was already kept), so this only ever drops a non-matching
+        # executive — unconditionally, domain evidence included.
         if _ps.is_executive_title(title):
             return False, {
                 **verdict, "decision": "drop",
                 "reasons": [
                     f"Title “{title}” is an owner/executive role, not the "
-                    "hands-on specialty — only the keyword channel matched it.",
+                    "hands-on specialty — only the keyword/domain match found it.",
                     *(verdict.get("reasons") or []),
                 ],
             }
         keep = True
+        score, extra = _provisional_score(
+            30.0, title=title, company=company, channels=channels,
+            candidate_titles=candidate_titles, domain_terms=domain_terms)
         verdict = {
-            **verdict,
-            "decision": "keep",
-            "score": max(float(verdict.get("score") or 0.0), 30.0),
+            **verdict, "decision": "keep", "score": score,
             "reasons": [
                 "Profile content matches the search keywords — kept for "
                 "enrichment even though the title alone doesn't show it.",
-                *(verdict.get("reasons") or []),
+                *extra, *(verdict.get("reasons") or []),
             ],
         }
+        return keep, verdict
+
     if keep and len(channels) > 1 and verdict.get("score") is not None:
         verdict = {**verdict, "score": min(95.0, float(verdict["score"]) + 5.0)}
     return keep, verdict
@@ -1387,6 +1521,54 @@ async def _run_job_enrich(
             await _set_enrich(pipeline_id, job_id, "failed", enrichError=str(exc)[:300])
         except Exception:
             pass
+        await apify_health.alert_if_actionable(
+            exc, where=f"candidate enrichment (pipeline {pipeline_id}, job {job_id})",
+            extra={"pipelineId": pipeline_id, "jobId": job_id},
+        )
+
+
+# A "3 for 3 real, confirmed" pattern is real evidence, not proof it holds
+# for every profile — demote hard, never hard-reject on it. Mirrors the
+# multiplier scale already used for confirmed-risky signals downstream in
+# the matcher (`matching_service._FUNCTION_MISMATCH_MULTIPLIER`).
+_SPECIALIZATION_ONLY_DEMOTION = 0.3
+
+
+def _apply_domain_evidence_demotion(
+    keep: bool, verdict: Dict[str, Any], *, title: str, domain_query: str,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Free, pre-enrichment demotion using only the short-profile title.
+
+    See `prescreen_service.domain_evidence_signal` for the full finding.
+    Only the "specialization_only" pattern is demoted — it's the one
+    signature actually confirmed live (Mirko Muller, Hendrik Jansen, Dieter
+    Kosancic, all 2026-08-02). Every other outcome, INCLUDING "neither" (the
+    majority case — every real genuine match that day showed neither word in
+    their current title), is left untouched: there is no free-data basis to
+    treat "neither" as anything but unknown, and doing so would demote the
+    same population that today's real good candidates came from.
+
+    Never changes `keep` — a false DROP here is unrecoverable, and "3 for 3"
+    is real but not a certainty for every future case.
+    """
+    if not domain_query:
+        return keep, verdict
+    from app.services.sourcing.prescreen_service import domain_evidence_signal
+
+    signal = domain_evidence_signal(title, domain_query)
+    verdict = {**verdict, "domainEvidenceSignal": signal}
+    if signal != "specialization_only":
+        return keep, verdict
+    score = verdict.get("score")
+    if score is not None:
+        verdict["score"] = round(float(score) * _SPECIALIZATION_ONLY_DEMOTION, 1)
+    verdict["reasons"] = [
+        "Title mentions the specialty but no SAP/ecosystem connection anywhere "
+        "in it — a pattern confirmed to often be a false match; ranked low, "
+        "not dropped, pending enrichment.",
+        *(verdict.get("reasons") or []),
+    ]
+    return keep, verdict
 
 
 async def _store_profiles(
@@ -1395,6 +1577,7 @@ async def _store_profiles(
     requirements: Optional[Dict[str, Any]] = None,
     target_titles: Optional[List[str]] = None,
     requested_location: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     """Upsert short profiles as candidates, pre-screening each against the role.
 
@@ -1417,6 +1600,26 @@ async def _store_profiles(
     cand_ids: List[str] = []
     verdicts: List[Dict[str, Any]] = []
     gate_on = (settings.SOURCING_LOCATION_GATE or "off").lower() == "country"
+
+    # When the search itself carried the domain, LinkedIn matched it against each
+    # profile's FULL TEXT — evidence the title-only screen below cannot see and
+    # must therefore not overrule.
+    req = requirements or {}
+    domain_anchored = is_domain_anchored(filters or {"searchQuery": search_query})
+    candidate_titles = list(req.get("candidateTitles") or []) or list(target_titles or [])
+    domain_terms = list(req.get("domainTerms") or [])
+    if domain_anchored:
+        logger.info("[Discover] %s/%s domain-anchored search — title screen ranks, "
+                    "does not reject", pipeline_id, job_id)
+
+    # Free, pre-enrichment demotion signal (2026-08-02) — see
+    # `prescreen_service.domain_evidence_signal`'s docstring for the full
+    # finding. Reuses the SAME domain-only extraction already used for the
+    # primary search channel, so this checks against exactly what was
+    # actually searched for, not a separately-maintained term list.
+    from app.services.sourcing.strategist import domain_only_query
+    _raw_query = (filters or {}).get("searchQuery") or search_query or ""
+    domain_query_text = domain_only_query(_raw_query) or ""
 
     for p in profiles:
         doc = _build_apify_candidate_doc(
@@ -1463,6 +1666,13 @@ async def _store_profiles(
                 keep, verdict, channels,
                 title=p.get("currentTitle") or "",
                 company=p.get("currentCompany") or p.get("company") or "",
+                domain_anchored=domain_anchored,
+                candidate_titles=candidate_titles,
+                domain_terms=domain_terms,
+            )
+            keep, verdict = _apply_domain_evidence_demotion(
+                keep, verdict, title=p.get("currentTitle") or "",
+                domain_query=domain_query_text,
             )
         else:
             keep, verdict = True, {"decision": "keep", "score": None,
@@ -1551,12 +1761,30 @@ async def _audit_sourcing_results(
     if not kept:
         return {}
 
+    # What the auditor judges against. The POSTING title is deliberately not the
+    # anchor: for a commercial role it describes the opening ("SAP Retail
+    # Consultant"), not the person, and judging an "Account Executive" against it
+    # matches the auditor's own reject clause — "a different profession that
+    # merely name-drops a tool" — which re-imported the title filter at the very
+    # last gate, after the search had correctly found them.
+    # filters["currentJobTitles"] is always empty now (2026-07-31 redesign: the
+    # Strategist folds titles into searchQuery's TITLE GROUP instead of this
+    # field, so it never double-restricts the actor-side search). The anchor
+    # falls back to extracting those same titles back out of searchQuery before
+    # ever reaching the raw posting title.
+    from app.services.sourcing.strategist import _title_gate_titles_from_query
+    candidate_titles = (requirements.get("candidateTitles")
+                        or filters.get("currentJobTitles")
+                        or _title_gate_titles_from_query(filters.get("searchQuery") or "")
+                        or [])
     query = {
-        "title": (requirements.get("title")
-                  or (filters.get("currentJobTitles") or [None])[0]),
-        "targetTitles": filters.get("currentJobTitles") or [],
+        "title": (candidate_titles[0] if candidate_titles
+                  else requirements.get("title")),
+        "targetTitles": list(candidate_titles),
         "mustHaveSkills": requirements.get("mustHaveSkills") or [],
         "seniority": requirements.get("seniority"),
+        "roleFamily": requirements.get("roleFamily"),
+        "domainTerms": requirements.get("domainTerms") or [],
     }
     from app.database import get_database
     summary = await sourcing_qa_service.audit_results(
@@ -1564,6 +1792,7 @@ async def _audit_sourcing_results(
         pipeline_id=pipeline_id, job_id=job_id,
         jd_title=query["title"] or "", query=query,
         kept=kept, location_rejected=location_rejected,
+        domain_anchored=is_domain_anchored(filters),
     )
     if summary.get("rejected"):
         logger.info("[Discover] %s/%s sourcing QA HID %d wrong-specialty result(s)",
@@ -1785,7 +2014,171 @@ async def _search_with_broadening(
                         "after clamping — stopping", pipeline_id, job_id)
             return [], attempts, current
         current = proposed
+        # The recruiter's own exclude-seniority choice is a manual, deliberate
+        # signal (never AI-set — see strategist._ENUM_INFERRED_FIELDS) and must
+        # survive broadening the same way titles/query/locations do
+        # (lock_target, above). SearchFilters.excludeSeniorityLevel stays a
+        # single-value, AI-facing field on purpose — widening it would just
+        # grow the Broadener's own LLM's chance to mis-set it — so the
+        # recruiter's real list is restored directly onto the dict that
+        # actually reaches the actor, bypassing that model entirely.
+        if filters.get("excludeSeniorityLevel"):
+            current["excludeSeniorityLevel"] = filters["excludeSeniorityLevel"]
         action, reasoning = decision.action, decision.reasoning
+
+
+# ── Pagination: get more of the SAME query, never a relaxed one ─────────────
+#
+# Precision fixes alone don't create more candidates from a genuinely niche
+# specialty — they just show a cleaner slice of what's already there. Getting
+# MORE means looking further into the same ranked result list (paging), not
+# widening the ask. `_meta.pagination` (confirmed live 2026-08-02) tells us
+# exactly how many pages exist for a query, so this never has to guess when
+# to stop.
+_PAGE_FETCH_CAP = 5  # hard ceiling PER RUN — a later, recruiter-triggered
+# "search more" gets its own fresh 5-page allowance starting past whatever
+# was already fetched, never a lifetime cap.
+
+# The recruiter's own framing: "our ideal percentage of valid candidates...
+# needs to be eighty percentage of fifty" — a fraction of what was actually
+# REQUESTED (`max_items`), not the pre-existing, unrelated
+# `SOURCING_TARGET_CANDIDATES` setting (default 10, whose job is triggering
+# the "widen your specialty" shortfall banner — a different concept).
+_PAGINATION_TARGET_FRACTION = 0.8
+
+
+def _count_free_verified(verdicts: List[Dict[str, Any]]) -> int:
+    """How many KEPT candidates pass the free, pre-enrichment domain-evidence
+    check — i.e. were not demoted for the one pattern actually confirmed live
+    (specialization word alone, no ecosystem word — see
+    `prescreen_service.domain_evidence_signal`). This is the free proxy the
+    pagination loop targets; the paid, full-profile verification
+    (`matching_service.domain_evidence_fit`) still only ever runs later, when
+    a recruiter chooses to enrich — paging never spends enrichment budget on
+    its own."""
+    return sum(
+        1 for v in verdicts
+        if v.get("decision") != "drop" and v.get("domainEvidenceSignal") != "specialization_only"
+    )
+
+
+def _next_pagination_page(
+    *, verified_count: int, target_count: int, pages_fetched: int,
+    total_pages: Optional[int], page_cap: int = _PAGE_FETCH_CAP,
+) -> Optional[int]:
+    """The next page number to fetch, or ``None`` to stop — three independent
+    conditions, whichever is true first:
+
+      1. The target is already met.
+      2. `total_pages` is exhausted — LinkedIn genuinely has no more results
+         for this exact query; fetching "page N+1" past that would just
+         re-request the same last page. `total_pages=None` (never learned
+         yet, e.g. an empty first page) is treated as "unknown, don't stop
+         on this basis alone" — only an actual known total can end the loop
+         this way.
+      3. `page_cap` — the hard, predictable cost ceiling, independent of
+         whether the target was ever reachable for this specific query.
+    """
+    if verified_count >= target_count:
+        return None
+    if pages_fetched >= page_cap:
+        return None
+    if total_pages is not None and pages_fetched >= total_pages:
+        return None
+    return pages_fetched + 1
+
+
+def pagination_stop_reason(
+    *, verified_count: int, target_count: int, pages_fetched: int,
+    total_pages: Optional[int], page_cap: int = _PAGE_FETCH_CAP,
+) -> str:
+    """Which of the three stop conditions actually applies, for honest
+    reporting — mirrors `_next_pagination_page`'s own checks exactly, so the
+    reported reason can never disagree with why the loop actually stopped."""
+    if verified_count >= target_count:
+        return "target_reached"
+    if total_pages is not None and pages_fetched >= total_pages:
+        return "pages_exhausted"
+    if pages_fetched >= page_cap:
+        return "page_cap_reached"
+    return "stopped"  # defensive only — every real call site hits one of the above
+
+
+async def _paginate_primary_channel_to_target(
+    pipeline_id: str, job_id: str, used_filters: Dict[str, Any], max_items: int,
+    *, initial_verdicts: List[Dict[str, Any]], initial_pagination: Optional[Dict[str, Any]],
+    requirements: Dict[str, Any], target_titles: List[str],
+    requested_location: Optional[str],
+) -> Dict[str, Any]:
+    """After the initial search+screen, fetch MORE pages of the SAME primary
+    channel (title filter + domain-only query, unchanged) if the free-verified
+    count falls short of the target — by paging deeper into the same ranked
+    result list, never by relaxing anything. Reuses `_store_profiles` for
+    every new page, so new candidates persist exactly like the first batch
+    (dedup by apolloId is already handled there).
+
+    Returns a summary dict: pagesFetched, totalPages, totalElements,
+    verifiedCount, stopReason, allVerdicts (initial + every page fetched
+    here) — `stopReason`/`totalPages` are what let the caller report an
+    honest total (only when `pagesFetched >= totalPages`, i.e. genuinely
+    everyone was looked at) instead of overstating coverage.
+    """
+    target = max(1, round(_PAGINATION_TARGET_FRACTION * max_items))
+    all_verdicts = list(initial_verdicts)
+    all_cand_ids: List[str] = []
+    verified = _count_free_verified(all_verdicts)
+    total_pages = (initial_pagination or {}).get("totalPages")
+    total_elements = (initial_pagination or {}).get("totalElements")
+    pages_fetched = 1  # the initial search already fetched page 1
+
+    while True:
+        next_page = _next_pagination_page(
+            verified_count=verified, target_count=target,
+            pages_fetched=pages_fetched, total_pages=total_pages,
+        )
+        if next_page is None:
+            break
+        try:
+            primary_filters = _primary_channel_filters(used_filters)
+            new_profiles = await _run_search(
+                pipeline_id, job_id, primary_filters, max_items, start_page=next_page,
+            )
+        except Exception as exc:  # noqa: BLE001 — pagination is an enhancement, never fatal
+            logger.warning("[Discover] %s/%s pagination page %d failed: %s",
+                           pipeline_id, job_id, next_page, exc)
+            break
+        pages_fetched = next_page
+        if not new_profiles:
+            total_pages = pages_fetched  # confirms there was nothing more here
+            break
+        for p in new_profiles:
+            p["channels"] = ["title"]
+            pg = p.get("pagination") or {}
+            if pg.get("totalPages") is not None:
+                total_pages = pg["totalPages"]
+            if pg.get("totalElements") is not None:
+                total_elements = pg["totalElements"]
+
+        page_cand_ids, page_verdicts = await _store_profiles(
+            new_profiles, pipeline_id=pipeline_id, job_id=job_id,
+            search_query=(used_filters.get("searchQuery") or ""), now=datetime.utcnow(),
+            requirements=requirements, target_titles=target_titles,
+            requested_location=requested_location, filters=used_filters,
+        )
+        all_cand_ids.extend(page_cand_ids)
+        all_verdicts.extend(page_verdicts)
+        verified = _count_free_verified(all_verdicts)
+
+    stop_reason = pagination_stop_reason(
+        verified_count=verified, target_count=target,
+        pages_fetched=pages_fetched, total_pages=total_pages,
+    )
+    return {
+        "pagesFetched": pages_fetched, "totalPages": total_pages,
+        "totalElements": total_elements, "verifiedCount": verified,
+        "targetCount": target, "stopReason": stop_reason,
+        "allVerdicts": all_verdicts, "newCandidateIds": all_cand_ids,
+    }
 
 
 async def _discover_candidates_for_job(
@@ -1859,7 +2252,36 @@ async def _discover_candidates_for_job(
             # bar and rubber-stamp the drift. The role is the yardstick.
             target_titles=filters.get("currentJobTitles") or [],
             requested_location=req_location,
+            # The ORIGINAL filters too — `is_domain_anchored` reads searchQuery to
+            # decide whether the title screen may reject or may only rank.
+            filters=filters,
         )
+
+        # Page deeper into this SAME query (never a relaxed one) when the
+        # free-verified count falls short of target — see
+        # `_paginate_primary_channel_to_target`. A kill switch, not a tuning
+        # knob: `SOURCING_PAGINATION_ENABLED=False` reverts to today's
+        # single-page behavior with zero other change.
+        from app.config import settings as _pagination_settings
+
+        pagination_summary: Optional[Dict[str, Any]] = None
+        if _pagination_settings.SOURCING_PAGINATION_ENABLED and cand_ids:
+            title_hit = next((p for p in profiles if "title" in (p.get("channels") or [])), None)
+            initial_pagination = (title_hit or {}).get("pagination")
+            try:
+                pagination_summary = await _paginate_primary_channel_to_target(
+                    pipeline_id, job_id, used_filters, max_items,
+                    initial_verdicts=verdicts, initial_pagination=initial_pagination,
+                    requirements=requirements, target_titles=filters.get("currentJobTitles") or [],
+                    requested_location=req_location,
+                )
+            except Exception as exc:  # noqa: BLE001 — an enhancement, never fatal to discovery
+                logger.warning("[Discover] %s/%s pagination failed, keeping first page: %s",
+                               pipeline_id, job_id, exc)
+            if pagination_summary:
+                cand_ids = cand_ids + pagination_summary["newCandidateIds"]
+                verdicts = pagination_summary["allVerdicts"]
+
         dropped = [v for v in verdicts if v.get("decision") == "drop"]
         if dropped:
             logger.info(
@@ -1917,8 +2339,26 @@ async def _discover_candidates_for_job(
                 "at": now,
             }
 
+        # Honest coverage reporting (2026-08-02): only claim the real total
+        # when every page of it was actually looked at (`pagesFetched >=
+        # totalPages`) — otherwise we only sampled the top-ranked slice and
+        # showing "X total" would imply completeness the search doesn't have.
+        # `totalElements`/`totalPages` themselves are real, live-confirmed
+        # actor data (`_meta.pagination`), not an estimate.
+        search_coverage = None
+        if pagination_summary and pagination_summary.get("totalPages") is not None:
+            search_coverage = {
+                "totalElements": pagination_summary.get("totalElements"),
+                "totalPages": pagination_summary["totalPages"],
+                "pagesFetched": pagination_summary["pagesFetched"],
+                "fullyCovered": pagination_summary["pagesFetched"] >= pagination_summary["totalPages"],
+                "verifiedCount": pagination_summary.get("verifiedCount"),
+                "stopReason": pagination_summary.get("stopReason"),
+            }
+
         finish_extras: Dict[str, Any] = {
             "lastSearchedAt": now, "searchShortfall": shortfall,
+            "searchCoverage": search_coverage,
         }
         finish_extras[efield] = None
         if managed:

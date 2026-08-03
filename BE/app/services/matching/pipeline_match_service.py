@@ -43,6 +43,7 @@ from app.services.matching.matching_service import (
     _score_candidate,
     apply_judge,
     apply_screening_signals,
+    domain_evidence_fit,
     function_mismatch_fit,
     seniority_band_fit,
 )
@@ -424,13 +425,14 @@ async def _run_pipeline_match(
                 continue
             seniority_band = seniority_band_fit(profile, requirements)
             function_mismatch = function_mismatch_fit(profile, requirements)
+            domain_evidence = domain_evidence_fit(profile, requirements)
             scored = {
                 "gaps": gaps, "breakdown": breakdown,
                 "tenureFlag": job_hop_flag, "avgTenureYears": avg_tenure_years,
             }
             profiles_by_cid[cid] = profile
             sims_by_cid[cid] = sim
-            screening_by_cid[cid] = (seniority_band, inactive, function_mismatch)
+            screening_by_cid[cid] = (seniority_band, inactive, function_mismatch, domain_evidence)
 
             rid: Dict[str, Any] = {}
             if settings.MATCH_JUDGE_ENABLED:
@@ -467,6 +469,8 @@ async def _run_pipeline_match(
                         judge_view["inactiveCandidateFlag"] = inactive.get("reason")
                     if function_mismatch[0] < 1.0:
                         judge_view["functionMismatchFlag"] = function_mismatch[1]
+                    if domain_evidence[0] < 1.0:
+                        judge_view["domainEvidenceFlag"] = domain_evidence[1]
                     if job_hop_flag:
                         judge_view["tenureFlag"] = (
                             f"Average tenure across recent roles is {avg_tenure_years} years — "
@@ -487,7 +491,7 @@ async def _run_pipeline_match(
             entry_scored = {"score": score, "breakdown": breakdown}
             apply_judge(entry_scored, rid or None)
             apply_screening_signals(entry_scored, seniority_band=seniority_band, inactive=inactive,
-                                     function_mismatch=function_mismatch)
+                                     function_mismatch=function_mismatch, domain_evidence=domain_evidence)
             score = entry_scored["score"]
 
             reasons = rid.get("reasons") or _fallback_reasons(requirements, profile, scored)
@@ -594,10 +598,12 @@ async def _run_pipeline_match(
                 for e in all_entries:
                     if not (e.get("qa") or {}).get("corrected"):
                         continue
-                    sb, inactive_e, fm = screening_by_cid.get(str(e["candidateId"]), (None, None, None))
-                    if sb or inactive_e or fm:
+                    sb, inactive_e, fm, de = screening_by_cid.get(
+                        str(e["candidateId"]), (None, None, None, None))
+                    if sb or inactive_e or fm or de:
                         wrap = {"score": e["score"], "breakdown": e["breakdown"]}
-                        apply_screening_signals(wrap, seniority_band=sb, inactive=inactive_e, function_mismatch=fm)
+                        apply_screening_signals(wrap, seniority_band=sb, inactive=inactive_e,
+                                                 function_mismatch=fm, domain_evidence=de)
                         e["score"] = wrap["score"]
                 _rank_results()
                 # Corrected scores must also reach the candidates table —

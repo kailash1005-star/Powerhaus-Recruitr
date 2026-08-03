@@ -308,6 +308,7 @@ _STALE_EVIDENCE_DISCOUNT = 0.3
 _EXEC_MISMATCH_MULTIPLIER = 0.35
 _INACTIVE_SCORE_MULTIPLIER = 0.4
 _FUNCTION_MISMATCH_MULTIPLIER = 0.3
+_DOMAIN_EVIDENCE_MULTIPLIER = 0.3
 
 # Kastell's own proposed job-hopper threshold: "if a candidate has an average
 # moving rate of >2years, he might be a b candidate" — i.e. average tenure
@@ -995,12 +996,84 @@ def function_mismatch_fit(profile: Dict[str, Any], jd: Dict[str, Any]) -> Tuple[
     )
 
 
+def domain_evidence_fit(profile: Dict[str, Any], jd: Dict[str, Any]) -> Tuple[float, Optional[str]]:
+    """Confirms the candidate's real, full profile text actually carries the
+    JD's ecosystem-branded requirement (SAP, S/4HANA...) — re-deriving the
+    answer ourselves instead of trusting that a sourcing-stage search hit
+    means anything.
+
+    Confirmed live 2026-08-02: the Apify actor's search is fuzzy relevance
+    matching, not a strict filter (its own docs: "general search query
+    (fuzzy search)") — it scores word-by-word, so a domain phrase like "SAP
+    Retail" gives partial credit for the bare word "Retail" alone. Three real,
+    reproduced candidates (Mirko Muller, Hendrik Jansen, Dieter Kosancic) had
+    that exact word — the specialty, never the platform — and zero real SAP
+    connection anywhere in their full profile. This is the authoritative,
+    in-house check that catches that pattern regardless of what the search
+    stage's relevance score claimed.
+
+    Only mustHaveSkills that themselves name an ecosystem brand
+    (SAP/S4HANA/...) count as domain phrases — a generic sales skill like
+    "consultative selling" has no ecosystem+specialization pair to check and
+    is never turned into a false domain claim. Checks the FULL profile
+    (title, past roles, skills, about) via `_embed_text_from_profile`, not
+    just the current title — evidence from a past role or a tagged skill
+    counts exactly the same as the current title (see
+    `prescreen_service.domain_evidence_signal`'s "neither" case: every
+    confirmed-genuine match found 2026-08-02 had their real evidence
+    somewhere other than the current title).
+
+    Returns (1.0, None) when there's nothing ecosystem-branded to check
+    against, or when the profile shows "both"/"ecosystem_only"/"neither" —
+    only "specialization_only" (the one pattern actually confirmed live) is
+    demoted, and never to a hard reject: "3 for 3" is real evidence, not
+    proof for every future case.
+    """
+    from app.services.sourcing.prescreen_service import domain_evidence_signal, is_ecosystem_word
+    from app.services.sourcing.prescreen_service import tokens as _sourcing_tokens
+
+    must_haves = [str(m).strip() for m in (jd.get("mustHaveSkills") or []) if str(m or "").strip()]
+    # Exact ecosystem-word match only (see `is_ecosystem_word`'s docstring) —
+    # NOT the fuzzy/substring `token_present`, which wrongly classified a
+    # generic skill like "sales cycle management" as SAP/Salesforce-branded
+    # purely because "sales" is a substring of "salesforce" (confirmed live
+    # 2026-08-02, masked the real check for Mirko Muller's real profile).
+    domain_phrases = [
+        m for m in must_haves
+        if any(is_ecosystem_word(t) for t in _sourcing_tokens(m))
+    ]
+    if not domain_phrases:
+        return 1.0, None
+    domain_query = " OR ".join(f'"{p}"' for p in domain_phrases)
+    # NOT `_embed_text_from_profile` — its "<40 chars of extracted text, fall
+    # back to raw markdown" rule exists for CV semantic embedding, where a
+    # too-thin extraction should defer to the source document. Here there is
+    # no markdown fallback to defer to, and a short-but-real profile (a
+    # sparse LinkedIn scrape with just a title and a couple of skills) would
+    # silently lose that real signal by falling back to an empty string.
+    parts: List[str] = [str(profile.get("currentTitle") or ""), str(profile.get("headline") or ""),
+                         str(profile.get("summary") or "")]
+    parts += [str(s) for s in (profile.get("skills") or []) if s]
+    for exp in (profile.get("experience") or []):
+        parts.append(" ".join(filter(None, [exp.get("title"), exp.get("summary")])))
+    text = ". ".join(p for p in parts if p)
+    signal = domain_evidence_signal(text, domain_query)
+    if signal != "specialization_only":
+        return 1.0, None
+    return _DOMAIN_EVIDENCE_MULTIPLIER, (
+        f"Names the specialty but no evidence of {domain_phrases[0]!r}-style "
+        "ecosystem experience appears anywhere in the full profile — a pattern "
+        "confirmed to often be a false match from the search stage."
+    )
+
+
 def apply_screening_signals(
     scored: Dict[str, Any],
     *,
     seniority_band: Optional[Tuple[float, Optional[str]]] = None,
     inactive: Optional[Dict[str, Any]] = None,
     function_mismatch: Optional[Tuple[float, Optional[str]]] = None,
+    domain_evidence: Optional[Tuple[float, Optional[str]]] = None,
 ) -> Dict[str, Any]:
     """Apply deterministic screening penalties AFTER the judge blend (call this
     after `apply_judge`), so no amount of LLM prose can out-argue a structural
@@ -1024,6 +1097,9 @@ def apply_screening_signals(
     if function_mismatch and function_mismatch[0] < 1.0:
         mult *= function_mismatch[0]
         flags["functionMismatchFlag"] = {"multiplier": function_mismatch[0], "reason": function_mismatch[1]}
+    if domain_evidence and domain_evidence[0] < 1.0:
+        mult *= domain_evidence[0]
+        flags["domainEvidenceFlag"] = {"multiplier": domain_evidence[0], "reason": domain_evidence[1]}
     if flags:
         before = scored["score"]
         scored["score"] = round(before * mult, 1)
@@ -1252,6 +1328,7 @@ async def _run_match_impl(
                 "seniorityBand": seniority_band_fit(profile, requirements),
                 "inactive": inactive_candidate_flag(profile),
                 "functionMismatch": function_mismatch_fit(profile, requirements),
+                "domainEvidence": domain_evidence_fit(profile, requirements),
                 "avgTenureYears": avg_tenure,
                 "tenureFlag": avg_tenure is not None and avg_tenure < _JOB_HOP_THRESHOLD_YEARS,
             })
@@ -1310,6 +1387,9 @@ async def _run_match_impl(
         fm = s.get("functionMismatch")
         if fm and fm[0] < 1.0:
             view["functionMismatchFlag"] = fm[1]
+        de = s.get("domainEvidence")
+        if de and de[0] < 1.0:
+            view["domainEvidenceFlag"] = de[1]
         if s.get("tenureFlag"):
             view["tenureFlag"] = (f"Average tenure across recent roles is "
                                    f"{s.get('avgTenureYears')} years — reads as frequent job changes.")
@@ -1334,7 +1414,8 @@ async def _run_match_impl(
     # apply_judge for the top-N so the judge blend never masks it.
     for s in scored:
         apply_screening_signals(s, seniority_band=s.get("seniorityBand"), inactive=s.get("inactive"),
-                                 function_mismatch=s.get("functionMismatch"))
+                                 function_mismatch=s.get("functionMismatch"),
+                                 domain_evidence=s.get("domainEvidence"))
     scored.sort(key=lambda x: (x["score"], x["breakdown"].get("base", 0.0)), reverse=True)
 
     # 7. assemble a full entry for EVERY scored candidate — not just the top N.
@@ -1454,16 +1535,19 @@ async def _run_match_impl(
             # entries it re-verifies. Re-apply once, only to corrected
             # entries — see the identical note in pipeline_match_service.py.
             screening_by_cid = {
-                s["cid"]: (s.get("seniorityBand"), s.get("inactive"), s.get("functionMismatch"))
+                s["cid"]: (s.get("seniorityBand"), s.get("inactive"), s.get("functionMismatch"),
+                           s.get("domainEvidence"))
                 for s in scored
             }
             for e in all_entries:
                 if not (e.get("qa") or {}).get("corrected"):
                     continue
-                sb, inactive_e, fm = screening_by_cid.get(str(e["candidateId"]), (None, None, None))
-                if sb or inactive_e or fm:
+                sb, inactive_e, fm, de = screening_by_cid.get(
+                    str(e["candidateId"]), (None, None, None, None))
+                if sb or inactive_e or fm or de:
                     wrap = {"score": e["score"], "breakdown": e["breakdown"]}
-                    apply_screening_signals(wrap, seniority_band=sb, inactive=inactive_e, function_mismatch=fm)
+                    apply_screening_signals(wrap, seniority_band=sb, inactive=inactive_e,
+                                             function_mismatch=fm, domain_evidence=de)
                     e["score"] = wrap["score"]
             all_entries.sort(
                 key=lambda r: (r["score"], (r.get("breakdown") or {}).get("base", 0.0)),
@@ -1526,6 +1610,8 @@ def _fallback_reasons(jd: Dict[str, Any], profile: Dict[str, Any], scored: Dict[
         reasons.append(signals["inactiveCandidateFlag"]["reason"])
     if signals.get("functionMismatchFlag"):
         reasons.append(signals["functionMismatchFlag"]["reason"])
+    if signals.get("domainEvidenceFlag"):
+        reasons.append(signals["domainEvidenceFlag"]["reason"])
     if scored.get("tenureFlag"):
         reasons.append(
             f"Average tenure across recent roles is {scored.get('avgTenureYears')} years — "

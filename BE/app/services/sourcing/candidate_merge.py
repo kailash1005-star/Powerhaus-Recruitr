@@ -20,6 +20,7 @@ under ``enrichedData.raw`` so nothing is lost.
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -285,22 +286,65 @@ def recency_tier(
 
 _MIN_TENURE_SAMPLES = 2  # one dated role can't evidence a "pattern" of moving jobs
 
+# Employment-type strings the actor reports for a non-full-time arrangement.
+# `employment_type` is frequently BLANK though — including on real internships
+# (Ronn Asante's "Praktikant im Controlling"/"Werkstudent im Performance
+# Marketing" both carry ''), so the title itself is checked too. Deliberately
+# narrower than prescreen's `_JUNIOR_MARKERS`: "junior"/"entry" describe the
+# SENIORITY of a real full-time job, not its nature, so a Junior Sales Manager
+# who leaves after a year is still real job-hopping evidence. Bare "student"
+# is excluded too — a full-time PhD position often carries employment_type
+# "Full-time" and "Student" in the title; only the work-study/intern pattern
+# is what's being filtered out here.
+_NON_FULLTIME_EMPLOYMENT_TYPES = {"part-time", "work study", "internship", "apprenticeship"}
+_NON_FULLTIME_TITLE_MARKERS = {
+    "werkstudent", "werkstudentin", "praktikant", "praktikantin", "praktikum",
+    "intern", "internship", "trainee", "azubi", "auszubildende", "auszubildender",
+    "ausbildung", "aushilfe", "volontär", "volontariat", "working student",
+    "work study", "student assistant", "studentische hilfskraft", "hiwi",
+    "dual student", "dualer student",
+}
+# Plain substring matching would false-positive on "intern" inside
+# "International"/"Internal" — a common senior sales title in exactly this
+# candidate pool — wrongly stripping real full-time tenure. Word-boundary
+# matching avoids that (and similarly protects German compounds like
+# "Ausbildungsleiter", a training-department LEAD, not a trainee themself).
+_NON_FULLTIME_TITLE_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(m) for m in sorted(_NON_FULLTIME_TITLE_MARKERS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_fulltime_role(exp: Dict[str, Any]) -> bool:
+    """True unless the entry reads as an internship/working-student/part-time
+    arrangement — by ``employment_type`` when the actor reports it, and by the
+    title itself when it doesn't (see the marker-set note above)."""
+    et = str(exp.get("employment_type") or "").strip().lower()
+    if et in _NON_FULLTIME_EMPLOYMENT_TYPES:
+        return False
+    title = str(exp.get("title") or "")
+    return _NON_FULLTIME_TITLE_PATTERN.search(title) is None
+
+
 def average_tenure_years(profile: Dict[str, Any], *, last_n: int = 5) -> Optional[float]:
     """Mean duration (years) across the candidate's last `last_n` DATED
-    positions — Kastell's own proposed job-hopper detector ("if a candidate
-    has an average moving rate of >2years, he might be a B candidate").
+    FULL-TIME positions — Kastell's own proposed job-hopper detector ("if a
+    candidate has an average moving rate of >2years, he might be a B
+    candidate"). Internships and part-time/work-study roles are excluded
+    first (see `_is_fulltime_role`) — a student stacking part-time jobs
+    during their degree is not evidence of the career-stage job-hopping this
+    flag is meant to catch.
 
-    Returns ``None`` with fewer than 2 dated positions: one data point cannot
-    evidence a pattern, and per this codebase's rule a missing signal is
-    neutral, never a downgrade.
+    Returns ``None`` with fewer than 2 dated FULL-TIME positions: one data
+    point cannot evidence a pattern, and per this codebase's rule a missing
+    signal is neutral, never a downgrade.
     """
-    experience = profile.get("experience") or []
+    experience = [e for e in (profile.get("experience") or [])
+                  if isinstance(e, dict) and _is_fulltime_role(e)]
     now = datetime.utcnow()
     now_idx = now.year * 12 + now.month
     spans: List[Tuple[int, int]] = []
     for exp in experience:
-        if not isinstance(exp, dict):
-            continue
         start_idx = _from_key(exp.get("starts_at"))
         if start_idx is None:
             continue

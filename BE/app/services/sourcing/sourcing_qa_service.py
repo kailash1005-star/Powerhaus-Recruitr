@@ -78,7 +78,14 @@ _SOURCING_QA_SYSTEM = (
     "SAP'; PA/PY/OM are HCM sub-modules).\n"
     "* A generalist title whose specialization can't be told from the short "
     "profile — when unsure, do NOT flag (mark confidence low).\n"
-    "* Junior/senior level, or location — other systems own these; ignore them.\n\n"
+    "* Junior/senior level, or location — other systems own these; ignore them.\n"
+    "* **A DIFFERENT JOB FUNCTION IN THE RIGHT DOMAIN, when the query says so.** "
+    "Read `roleFamily` and `domainTerms`. When `roleFamily` is 'commercial' the "
+    "target is someone who SELLS in that domain, so 'Account Executive', 'Key "
+    "Account Manager', 'Client Partner', 'Sales Director' or a bare 'Principal "
+    "Consultant' are all CORRECT — flagging them as 'sales, not a consultant' is "
+    "the exact error to avoid. The domain is what must match; the function word "
+    "in the title is not evidence against them.\n\n"
     "Judge only from the title/headline/company text given. Never infer from a "
     "name, gender or photo. For each flagged candidate give the exact id, a "
     "one-line reason naming the specialty you think they actually are, and a "
@@ -146,6 +153,7 @@ async def audit_results(
     query: Dict[str, Any],
     kept: List[Dict[str, Any]],
     location_rejected: int = 0,
+    domain_anchored: bool = False,
 ) -> Dict[str, Any]:
     """Audit the KEPT discovery results against the recruiter's query.
 
@@ -192,7 +200,15 @@ async def audit_results(
                     metrics["lowConfidenceNoted"] += 1
                     continue
                 metrics["mismatchesFlagged"] += 1
-                reject = conf >= _reject_confidence()
+                # A domain-anchored search was already verified server-side
+                # against each profile's full text — evidence this auditor cannot
+                # see, because it is shown only a title and a company. On that
+                # input it cannot distinguish "wrong specialty" from "right
+                # person, uninformative title", which is the normal case for
+                # commercial roles (an Account Executive selling SAP Retail reads
+                # as "a salesperson, not a consultant"). So it annotates and
+                # ranks, but is not allowed to hide anyone.
+                reject = conf >= _reject_confidence() and not domain_anchored
                 flag = {
                     "candidateId": cid,
                     "reason": m.get("reason"),

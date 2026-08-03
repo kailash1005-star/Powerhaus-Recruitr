@@ -224,7 +224,11 @@ class DiscoverSchema(BaseModel):
     excludePastJobTitles: Optional[List[str]] = None
     excludeIndustryIds: Optional[List[str]] = None
     excludeCompanyHqLocations: Optional[List[str]] = None
-    excludeSeniorityLevel: Optional[str] = None
+    # Plural, unlike the other enum filters: this is the one exclusion a
+    # recruiter may reasonably want on BOTH ends of the ladder at once
+    # (hide entry-level AND hide executives) — see apify_search_service's
+    # `_ENUM_FILTERS`, which already accepts a scalar or a list here.
+    excludeSeniorityLevel: Optional[List[str]] = None
     excludeFunction: Optional[str] = None
     yearsOfExperience: Optional[str] = None
     yearsAtCurrentCompany: Optional[str] = None

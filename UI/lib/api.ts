@@ -589,6 +589,18 @@ export interface PipelineJob {
   lastApolloFilters?: Record<string, unknown> | null;
   /** Adjacent-specialty titles the Strategist proposed — opt-in widen chips. */
   adjacentTitles?: string[] | null;
+  /** How much of the real result set the search actually looked at — only
+   *  present when pagination ran. `fullyCovered` means every page that
+   *  exists for this exact query was checked, so `totalElements` is a real,
+   *  complete count, not a sample. */
+  searchCoverage?: {
+    totalElements: number | null;
+    totalPages: number | null;
+    pagesFetched: number;
+    fullyCovered: boolean;
+    verifiedCount: number;
+    stopReason: string;
+  } | null;
 }
 
 export interface Pipeline {
@@ -731,7 +743,9 @@ export interface Candidate {
   matchReasons: string[];
   /** Provenance of matchScore: "sourcing_heuristic" = provisional title-overlap
    *  number from search time; "match_run" = the real scoring engine's result. */
-  matchScoreSource?: 'sourcing_heuristic' | 'match_run';
+  /** 'match_run_qa' = the QA auditor re-verified and corrected this score —
+   *  the MOST trustworthy value, never a provisional one. */
+  matchScoreSource?: 'sourcing_heuristic' | 'match_run' | 'match_run_qa';
   lastMatchRunId?: string;
   /** LinkedIn's "open to work" flag (set at deep-enrichment time). */
   openToWork?: boolean;
@@ -745,6 +759,11 @@ export interface Candidate {
     matchedVia?: string | null;
     reasons?: string[];
     channels?: string[];
+    /** Free, pre-enrichment domain check ("both"/"specialization_only"/
+     *  "ecosystem_only"/"neither"). Only "specialization_only" is ever a
+     *  caution signal — see the chip below; every other value (including
+     *  "neither", the common case) is not evidence of anything. */
+    domainEvidenceSignal?: string | null;
   } | null;
   /** Set when the candidate is in the right country but outside the requested
       region (the reason string). Score is capped server-side; UI shows a chip. */
@@ -996,7 +1015,7 @@ export interface DiscoverFilters {
   excludePastJobTitles?: string[];
   excludeIndustryIds?: string[];
   excludeCompanyHqLocations?: string[];
-  excludeSeniorityLevel?: string;
+  excludeSeniorityLevel?: string[];
   excludeFunction?: string;
   yearsOfExperience?: string;
   yearsAtCurrentCompany?: string;

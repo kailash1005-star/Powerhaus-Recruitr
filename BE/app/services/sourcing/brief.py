@@ -99,6 +99,16 @@ async def build_brief(
         fields["minYears"] = req["minYears"]
     if req.get("seniority"):
         fields["seniorityHint"] = req["seniority"]
+    # The candidate-side role model. Without it the Strategist has only the
+    # POSTING title to reason from, and for a commercial role that title actively
+    # misleads it — "SAP Retail Consultant" describes what the employer calls the
+    # job, not what the salesperson doing it calls themselves.
+    if req.get("roleFamily"):
+        fields["roleFamily"] = req["roleFamily"]
+    if req.get("domainTerms"):
+        fields["domainTerms"] = req["domainTerms"]
+    if req.get("candidateTitles"):
+        fields["candidateTitles"] = req["candidateTitles"]
     # The JD's own location is more precise than the posting's when both exist.
     if req.get("location") and not location:
         fields["jobLocation"] = req["location"]

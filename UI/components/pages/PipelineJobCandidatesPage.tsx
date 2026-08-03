@@ -334,6 +334,22 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
 
   // Poll the job through search → auto-enrich after the questionnaire is run.
   const pollDiscover = useCallback(async () => {
+    // Honest coverage: only claim "found ALL matching candidates" when the
+    // search actually looked at every page there was (`fullyCovered`) —
+    // otherwise say plainly that this is a slice, with the real total.
+    // `searchCoverage` is absent on older jobs / when pagination didn't run
+    // (SOURCING_PAGINATION_ENABLED off) — falls back to today's message.
+    const foundLine = (je?: PipelineJob | null, found = 0): string => {
+      if (found <= 0) return 'No candidates matched. Adjust the filters and search again.';
+      const cov = je?.searchCoverage;
+      if (cov?.fullyCovered) {
+        return `Found all ${cov.totalElements} candidate(s) that match this exact search — every result was checked. Tick the ones you want, then press Enrich for full work history.`;
+      }
+      if (cov && (cov.totalPages ?? 0) > 1) {
+        return `Found ${found} candidate(s) from the first ${cov.pagesFetched} of ${cov.totalPages} result pages (${cov.totalElements} total matches), strongest first. Tick the ones you want, then press Enrich for full work history.`;
+      }
+      return `Found ${found} candidate(s), strongest first. Tick the ones you want, then press Enrich for full work history.`;
+    };
     // A per-engine progress line for the combined run ("LinkedIn: 12 · Apollo: searching…").
     const engineLine = (je?: PipelineJob | null): string => {
       const part = (label: string, st?: string | null, kept?: number | null) => {
@@ -378,11 +394,7 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
         if (es === 'queued' || es === 'running') { setDiscoverMsg(`Found ${found} candidate(s) · enriching profiles…`); continue; }
         setDismissedShortfall(false);
         if (es === 'completed') { setDiscoverMsg(`Found ${found} candidate(s) — profiles enriched ✓`); await loadCandidates(); return; }
-        setDiscoverMsg(
-          found > 0
-            ? `Found ${found} candidate(s), strongest first. Tick the ones you want, then press Enrich for full work history.`
-            : 'No candidates matched. Adjust the filters and search again.',
-        );
+        setDiscoverMsg(foundLine(je, found));
         return;
       }
     }
@@ -1230,7 +1242,14 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                       )}
                     </td>
                     <td style={tdStyle}>
-                      <MatchBadge score={c.matchScore} provisional={c.matchScoreSource !== 'match_run'} />
+                      {/* 'match_run_qa' is a QA-VERIFIED score — the most
+                          trustworthy one there is. Matching only 'match_run'
+                          rendered it as "provisional … run Match for the real
+                          score", which is exactly backwards. */}
+                      <MatchBadge
+                        score={c.matchScore}
+                        provisional={!String(c.matchScoreSource || '').startsWith('match_run')}
+                      />
                       {/* Ranking demotion, not a rejection — says why this row sank. */}
                       {c.longTenureFlag && (
                         <span
@@ -1244,6 +1263,24 @@ export function PipelineJobCandidatesPage({ pipelineId, jobId }: Props) {
                           }}
                         >
                           {c.currentTenureYears ?? '20+'} yrs tenure
+                        </span>
+                      )}
+                      {/* Ranking demotion, not a rejection — the title names the
+                          specialty (e.g. "Retail") with no SAP/ecosystem word
+                          anywhere in it, a pattern confirmed to often be a
+                          coincidental search match rather than a real fit. */}
+                      {c.prescreen?.domainEvidenceSignal === 'specialization_only' && (
+                        <span
+                          title="Title mentions the specialty but no SAP/ecosystem connection anywhere in it — worth confirming before enriching"
+                          style={{
+                            display: 'block', marginTop: 3, padding: '1px 7px',
+                            borderRadius: 9999, fontSize: 10, fontWeight: 600,
+                            background: '#FEF3C7', color: '#92400E', border: '1px solid #FDE68A',
+                            maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Unconfirmed domain
                         </span>
                       )}
                     </td>

@@ -78,6 +78,41 @@ def _strip_fences(raw: str) -> str:
     return raw.strip()
 
 
+# A tokens-per-MINUTE ceiling needs a wait measured against that same minute.
+# The generic `2 ** attempt` backoff below tops out at 6s, so all three retries
+# land inside the still-saturated window and are guaranteed to fail — confirmed
+# live 2026-08-03: a 50-candidate QA audit burned its whole retry budget in ~6s
+# against a 429 and degraded the run to un-audited.
+_RATE_LIMIT_WAIT_SECS = 60.0
+_RATE_LIMIT_WAIT_CAP = 90.0
+
+
+def _rate_limit_wait(exc: Exception) -> Optional[float]:
+    """Seconds to wait before retrying a RATE-LIMITED call, or None when `exc`
+    isn't a rate-limit error (so the caller keeps its normal short backoff).
+
+    Prefers the provider's own `retry-after` hint when present; falls back to a
+    full minute, which is the window a per-minute budget actually resets over.
+    Capped so a bogus header can't park a worker thread indefinitely.
+    """
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None)
+    text = str(exc).lower()
+    if status != 429 and "429" not in text and "rate limit" not in text:
+        return None
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is not None and hasattr(headers, "get"):
+        for key, divisor in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+            raw = headers.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                return min(max(float(raw) / divisor, 0.0), _RATE_LIMIT_WAIT_CAP)
+            except (TypeError, ValueError):
+                continue
+    return _RATE_LIMIT_WAIT_SECS
+
+
 def _chat_json(
     model: str,
     system: str,
@@ -138,7 +173,11 @@ def _chat_json(
         except Exception as e:  # noqa: BLE001 — API/network errors, backoff then retry
             last_err = str(e)
             logger.warning("[LLM] %s attempt %d/%d failed: %s", schema_name, attempt, retries, e)
-            time.sleep(min(2 ** attempt, 6))
+            # A rate limit needs to outwait the provider's window, not the
+            # generic ≤6s network backoff (see `_rate_limit_wait`). Skip the
+            # sleep entirely on the final attempt — nothing follows it.
+            if attempt < retries:
+                time.sleep(_rate_limit_wait(e) or min(2 ** attempt, 6))
     raise ExtractionError(f"{schema_name} failed after {retries} attempts: {last_err}")
 
 
@@ -177,8 +216,24 @@ def _coerce_years(v: Any) -> Optional[float]:
     return years if 0 <= years <= 60 else None
 
 
+ROLE_FAMILIES = ("commercial", "delivery", "engineering", "management", "other")
+
+
 class JDRequirements(BaseModel):
-    """What the scorer is allowed to believe a JD asked for."""
+    """What the scorer is allowed to believe a JD asked for.
+
+    ``title`` is the POSTING title and is for display only. It must never be used
+    as a target for candidate titles: a posting titled "SAP Retail Consultant"
+    can describe a salesperson whose real headline reads "Account Executive",
+    "Client Partner", or simply "Principal Consultant". Feeding that string to
+    the prescreen and the QA auditor is what made both of them reject the very
+    people the role wanted (Kastell feedback, 2026-07-28).
+
+    The three fields below carry the CANDIDATE-side model instead — what the job
+    is about, what people who do it call themselves, and which register its
+    requirements should be read in. The JD contains all of this; we simply had
+    nowhere to put it.
+    """
     model_config = ConfigDict(extra="ignore")
 
     title: Optional[str] = None
@@ -189,10 +244,38 @@ class JDRequirements(BaseModel):
     seniority: Optional[str] = None
     responsibilities: List[str] = Field(default_factory=list)
 
-    @field_validator("mustHaveSkills", "niceToHaveSkills", "responsibilities", mode="before")
+    # ── candidate-side role model ────────────────────────────────────────────
+    roleFamily: Optional[str] = None
+    """commercial | delivery | engineering | management | other.
+
+    The switch that decides which register must-haves are read in. A commercial
+    role is evidenced by domain/product familiarity and sales results; a delivery
+    role by hands-on implementation skills. Scoring a salesperson against
+    implementation skills caps him at 8/100 however good he is."""
+
+    domainTerms: List[str] = Field(default_factory=list)
+    """What the person works on or sells — products, platforms, markets
+    ("SAP Retail", "S/4HANA Retail", "SAP CAR", "Consumer Goods"). For roles
+    whose titles vary wildly this is the ONLY stable identifying signal."""
+
+    candidateTitles: List[str] = Field(default_factory=list)
+    """What people doing this job call THEMSELVES — deliberately not the posting
+    title. For a commercial role: Account Executive, Key Account Manager, Sales
+    Director. Used for ranking and screening, never as a hard filter."""
+
+    @field_validator("mustHaveSkills", "niceToHaveSkills", "responsibilities",
+                     "domainTerms", "candidateTitles", mode="before")
     @classmethod
     def _lists(cls, v: Any) -> List[str]:
         return _clean_str_list(v)
+
+    @field_validator("roleFamily", mode="before")
+    @classmethod
+    def _family(cls, v: Any) -> Optional[str]:
+        """Unknown values become None rather than failing the parse — a bad
+        label must degrade to today's behaviour, never break the run."""
+        s = str(v or "").strip().lower()
+        return s if s in ROLE_FAMILIES else None
 
     @field_validator("minYears", mode="before")
     @classmethod
@@ -287,9 +370,13 @@ _JD_SCHEMA: Dict[str, Any] = {
         "location": _nullable("string"),
         "seniority": _nullable("string"),
         "responsibilities": _str_array(),
+        "roleFamily": {"type": ["string", "null"], "enum": [*ROLE_FAMILIES, None]},
+        "domainTerms": _str_array(),
+        "candidateTitles": _str_array(),
     },
     "required": ["title", "mustHaveSkills", "niceToHaveSkills", "minYears",
-                 "location", "seniority", "responsibilities"],
+                 "location", "seniority", "responsibilities",
+                 "roleFamily", "domainTerms", "candidateTitles"],
 }
 
 _CV_SCHEMA: Dict[str, Any] = {
@@ -353,6 +440,19 @@ _JUDGE_SCHEMA: Dict[str, Any] = {
 
 
 # ── Public async API ─────────────────────────────────────────────────────────
+# Bump whenever the JD SHAPE changes (new fields, changed semantics), not when
+# the prompt is merely reworded. Cached specs in `parsed_jds` are keyed by the JD
+# text hash alone, so without this a schema change would never reach any JD that
+# had already been parsed — the new fields would silently be absent forever and
+# every consumer would quietly fall back to the old behaviour.
+#   v2 (2026-07-28): + roleFamily, domainTerms, candidateTitles
+JD_SCHEMA_VERSION = "2"
+
+
+def jd_schema_version() -> str:
+    return JD_SCHEMA_VERSION
+
+
 def extraction_version() -> str:
     return settings.EXTRACTION_MODEL
 
@@ -399,7 +499,46 @@ _JD_SYSTEM = (
     "are explicitly optional/preferred/plus items. Keep each skill a short noun "
     "phrase in the language the JD uses; never pad either list with generic "
     "traits (teamwork, communication) unless the JD literally names them as "
-    "requirements."
+    "requirements.\n"
+    "\n"
+    "THE POSTING TITLE IS NOT THE CANDIDATE'S TITLE. This is the single most "
+    "important judgement you make. Employers title openings in their own "
+    "language, and for commercial roles the two routinely disagree: a posting "
+    "called \"SAP Retail Consultant\" often describes someone who SELLS SAP "
+    "Retail, and that person's own headline reads \"Account Executive\", \"Key "
+    "Account Manager\", \"Client Partner\", \"Sales Director\" — or something "
+    "with no signal at all, like \"Principal Consultant\". Read what the person "
+    "will actually DO, not what the posting is called.\n"
+    "\n"
+    "`roleFamily` — classify from the RESPONSIBILITIES, never from the title:\n"
+    "  commercial  — sells, owns revenue/quota, manages accounts, develops "
+    "business, negotiates deals, owns a territory or pipeline.\n"
+    "  delivery    — implements, configures, customises, migrates, advises on "
+    "a product for a client, runs projects.\n"
+    "  engineering — builds or operates software/infrastructure.\n"
+    "  management  — leads people or a function as the primary job.\n"
+    "  other       — none of the above fits.\n"
+    "\n"
+    "`domainTerms` — what the person works on or sells: products, platforms, "
+    "modules, markets, industries (\"SAP Retail\", \"S/4HANA Retail\", \"SAP "
+    "CAR\", \"Consumer Goods\"). For a role whose titles vary this is the only "
+    "stable way to identify the right people, so be generous and specific: "
+    "include the abbreviation AND the expanded form, product names the vendor "
+    "uses for the same thing, and the industry served. Never put job-function "
+    "words (sales, account, consultant) here.\n"
+    "\n"
+    "`candidateTitles` — 4-10 titles the RIGHT PEOPLE actually carry on their "
+    "own profile. Never the posting title unless people genuinely use it. For a "
+    "commercial role these are sales titles; for a delivery role they are "
+    "consulting titles. Include local-language variants where the JD is not in "
+    "English (\"Vertriebsleiter\", \"Key Account Manager\").\n"
+    "\n"
+    "MATCH THE REGISTER OF `mustHaveSkills` TO `roleFamily`. A commercial role's "
+    "must-haves are domain/product familiarity, market knowledge and sales "
+    "competencies — NOT implementation skills. Do not list \"SAP Retail "
+    "customizing\" or \"ABAP\" as required for someone whose job is to sell SAP "
+    "Retail; they will never evidence it and a correct candidate would be scored "
+    "as unqualified."
 )
 
 
@@ -433,6 +572,7 @@ Hard rules (they override your impression):
   * `staleEvidence` entries are must-haves credited ONLY by experience that has since ended — real, but dated, not current. Name this explicitly in a reason (e.g. "evidences X, but only in a role that ended in 20XX — current experience is unrelated"); do not describe stale evidence as if it were current. fitScore must be ≤ 74 when `staleEvidence` is non-empty, same as a missing must-have — dated-only evidence does not mean the candidate does this job today.
   * `seniorityBandFlag`, when present, is a deterministic finding that the candidate's title reads as owner/executive-level, well above this role's seniority. It is authoritative — say so directly in a reason and fitScore must be ≤ 39 ("Not a fit": different profession/level).
   * `functionMismatchFlag`, when present, is a deterministic finding that the candidate's current title names a specific different function (e.g. Product Management, Solution Architecture, Partner/Ecosystem/Alliance management) than the commercial/sales role being hired for — even though the profile matches the domain. It is authoritative — say so directly in a reason (name the actual function) and fitScore must be ≤ 39, same as a missing must-have or wrong seniority band: matching domain vocabulary does not mean matching job.
+  * `domainEvidenceFlag`, when present, is a deterministic finding that the profile names the role's SPECIALTY (e.g. "Retail") somewhere but shows no real evidence of the ECOSYSTEM/PLATFORM requirement (e.g. "SAP") anywhere in the full profile — a pattern confirmed to often mean the sourcing search matched on a coincidental shared word, not a genuine skill. It is authoritative — say so directly in a reason and fitScore must be ≤ 39, same as a missing must-have.
   * `inactiveCandidateFlag`, when present, is a deterministic finding that the candidate appears to be retired or out of the workforce. Say so directly in a reason and fitScore must be ≤ 39.
   * `tenureFlag`, when present, is a deterministic finding that the candidate's average tenure across recent roles reads as frequent job changes. This is a SOFT signal, not a disqualifier — name it as a verification point in a reason (e.g. "worth confirming stability directly") but do not treat it like a missing must-have; it alone does not cap fitScore.
   * Experience entries carry `startsAt`/`endsAt`/`isCurrent` dates. Use them: a skill or role only present in an entry that is not `isCurrent` and ended long ago describes the candidate's PAST, not their present — weigh it accordingly even where `staleEvidence` wasn't already flagged for it (that field only covers must-haves; the same reasoning applies to nice-to-haves and general fit).

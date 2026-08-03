@@ -52,6 +52,7 @@ export function SearchQueryDetailsTable({ jobEntry }: SearchQueryDetailsTablePro
     resultCount?: number | null;
     channelCounts?: Record<string, number> | null;
     at?: string;
+    searchCoverage?: PipelineJob['searchCoverage'];
   }> = [];
 
   // Case 1: We have recorded search attempts in DB (executed searches)
@@ -84,6 +85,9 @@ export function SearchQueryDetailsTable({ jobEntry }: SearchQueryDetailsTablePro
         resultCount: a.resultCount,
         channelCounts: a.channelCounts,
         at: a.at,
+        // Coverage is a job-level snapshot of the CURRENT state, not
+        // per-attempt history — only worth showing next to the latest attempt.
+        searchCoverage: idx === attempts.length - 1 ? jobEntry.searchCoverage : null,
       });
     });
   } else if (Object.keys(initialFilters).length > 0) {
@@ -110,6 +114,7 @@ export function SearchQueryDetailsTable({ jobEntry }: SearchQueryDetailsTablePro
       seniority: sen,
       exclusions,
       resultCount: jobEntry.candidateCount,
+      searchCoverage: jobEntry.searchCoverage,
     });
   }
 
@@ -286,6 +291,21 @@ export function SearchQueryDetailsTable({ jobEntry }: SearchQueryDetailsTablePro
                         {row.channelCounts && (
                           <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
                             {Object.entries(row.channelCounts).map(([ch, cnt]) => `${ch}: ${cnt}`).join(' • ')}
+                          </div>
+                        )}
+                        {/* Honest coverage note for the title channel — only
+                            claims a real total when every page that exists
+                            was actually checked, never a sample presented as
+                            complete. */}
+                        {row.searchCoverage && (
+                          <div style={{
+                            fontSize: 11, marginTop: 3, fontWeight: 600,
+                            color: row.searchCoverage.fullyCovered ? '#166534' : '#92400E',
+                          }}>
+                            {row.searchCoverage.fullyCovered
+                              ? `✓ ${row.searchCoverage.totalElements} total for the title search — every match checked`
+                              : `Checked ${row.searchCoverage.pagesFetched} of ${row.searchCoverage.totalPages} pages `
+                                + `(${row.searchCoverage.totalElements} total matches) for the title search`}
                           </div>
                         )}
                       </div>
