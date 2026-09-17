@@ -26,6 +26,8 @@ def _thread_public(doc: dict) -> dict:
         "id": str(doc["_id"]),
         "title": doc.get("title", "New chat"),
         "model": doc.get("model", ""),
+        # Which selectable agent this thread talks to ("engineer" | "graph").
+        "agent": doc.get("agent", "engineer"),
         "createdAt": (doc.get("createdAt") or _now()).isoformat(),
         "updatedAt": (doc.get("updatedAt") or _now()).isoformat(),
     }
@@ -44,10 +46,11 @@ def _message_public(doc: dict) -> dict:
 
 # ── Threads ────────────────────────────────────────────────────────────────
 
-async def create_thread(db, title: str, model: str) -> dict:
+async def create_thread(db, title: str, model: str, agent: str = "engineer") -> dict:
     doc = {
         "title": title or "New chat",
         "model": model,
+        "agent": agent or "engineer",
         "pydanticHistory": "",
         "createdAt": _now(),
         "updatedAt": _now(),

@@ -99,5 +99,13 @@ async def startup_db_client():
  
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    """Close MongoDB connection on shutdown"""
+    """Close shared database clients on shutdown."""
+    # Imported lazily so Neo4j remains optional when the agent integration is
+    # disabled because its third-party dependencies are unavailable.
+    try:
+        from app.services.agent.graph_service import close_driver
+        close_driver()
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("[GraphService] shutdown cleanup skipped: %s", e)
     await close_mongo_connection()

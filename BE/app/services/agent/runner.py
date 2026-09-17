@@ -28,7 +28,7 @@ from pydantic_ai.messages import (
 )
 
 from app.services.agent import memory
-from app.services.agent.agent_factory import build_agent
+from app.services.agent.agent_registry import resolve_agent
 
 logger = logging.getLogger(__name__)
 
@@ -125,15 +125,21 @@ async def _run_once(
 
 
 async def stream_agent_run(
-    db, thread_id: str, user_message: str, model: str | None = None
+    db, thread_id: str, user_message: str, model: str | None = None,
+    agent_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Async generator of SSE strings for one user turn.
 
-    Resilience: the first attempt runs with the MCP (LinkedIn) toolsets. If that
-    fails BEFORE any token is streamed — almost always the MCP server being
-    unreachable (Cloud Run cold start, network) — we fall back to a plain-chat
-    agent so the turn still answers. A mid-stream failure is reported as-is.
+    `agent_id` picks which selectable agent runs ("engineer" = LinkedIn MCP,
+    "graph" = read-only Graph Analyst). Resilience differs by agent: the MCP
+    agent's first attempt uses its toolsets, and if that fails BEFORE any token
+    (usually the MCP server being unreachable) it retries as a plain-chat agent
+    so the turn still answers. The graph agent's tools are in-process, so there
+    is no such fallback — its failures are reported as-is. A mid-stream failure
+    is always reported as-is.
     """
+    spec = resolve_agent(agent_id)
+
     history = await memory.load_history(db, thread_id)
     await memory.append_user_message(db, thread_id, user_message)
     await memory.rename_thread_if_default(db, thread_id, user_message)
@@ -142,29 +148,32 @@ async def stream_agent_run(
 
     state = {"tokens": 0}
 
-    # ── Attempt 1: full agent (with LinkedIn/MCP tools) ──────────────────────
+    # ── Attempt 1: the selected agent, with its tools ────────────────────────
     try:
-        async for ev in _run_once(db, thread_id, build_agent(model), user_message, history, state):
+        async for ev in _run_once(
+            db, thread_id, spec.builder(model, True), user_message, history, state
+        ):
             yield ev
         return
     except Exception as e:  # noqa: BLE001
         real = _flatten_exc(e)
-        logger.exception("Agent run (with tools) failed for thread %s: %s", thread_id, real)
-        if state["tokens"] > 0:
-            # Already answered partially — can't cleanly retry; report the cause.
+        logger.exception("Agent '%s' run failed for thread %s: %s", spec.id, thread_id, real)
+        # Already answered partially, or this agent has no MCP fallback → report.
+        if state["tokens"] > 0 or not spec.uses_mcp:
             try:
                 await memory.append_assistant_message(db, thread_id, f"(error: {real})", [])
             except Exception:
                 pass
             yield _sse("error", {"message": real})
             return
-        # Nothing streamed → setup failure (usually the MCP connection). Degrade.
+        # Nothing streamed on an MCP agent → setup failure (usually the MCP
+        # connection). Degrade to plain chat so the turn still answers.
         yield _sse("warning", {"message": "LinkedIn tools are temporarily unavailable — answering without them."})
 
-    # ── Attempt 2: plain chat (no MCP tools) ─────────────────────────────────
+    # ── Attempt 2: plain chat (MCP agent only, no tools) ─────────────────────
     try:
         async for ev in _run_once(
-            db, thread_id, build_agent(model, with_tools=False), user_message, history, state
+            db, thread_id, spec.builder(model, False), user_message, history, state
         ):
             yield ev
     except Exception as e:  # noqa: BLE001

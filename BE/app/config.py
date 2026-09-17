@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     #   Google:    google-gla:gemini-2.5-pro
     #   OpenRouter:openrouter:anthropic/claude-sonnet-4-6
     # Swap providers by changing this one string (set AGENT_MODEL in .env).
-    AGENT_MODEL: str = Field(default="openai:gpt-4o", description="Pydantic AI model string for the agent")
+    AGENT_MODEL: str = Field(default="openai:gpt-5.6-luna", description="Pydantic AI model string for the agent")
     AGENT_SYSTEM_PROMPT: str = Field(default="", description="Override the agent's system prompt (blank = built-in default)")
     # Provider API keys (pushed into os.environ for Pydantic AI at agent build).
     ANTHROPIC_API_KEY: str = Field(default="", description="Anthropic API key (for anthropic: models)")
@@ -192,6 +192,23 @@ class Settings(BaseSettings):
     AGENT_MCP_LINKEDIN_HTTP_URL: str = Field(default="", description="Streamable-HTTP URL of the LinkedIn MCP server")
     AGENT_MCP_LINKEDIN_DIR: str = Field(default="", description="Project dir of the LinkedIn MCP server (spawned via 'uv run linkedin-mcp')")
     AGENT_MCP_AUTH_TOKEN: str = Field(default="", description="Bearer token for the LinkedIn MCP server (HTTP transport)")
+
+    # ── Talent Knowledge Graph (Graph Analyst agent) ────────────────────────
+    # A SECOND selectable agent in the AI Engineer screen that answers natural-
+    # language questions about the Neo4j talent graph (People/Company/Role/
+    # Function/Technology/Domain/Location…). It writes READ-ONLY Cypher against
+    # this connection and renders rows as tables. Blank NEO4J_URI = the agent is
+    # offered but reports the graph as unconfigured instead of connecting.
+    NEO4J_URI: str = Field(default="", description="Bolt URL of the talent graph, e.g. neo4j+s://<id>.databases.neo4j.io")
+    NEO4J_USER: str = Field(default="neo4j", description="Neo4j username")
+    NEO4J_PASSWORD: str = Field(default="", description="Neo4j password")
+    NEO4J_DATABASE: str = Field(default="neo4j", description="Neo4j database name")
+    # Model for the Graph Analyst (text-to-Cypher). Provider-swappable like AGENT_MODEL.
+    GRAPH_AGENT_MODEL: str = Field(default="", description="Pydantic AI model for the Graph Analyst (blank = fall back to AGENT_MODEL)")
+    # Hard guards on every generated query, so a bad/expensive Cypher can't hang
+    # the turn or dump the whole graph into the context.
+    GRAPH_QUERY_MAX_ROWS: int = Field(default=200, description="Max rows returned from one Cypher query to the agent")
+    GRAPH_QUERY_TIMEOUT_S: int = Field(default=20, description="Per-query Neo4j transaction timeout (seconds)")
 
     # ── Matching Engine (CV ↔ JD) ──────────────────────────────────────────
     # Embeddings (OpenAI). 3-small=1536 dim (cheap, strong); 3-large=3072.

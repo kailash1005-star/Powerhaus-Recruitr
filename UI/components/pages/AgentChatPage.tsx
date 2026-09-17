@@ -4,6 +4,8 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import { Icon } from '../Icon';
 import { Markdown } from '../Markdown';
 import {
+  AgentId,
+  AgentOption,
   ChatMessage,
   ChatThread,
   ModelOption,
@@ -23,7 +25,10 @@ interface Draft {
 }
 
 export function AgentChatPage() {
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [agent, setAgent] = useState<AgentId>('engineer');
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [defaultModel, setDefaultModel] = useState<string>('');
   const [model, setModel] = useState<string>('');
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -45,9 +50,12 @@ export function AgentChatPage() {
       try {
         const m = await fetchModels();
         setModels(m.models);
-        setModel(m.default || m.models[0]?.id || '');
-      } catch {
-        /* models endpoint optional */
+        setAgents(m.agents ?? []);
+        const configuredDefault = m.default || m.models[0]?.id || '';
+        setDefaultModel(configuredDefault);
+        setModel(configuredDefault);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
       }
       try {
         const t = await listThreads();
@@ -75,7 +83,9 @@ export function AgentChatPage() {
     setError(null);
     draftRef.current = null;
     try {
-      const { messages: msgs } = await fetchThreadMessages(id);
+      const { thread, messages: msgs } = await fetchThreadMessages(id);
+      setAgent(thread.agent || 'engineer');
+      if (thread.model) setModel(thread.model);
       setMessages(msgs);
     } catch (e) {
       setError(String(e));
@@ -85,6 +95,19 @@ export function AgentChatPage() {
   function newChat() {
     setActiveId(null);
     setMessages([]);
+    setModel(defaultModel);
+    draftRef.current = null;
+    setError(null);
+  }
+
+  function changeAgent(nextAgent: AgentId) {
+    if (nextAgent === agent) return;
+    setAgent(nextAgent);
+    // An agent owns the system prompt and tool history for a conversation.
+    // Switching therefore starts a clean draft instead of mixing histories.
+    setActiveId(null);
+    setMessages([]);
+    setModel(defaultModel);
     draftRef.current = null;
     setError(null);
   }
@@ -104,7 +127,7 @@ export function AgentChatPage() {
     let threadId = activeId;
     if (!threadId) {
       try {
-        const t = await createThread(model);
+        const t = await createThread(agent, model);
         threadId = t.id;
         setThreads((ts) => [t, ...ts]);
         setActiveId(t.id);
@@ -180,6 +203,8 @@ export function AgentChatPage() {
 
   const draft = draftRef.current;
   const showEmpty = messages.length === 0 && !draft;
+  const selectedAgent = agents.find((option) => option.id === agent);
+  const isGraph = agent === 'graph';
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -200,26 +225,49 @@ export function AgentChatPage() {
             </button>
           )}
           <Icon name="sparkles" size={16} style={{ color: 'var(--fg-primary)' }} />
-          <span style={S.headerTitle}>AI Engineer</span>
+          <span style={S.headerTitle}>AI workspace</span>
         </div>
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          style={S.modelSelect}
-          title="Model provider — swap any time"
-        >
-          {models.length === 0 && <option value="">Default model</option>}
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </select>
+        <div style={S.headerControls}>
+          <label style={S.selectGroup}>
+            <span style={S.selectLabel}>Agent</span>
+            <select
+              value={agent}
+              onChange={(e) => changeAgent(e.target.value as AgentId)}
+              style={S.agentSelect}
+              title="Changing the agent starts a new conversation"
+              disabled={streaming}
+            >
+              {agents.length === 0 && <option value="engineer">AI Engineer</option>}
+              {agents.map((option) => (
+                <option key={option.id} value={option.id} disabled={!option.available}>
+                  {option.label}{option.available ? '' : ' — unavailable'}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={S.selectGroup}>
+            <span style={S.selectLabel}>Model</span>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              style={S.modelSelect}
+              title="Model provider"
+              disabled={streaming}
+            >
+              {models.length === 0 && <option value="">Default model</option>}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
 
       <div style={S.body}>
         {/* Thread rail (collapsible) */}
         {railOpen && (
         <div style={S.rail}>
-          <button style={S.newBtn} onClick={newChat}>
+          <button style={S.newBtn} onClick={newChat} disabled={streaming}>
             <Icon name="plus" size={14} /> New chat
           </button>
           <div style={S.threadList}>
@@ -253,11 +301,19 @@ export function AgentChatPage() {
               {showEmpty && (
                 <div style={S.empty}>
                   <Icon name="sparkles" size={28} style={{ color: 'var(--fg-subtle)' }} />
-                  <div style={S.emptyTitle}>How can I help you recruit?</div>
-                  <div style={S.emptySub}>
-                    Ask me to research companies and people, find jobs, or pull data —
-                    I&apos;ll use the connected tools to do it.
+                  <div style={S.emptyEyebrow}>{selectedAgent?.label || 'AI Engineer'}</div>
+                  <div style={S.emptyTitle}>
+                    {isGraph ? 'Ask the talent graph' : 'How can I help you recruit?'}
                   </div>
+                  <div style={S.emptySub}>
+                    {selectedAgent?.description ||
+                      'Ask me to research companies and people, find jobs, or pull data using the connected tools.'}
+                  </div>
+                  {isGraph && (
+                    <div style={S.promptIdeas}>
+                      Try: “Show the top 10 companies by people in the graph.”
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -289,7 +345,9 @@ export function AgentChatPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="Message the AI Engineer…  (Enter to send, Shift+Enter for newline)"
+                placeholder={isGraph
+                  ? 'Ask about people, companies, skills, roles, or locations…'
+                  : 'Message the AI Engineer…'}
                 rows={1}
                 style={S.textarea}
                 disabled={streaming}
@@ -302,7 +360,14 @@ export function AgentChatPage() {
                 {streaming ? <Icon name="loader" size={15} /> : <Icon name="arrow-up" size={15} />}
               </button>
             </div>
-            <div style={S.hint}>{streaming ? 'Agent is working…' : 'Powered by Linkedin MCP'}</div>
+            <div style={S.hint} aria-live="polite">
+              {streaming
+                ? `${selectedAgent?.label || 'Agent'} is working…`
+                : isGraph
+                  ? 'Read-only access to the Neo4j talent graph'
+                  : 'Powered by LinkedIn MCP'}
+              {!streaming && ' · Enter to send, Shift+Enter for a new line'}
+            </div>
           </div>
         </div>
       </div>
@@ -412,6 +477,14 @@ const S: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid var(--border-default)', background: 'var(--bg-app)',
   },
   headerTitle: { fontSize: 14, fontWeight: 600, color: 'var(--fg-primary)' },
+  headerControls: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 },
+  selectGroup: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 },
+  selectLabel: { fontSize: 11, fontWeight: 600, color: 'var(--fg-muted)' },
+  agentSelect: {
+    fontSize: 12, fontWeight: 500, color: 'var(--fg-primary)', background: 'var(--bg-app)',
+    border: '1px solid var(--border-card)', borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+    maxWidth: 240,
+  },
   modelSelect: {
     fontSize: 12, color: 'var(--fg-secondary)', background: 'var(--bg-app)',
     border: '1px solid var(--border-card)', borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
@@ -443,7 +516,12 @@ const S: Record<string, React.CSSProperties> = {
 
   empty: { textAlign: 'center', marginTop: 80, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 },
   emptyTitle: { fontSize: 20, fontWeight: 600, color: 'var(--fg-primary)' },
+  emptyEyebrow: { fontSize: 12, fontWeight: 600, color: 'var(--primary)' },
   emptySub: { fontSize: 13, color: 'var(--fg-muted)', maxWidth: 420, lineHeight: 1.5 },
+  promptIdeas: {
+    marginTop: 4, padding: '8px 12px', border: '1px solid var(--border-card)', borderRadius: 8,
+    background: 'var(--bg-muted)', color: 'var(--fg-secondary)', fontSize: 12, lineHeight: 1.5,
+  },
 
   userBubble: {
     background: 'var(--bg-chip)', color: 'var(--fg-primary)', padding: '10px 14px',

@@ -113,6 +113,36 @@ gcloud run deploy recruitment-api \
 > ```bash
 > gcloud run deploy recruitment-api \
 >   --set-secrets "MONGODB_URI=mongodb-uri:latest,LINKEDIN_PASSWORD=linkedin-pass:latest"
+
+### Graph Analyst (Neo4j Aura)
+
+The AI workspace includes a second, thread-scoped agent that answers natural-
+language questions about the talent knowledge graph. Configure it with:
+
+```env
+NEO4J_URI=neo4j+s://<aura-id>.databases.neo4j.io
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<secret>
+NEO4J_DATABASE=neo4j
+GRAPH_AGENT_MODEL=
+GRAPH_QUERY_MAX_ROWS=200
+GRAPH_QUERY_TIMEOUT_S=20
+```
+
+`GRAPH_AGENT_MODEL` falls back to `AGENT_MODEL` when blank. For production,
+store `NEO4J_PASSWORD` in Secret Manager and grant the configured Neo4j user
+read-only database privileges. The application also rejects all generated
+Cypher containing write clauses, procedures (`CALL`), or admin commands.
+
+Cloud Build preserves the Cloud Run service's existing environment. Configure
+the service once, outside the image build:
+
+```bash
+gcloud run services update powerhaus-recruitr \
+  --region=europe-west1 \
+  --set-env-vars="NEO4J_URI=neo4j+s://<aura-id>.databases.neo4j.io,NEO4J_USER=neo4j,NEO4J_DATABASE=neo4j" \
+  --set-secrets="NEO4J_PASSWORD=neo4j-password:latest"
+```
 > ```
 
 ### Environment Variables

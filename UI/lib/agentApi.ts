@@ -7,10 +7,13 @@
 
 const API_BASE = '/api/proxy';
 
+export type AgentId = 'engineer' | 'graph';
+
 export interface ChatThread {
   id: string;
   title: string;
   model: string;
+  agent: AgentId;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,27 +40,51 @@ export interface ModelOption {
   label: string;
 }
 
+export interface AgentOption {
+  id: AgentId;
+  label: string;
+  description: string;
+  available: boolean;
+}
+
+async function responseError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    return new Error(body?.detail || fallback);
+  } catch {
+    return new Error(fallback);
+  }
+}
+
 // ── Thread CRUD ────────────────────────────────────────────────────────────
 
-export async function fetchModels(): Promise<{ default: string; models: ModelOption[] }> {
+export async function fetchModels(): Promise<{
+  default: string;
+  models: ModelOption[];
+  agents: AgentOption[];
+}> {
   const res = await fetch(`${API_BASE}/api/v1/agent/models`);
-  if (!res.ok) throw new Error(`models → ${res.status}`);
+  if (!res.ok) throw await responseError(res, `Could not load AI workspace settings (${res.status}).`);
   return res.json();
 }
 
 export async function listThreads(): Promise<ChatThread[]> {
   const res = await fetch(`${API_BASE}/api/v1/agent/threads`);
-  if (!res.ok) throw new Error(`threads → ${res.status}`);
+  if (!res.ok) throw await responseError(res, `Could not load conversations (${res.status}).`);
   return res.json();
 }
 
-export async function createThread(model?: string, title = 'New chat'): Promise<ChatThread> {
+export async function createThread(
+  agent: AgentId,
+  model?: string,
+  title = 'New chat',
+): Promise<ChatThread> {
   const res = await fetch(`${API_BASE}/api/v1/agent/threads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, model }),
+    body: JSON.stringify({ title, model, agent }),
   });
-  if (!res.ok) throw new Error(`create thread → ${res.status}`);
+  if (!res.ok) throw await responseError(res, `Could not create conversation (${res.status}).`);
   return res.json();
 }
 
@@ -65,13 +92,13 @@ export async function fetchThreadMessages(
   threadId: string,
 ): Promise<{ thread: ChatThread; messages: ChatMessage[] }> {
   const res = await fetch(`${API_BASE}/api/v1/agent/threads/${threadId}/messages`);
-  if (!res.ok) throw new Error(`thread messages → ${res.status}`);
+  if (!res.ok) throw await responseError(res, `Could not load this conversation (${res.status}).`);
   return res.json();
 }
 
 export async function deleteThread(threadId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/v1/agent/threads/${threadId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`delete thread → ${res.status}`);
+  if (!res.ok) throw await responseError(res, `Could not delete this conversation (${res.status}).`);
 }
 
 // ── Streaming a turn (SSE parsed from a POST response body) ──────────────────
@@ -100,7 +127,8 @@ export async function streamTurn(
     signal,
   });
   if (!res.ok || !res.body) {
-    handlers.onError?.(`stream → ${res.status}`);
+    const error = await responseError(res, `The agent could not start (${res.status}).`);
+    handlers.onError?.(error.message);
     return;
   }
 

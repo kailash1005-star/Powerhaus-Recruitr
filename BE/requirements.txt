@@ -63,5 +63,10 @@ python-multipart>=0.0.9  # required by FastAPI for file uploads
 # 2.0 so the unbounded ">=1.0.0" can't pull an incompatible major again.
 pydantic-ai-slim[openai,anthropic,google,mcp]>=1.0.0,<2.0
 
+# ── Graph Analyst agent (read-only Neo4j / talent knowledge graph) ──
+# The official Neo4j Python driver. Used ONLY for read queries the Graph Analyst
+# agent generates (bolt/neo4j+s to Aura). 5.x matches the Aura server line.
+neo4j>=5.20,<6
+
 # ── Utilities ──────────────────────────────────────────────────
 python-dotenv>=1.0.0
